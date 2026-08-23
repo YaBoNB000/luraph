@@ -58,6 +58,31 @@ Luraph 的核心是**字节码虚拟化（VM 虚拟化）**：
 | Xen (Synapse) | 高 | 字节码加密强 |
 | LVM | 中高 | 字节码格式相对简单 |
 
+### 1.4 Luraph v15 实测样本分析（用户提供样本）
+
+> 完整报告：`docs/luraph15-analysis.md`（含样本位置索引/别名表/脱壳评估）
+
+v15.0 样本（171KB，Roblox 目标）相对 v14 的关键演进：
+
+1. **数据层换成 Roblox `buffer` 二进制内存**（不透明 + 无类型），
+   原语经数字槽别名（buffer.readu8/bit32.bxor/coroutine.yield… ~60 个）
+2. **三层分发**：顶层 while 状态机 → 子分发器（~50 个）→ 142 个细粒度 handler，
+   状态以位置参数元组传递（混入函数引用）
+3. **7-bit 分块寄存器/操作数编码**：逻辑值拆成 7-bit 块按 128 进制重建，
+   变长 7/14/21-bit，2³² 归一化 → 寄存器模式匹配彻底失效
+4. **密钥 = 状态机化 LCG PRNG**（mod 2²⁸，乘数/增量每构建随机，
+   PRNG 本身展开成状态机）驱动 **bit32.bxor 位置密钥流**
+5. **base-N 编码**（字符类 ASCII 32..126）+ 10 特殊字符 → 5 字符 token 转义
+6. **每帧一个新 Lua 闭包**（CPS 帧模型）+ 宿主协程驱动用户代码
+7. **超级指令**（算术+比较+分支融合在单个 handler）
+8. 报错行号解析重写（`:(%d+)[:\r\n]`）
+9. 弱点：样本中未见 os.clock 时间陷阱/显式校验和 → 动态 hook 仍可行
+
+对本项目设计的采纳决策见 `docs/luraph15-analysis.md` §8
+（采纳：7-bit 分块/三层分发/LCG 密钥/token 转义/报错重写/VMC 随机面；
+差异点：我们用纯 Lua table/string 数据层保 5.1+Luau 双目标 +
+保留校验和/时间陷阱作为差异化）。
+
 ---
 
 ## 2. 分层混淆体系（本项目设计，L1–L7）
@@ -390,8 +415,8 @@ tests/
 
 ## 7. 参考资料
 
-0. **Luraph 15 混淆脚本（用户提供 `luraph15.txt`）**：⏳ 文件待重新上传，
-   到位后单独写入 `docs/luraph15-analysis.md` 并在 PROGRESS.md 登记
+0. **Luraph 15 混淆脚本（用户提供 `samples/luraph15.txt`）**：✅ 分析完成，
+   报告见 `docs/luraph15-analysis.md`
 1. Luraph 官方资料与 Grokipedia 综述（架构/历史/宣称）
 2. vfxecho/obfuscated-lua —— Luraph v14 逆向分析（SoA 格式/决策树/unrolled VM/LZW 解码器）
 3. CodePal《Luraph Deobfuscator Guide》（分层模型、VM hooking 思路）

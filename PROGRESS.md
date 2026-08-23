@@ -16,8 +16,9 @@
      （`lua51 -e 'assert(loadstring(s))'` / `luau-compile`，并实际执行对比输出）
   3. 测试语料必须覆盖**所有常用语法**（见 `docs/obfuscation-research.md` 第 5 节语料清单，
      随模块增长持续补充），任何一步不通过 = 该模块改动未完成
-- 用户提供的 **Luraph 15 混淆脚本**（`luraph15.txt`）：待文件到位后分析其功能，
-  结论写入笔记（`docs/`）
+- 用户提供的 **Luraph 15 混淆脚本**（`samples/luraph15.txt`，从 origin/main 拉取）：
+  ✅ **分析完成** → `docs/luraph15-analysis.md`（三层分发/7-bit 分块寄存器/
+  LCG 状态机密钥流/buffer 数据层/142 handler/脱壳评估/对本项目的设计启示）
 
 ## 1. 已实现内容
 
@@ -94,7 +95,10 @@ luraph/
 ├── PROGRESS.md                 # 本文件
 ├── README.md
 ├── docs/
-│   └── obfuscation-research.md # 混淆技术学习记录（VM 设计草案 + 实现规划）
+│   ├── obfuscation-research.md # 混淆技术学习记录（VM 设计草案 + 实现规划 + 语料清单）
+│   └── luraph15-analysis.md    # Luraph v15 样本分析报告（三层分发/7-bit 分块/LCG 密钥流）
+├── samples/
+│   └── luraph15.txt            # 用户提供的 Luraph v15.0 混淆样本（171KB）
 └── lph/                        # 过渡参考代码（Lua，将来被 Rust 取代）
     ├── rng.lua
     ├── lexer.lua
