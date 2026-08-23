@@ -1,7 +1,8 @@
 # 项目进度（PROGRESS）
 
 > 最后更新：2026-08-23
-> 当前状态：✅ 环境搭建完成 ✅ 混淆技术研究完成 🟡 等待「开始」信号后编写混淆器（Rust）
+> 当前状态：✅ 环境 ✅ 研究 ✅ v15 分析 🟢 **M0 地基完成**（用户已发「开始」信号；
+> Rust 骨架 + lexer/parser/symtab/printer 完成，round-trip 62 项检查全绿）
 
 ## 0. 需求（用户确认）
 
@@ -85,20 +86,46 @@
 |---|---|
 | `README.md` | 仓库标题（待更新） |
 
-## 3. 未开始（等待「开始」信号）
+## 3. 进度与剩余工作
 
-- [ ] Rust 项目骨架（`luraph-rs/`：lexer / parser / ast / symtab / passes / vmgen / cli）
-- [ ] 各混淆 pass 实现（L1 词法 → L2 字符串 → L3 控制流 → L4 数值 → L5 整体加密）
-- [ ] **自定义 VM（L6）：字节码编译器 + 嵌入 Lua 解释器模板 + 每构建指令随机化**
-- [ ] 反篡改层（L7：校验和 / 时间陷阱）
-- [ ] 测试矩阵（示例脚本 × 双解释器 × 开关组合，输出对比）
-- [ ] CLI 与预设（low / medium / high / vm）
-- [ ] README 更新
+### ✅ M0 完成（2026-08-23，用户已发「开始」信号）
+
+| 模块 | 文件 | 说明 |
+|---|---|---|
+| AST | `luraph-rs/src/ast.rs` | Expr/Stmt/Block/FuncDef；BinOp 含 Idiv（`//`） |
+| 词法 | `luraph-rs/src/lexer.rs` | 双方言；全部转义 + 方言差异（`\x`/未知转义）；11 单测 |
+| 语法 | `luraph-rs/src/parser.rs` | Pratt 优先级（与 lparser.c 一致）；注解剥离；插值/复合/`//` 去糖 |
+| 作用域 | `luraph-rs/src/symtab.rs` | 可见性规则 / local function 自引用 / for 变量作用域 |
+| 打印 | `luraph-rs/src/printer.rs` | 优先级括号（含 Ctx::Base 规则）/ 字节精确字符串 / 浮点保真 |
+| PRNG | `luraph-rs/src/rng.rs` | Park-Miller（pass 阶段用） |
+| CLI | `luraph-rs/src/main.rs` | `--dialect 5.1\|luau`、`-o` |
+| 语料 | `luraph-rs/tests/cases/*.lua` | 17 个文件（12 类常用语法 + luau_* 专属 5 个） |
+| 矩阵 | `luraph-rs/tests/run_tests.sh` | **62 项检查全绿**（语料 × 方言 × 运行对比/跨跑/luac） |
+
+**M0 验收**：`cargo test` 11/11 + 矩阵 62/62 —— round-trip（输入→AST→输出）
+在双解释器上语义等价。
+
+**M0 阶段新发现的方言差异**（已进 lexer/parser 实现 + 研究笔记 §3）：
+- `\x` 转义：5.1 中是字面量（`\x41`=`x41`，未知转义→字面字符）；Luau 中是转义（恰好 2 位）
+- 5.1 无 `coroutine.close`/`isyieldable`（5.2+）→ 语料分离
+- Luau CLI 构建无尾调用优化 → 共享语料递归深度限 5000
+- Luau 0.735 无花括号函数体 `{}`（新语法）
+
+### ⬜ 剩余（按 implementation-plan.md 里程碑推进）
+
+- [ ] **M1**：`mangle`(L1 名称混淆) + `strings`(L2 字符串加密 + 运行时加载器)
+- [ ] **M2**：`desugar`/`flatten`/`junk`(L3 控制流：CFG 扁平化状态机)
+- [ ] **M3**：`numbers`(L4) + `body`(L5 整体加密) + `antidbg`(L7)
+- [ ] **M4/M5**：**VM（L6）**：`vmgen/isa.rs` + `compiler.rs` + `template.rs`
+  + VMC 每构建随机化
+- [ ] **M6**：CLI 预设（low/medium/high/vm）+ README 产品文档
+- 每个 pass 完成后执行强制工作流（矩阵全绿才算完成）
 
 ## 4. 目录结构（当前）
 
 ```
 luraph/
+├── HANDOFF.md                  # 零上下文交接文档（新会话先读）
 ├── PROGRESS.md                 # 本文件
 ├── README.md
 ├── docs/
@@ -114,7 +141,20 @@ luraph/
 │   ├── make_trace.py           # 探针注入生成器
 │   ├── run_trace.lua / run1.lua# 动态运行包装器
 │   └── polyfill.lua            # buffer/Vector3 polyfill（buffer 部分因 CLI 内建而未用上）
-└── lph/                        # 过渡参考代码（Lua，将来被 Rust 取代）
+├── luraph-rs/                  # ★ Rust 混淆器（M0 完成，round-trip 全绿）
+│   ├── Cargo.toml              #   std-only 零依赖
+│   ├── src/
+│   │   ├── main.rs             #   CLI（--dialect/-o）
+│   │   ├── ast.rs              #   AST 定义
+│   │   ├── lexer.rs            #   双方言词法（11 单测）
+│   │   ├── parser.rs           #   双方言语法（Pratt/注解剥离/去糖）
+│   │   ├── symtab.rs           #   作用域解析
+│   │   ├── printer.rs          #   打印器（优先级括号/字节精确字符串）
+│   │   └── rng.rs              #   Park-Miller PRNG
+│   └── tests/
+│       ├── cases/*.lua         #   17 个测试语料
+│       └── run_tests.sh        #   测试矩阵（62 项检查）
+└── lph/                        # 早期 Lua 参考实现（已被 Rust 取代，仅存档）
     ├── rng.lua
     ├── lexer.lua
     └── parser.lua

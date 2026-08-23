@@ -1,0 +1,244 @@
+//! Scope resolution: assign SymIds to locals, fill Ident.sym, collect
+//! global names.
+//!
+//! Visibility rules (Lua 5.1 reference semantics):
+//! - A local is visible from the statement AFTER its declaration.
+//! - Initializers of `local a = a` refer to the outer (or global) a.
+//! - `local function f() end`: f is NOT visible inside its own body.
+//! - for-loop variables are visible inside the body only.
+
+use crate::ast::*;
+
+pub struct Sym {
+	pub name: String,
+	pub is_param: bool,
+}
+
+pub struct SymTable {
+	/// index = SymId
+	pub syms: Vec<Sym>,
+	/// global names referenced (unique, in first-use order)
+	pub globals: Vec<String>,
+}
+
+impl SymTable {
+	pub fn new() -> SymTable {
+		SymTable {
+			syms: Vec::new(),
+			globals: Vec::new(),
+		}
+	}
+	pub fn name_of(&self, id: SymId) -> &str {
+		&self.syms[id as usize].name
+	}
+}
+
+struct Resolver<'a> {
+	table: &'a mut SymTable,
+	/// stack of scopes; each scope: name -> SymId
+	scopes: Vec<Vec<(String, u32)>>,
+}
+
+impl<'a> Resolver<'a> {
+	fn new(table: &'a mut SymTable) -> Resolver<'a> {
+		Resolver {
+			table,
+			scopes: vec![Vec::new()],
+		}
+	}
+
+	fn new_scope(&mut self) {
+		self.scopes.push(Vec::new());
+	}
+
+	fn pop_scope(&mut self) {
+		self.scopes.pop();
+	}
+
+	fn declare(&mut self, name: &str, is_param: bool) -> SymId {
+		self.table.syms.push(Sym {
+			name: name.to_string(),
+			is_param,
+		});
+		let id = (self.table.syms.len() - 1) as SymId;
+		self.scopes.last_mut().unwrap().push((name.to_string(), id));
+		id
+	}
+
+	fn lookup(&self, name: &str) -> Option<SymId> {
+		for scope in self.scopes.iter().rev() {
+			if let Some((_, id)) = scope.iter().find(|(n, _)| n == name) {
+				return Some(*id);
+			}
+		}
+		None
+	}
+
+	fn note_global(&mut self, name: &str) {
+		if !self.table.globals.iter().any(|g| g == name) {
+			self.table.globals.push(name.to_string());
+		}
+	}
+
+	fn resolve_expr(&mut self, e: &mut Expr) {
+		match e {
+			Expr::Ident { name, sym } => match self.lookup(name) {
+				Some(id) => *sym = Some(id),
+				None => {
+					*sym = None;
+					self.note_global(name);
+				}
+			},
+			Expr::Dot { obj, .. } => self.resolve_expr(obj),
+			Expr::Index { obj, idx } => {
+				self.resolve_expr(obj);
+				self.resolve_expr(idx);
+			}
+			Expr::Call { func, args } => {
+				self.resolve_expr(func);
+				for a in args {
+					self.resolve_expr(a);
+				}
+			}
+			Expr::Method { obj, args, .. } => {
+				self.resolve_expr(obj);
+				for a in args {
+					self.resolve_expr(a);
+				}
+			}
+			Expr::Un { e, .. } => self.resolve_expr(e),
+			Expr::Bin { l, r, .. } => {
+				self.resolve_expr(l);
+				self.resolve_expr(r);
+			}
+			Expr::Table { fields } => {
+				for f in fields {
+					match f {
+						TableField::Array(e) => self.resolve_expr(e),
+						TableField::Key { key, value } => {
+							self.resolve_expr(key);
+							self.resolve_expr(value);
+						}
+					}
+				}
+			}
+			Expr::Function { body, .. } => {
+				self.resolve_func_body(body, &[]);
+			}
+			_ => {}
+		}
+	}
+
+	fn resolve_func_body(&mut self, body: &mut Block, params: &[String]) {
+		self.new_scope();
+		for p in params {
+			self.declare(p, true);
+		}
+		self.resolve_block(body);
+		self.pop_scope();
+	}
+
+	fn resolve_block(&mut self, b: &mut Block) {
+		for s in b.stmts.iter_mut() {
+			self.resolve_stmt(s);
+		}
+	}
+
+	fn resolve_stmt(&mut self, s: &mut Stmt) {
+		match s {
+			Stmt::Local { names, syms, values } => {
+				for v in values.iter_mut() {
+					if let Some(e) = v {
+						self.resolve_expr(e);
+					}
+				}
+				for i in 0..names.len() {
+					syms[i] = self.declare(&names[i], false);
+				}
+			}
+			Stmt::LocalFunc { name, sym, func } => {
+				// body does NOT see `name` (Lua 5.1 semantics)
+				self.resolve_func_body(&mut func.body, &func.params);
+				*sym = self.declare(name, false);
+			}
+			Stmt::FuncDecl { func, .. } => {
+				self.resolve_func_body(&mut func.body, &func.params);
+			}
+			Stmt::Assign { targets, values } => {
+				// resolve values first (LHS may alias globals; targets are
+				// places, resolving them is harmless and needed for globals)
+				for v in values.iter_mut() {
+					self.resolve_expr(v);
+				}
+				for t in targets.iter_mut() {
+					self.resolve_expr(t);
+				}
+			}
+			Stmt::ExprStmt(e) => self.resolve_expr(e),
+			Stmt::If { cond, thenb, elsifs, elseb } => {
+				self.resolve_expr(cond);
+				self.resolve_block(thenb);
+				for (c, b) in elsifs.iter_mut() {
+					self.resolve_expr(c);
+					self.resolve_block(b);
+				}
+				if let Some(b) = elseb {
+					self.resolve_block(b);
+				}
+			}
+			Stmt::While { cond, body } => {
+				self.resolve_expr(cond);
+				self.resolve_block(body);
+			}
+			Stmt::Repeat { body, cond } => {
+				// cond sees body locals (repeat-until semantics)
+				self.resolve_block(body);
+				self.resolve_expr(cond);
+			}
+			Stmt::ForNum {
+				var,
+				var_sym,
+				start,
+				limit,
+				step,
+				body,
+			} => {
+				self.resolve_expr(start);
+				self.resolve_expr(limit);
+				if let Some(st) = step {
+					self.resolve_expr(st);
+				}
+				// loop variable lives in a scope that ends with the body
+				self.new_scope();
+				*var_sym = self.declare(var, false);
+				self.resolve_block(body);
+				self.pop_scope();
+			}
+			Stmt::ForGen { vars, syms, iters, body } => {
+				for it in iters.iter_mut() {
+					self.resolve_expr(it);
+				}
+				self.new_scope();
+				for i in 0..vars.len() {
+					syms[i] = self.declare(&vars[i], false);
+				}
+				self.resolve_block(body);
+				self.pop_scope();
+			}
+			Stmt::Do(b) => self.resolve_block(b),
+			Stmt::Break | Stmt::Continue => {}
+			Stmt::Return(es) => {
+				for e in es.iter_mut() {
+					self.resolve_expr(e);
+				}
+			}
+		}
+	}
+}
+
+pub fn resolve(block: &mut Block) -> SymTable {
+	let mut table = SymTable::new();
+	let mut r = Resolver::new(&mut table);
+	r.resolve_block(block);
+	table
+}
