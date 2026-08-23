@@ -1,0 +1,6 @@
+local pf = require("./polyfill")
+local b = buffer.create(8)
+buffer.writeu8(b, 1, 42)
+buffer.writeu32(b, 5, 0xDEADBEEF)
+print("readu8:", buffer.readu8(b, 1), "readu32:", buffer.readu32(b, 5))
+pf.dump_all()

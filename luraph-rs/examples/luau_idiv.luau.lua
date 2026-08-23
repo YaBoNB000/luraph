@@ -1,0 +1,138 @@
+local fu, xF068k_3, Vvo = "\128\241Ah_\14\188\174", "\229\231\10{k\6\150X", "\203P\6\184\142\13\173@"
+local Ya7U4c = fu .. xF068k_3 .. Vvo
+local Xx5_bhJ3gta_s9 = {}
+for l73m58 = 1, # Ya7U4c do
+    Xx5_bhJ3gta_s9[l73m58] = string.byte(Ya7U4c, l73m58)
+end
+local function Ouqnd(...) 
+    local bTrvQ3y33 = {...}
+    local Ru = table.concat(bTrvQ3y33)
+    local DKft_uf5 = {}
+    for b67u24ypnuc7p = 1, # Ru do
+        local F1aY = Xx5_bhJ3gta_s9[(b67u24ypnuc7p - 1) % # Xx5_bhJ3gta_s9 + 1]
+        local FjJfy_da = string.byte(Ru, b67u24ypnuc7p) - F1aY - b67u24ypnuc7p
+        local wacu_9u = FjJfy_da % 256
+        if wacu_9u < 0 then
+            wacu_9u = wacu_9u + 256
+        end
+        DKft_uf5[b67u24ypnuc7p] = string.char(wacu_9u)
+    end
+    return table.concat(DKft_uf5)
+end
+local z9bae0zy = 779965188
+local FEyu05s78yih2Id, a3eo59ot3escvu, Gi, k4, E8, Mn6Hkliw7y, A33, gjl5, tmd7_15
+while true do
+    if z9bae0zy == 139753054 then
+        z9bae0zy = 587321740
+    elseif z9bae0zy == 1230593338 then
+        z9bae0zy = 120982407
+    elseif z9bae0zy == 522714115 then
+        z9bae0zy = 1926585010
+    elseif z9bae0zy == 197414476 then
+        Gi = 9920 + 8131
+        z9bae0zy = 721594667
+    elseif z9bae0zy == 1041409777 then
+        FEyu05s78yih2Id = 7585 + 2827
+        z9bae0zy = 945996375
+    elseif z9bae0zy == 420418987 then
+        print(math.floor(7 / 2), math.floor(7 / - 2), math.floor(- 7 / 2), math.floor(- 7 / - 2))
+        z9bae0zy = 1973390200
+    elseif z9bae0zy == 400836612 then
+        local ejNpx83n1Joiz = k4 + 1 - 1
+        z9bae0zy = 420418987
+    elseif z9bae0zy == 1569962261 then
+        A33 = math.floor(A33 / 3)
+        z9bae0zy = 1826592687
+    elseif z9bae0zy == 1344893612 then
+        local K977aVgq2h15n = a3eo59ot3escvu + 1 - 1
+        z9bae0zy = 197414476
+    elseif z9bae0zy == 358948977 then
+        z9bae0zy = 230451549
+    elseif z9bae0zy == 1665557232 then
+        tmd7_15 = gjl5 * 370 - 7838
+        z9bae0zy = 1117321010
+    elseif z9bae0zy == 591746414 then
+        print(math.floor(10 / 5), math.floor(4 / 4))
+        z9bae0zy = 2063461172
+    elseif z9bae0zy == 779965188 then
+        z9bae0zy = 1041409777
+    elseif z9bae0zy == 1826592687 then
+        print(Ouqnd("\234W\173\226\132", "w2#^`", "\138\245\220N"), A33)
+        z9bae0zy = 831745742
+    elseif z9bae0zy == 1348796791 then
+        print(E8 / Mn6Hkliw7y, math.floor(E8 / Mn6Hkliw7y))
+        z9bae0zy = 930844050
+    elseif z9bae0zy == 945996375 then
+        a3eo59ot3escvu = FEyu05s78yih2Id * 700 - 600
+        z9bae0zy = 114470617
+    elseif z9bae0zy == 1074947951 then
+        local YaWj731 = k4 * k4 >= 0
+        if YaWj731 then
+            z9bae0zy = 774439871
+        else
+            z9bae0zy = 833514748
+        end
+    elseif z9bae0zy == 833514748 then
+        z9bae0zy = 400836612
+    elseif z9bae0zy == 930844050 then
+        A33 = 20
+        z9bae0zy = 1580456118
+    elseif z9bae0zy == 114470617 then
+        local emmyVnm2UM = a3eo59ot3escvu * a3eo59ot3escvu >= 0
+        if emmyVnm2UM then
+            z9bae0zy = 139753054
+        else
+            z9bae0zy = 120982407
+        end
+    elseif z9bae0zy == 1926585010 then
+        local Llf = tmd7_15 - gjl5
+        z9bae0zy = 358948977
+    elseif z9bae0zy == 831745742 then
+        print(Ouqnd("\237h\165\225\132", "}'\31d\17", "y\246\230y"))
+        z9bae0zy = 77372641
+    elseif z9bae0zy == 509385154 then
+        local vr = tmd7_15 + 1 - 1
+        z9bae0zy = 1569962261
+    elseif z9bae0zy == 120982407 then
+        z9bae0zy = 1344893612
+    elseif z9bae0zy == 1973390200 then
+        print(math.floor(6.72 / 2), math.floor(- 6.72 / 2))
+        z9bae0zy = 591746414
+    elseif z9bae0zy == 952417077 then
+        Mn6Hkliw7y = 2
+        z9bae0zy = 1348796791
+    elseif z9bae0zy == 721594667 then
+        k4 = Gi * 869 - 4344
+        z9bae0zy = 1074947951
+    elseif z9bae0zy == 587321740 then
+        local wgam = a3eo59ot3escvu - FEyu05s78yih2Id
+        z9bae0zy = 1230593338
+    elseif z9bae0zy == 774439871 then
+        z9bae0zy = 8555190
+    elseif z9bae0zy == 1622872020 then
+        z9bae0zy = 833514748
+    elseif z9bae0zy == 77372641 then
+        break
+    elseif z9bae0zy == 2063461172 then
+        print(1 + math.floor(7 / 2), math.floor(1 + 7 / 2), math.floor(2 * 7 / 2), math.floor(10 % 7 / 2))
+        z9bae0zy = 392263450
+    elseif z9bae0zy == 1117321010 then
+        local c2_l = tmd7_15 * tmd7_15 >= 0
+        if c2_l then
+            z9bae0zy = 522714115
+        else
+            z9bae0zy = 230451549
+        end
+    elseif z9bae0zy == 1580456118 then
+        gjl5 = 8528 + 205
+        z9bae0zy = 1665557232
+    elseif z9bae0zy == 230451549 then
+        z9bae0zy = 509385154
+    elseif z9bae0zy == 392263450 then
+        E8 = 7
+        z9bae0zy = 952417077
+    elseif z9bae0zy == 8555190 then
+        local M_ = k4 - Gi
+        z9bae0zy = 1622872020
+    end
+end

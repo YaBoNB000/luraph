@@ -1,0 +1,274 @@
+local y3_pvqf1g, Qmj, ext315Mqoigx = "C,x\137\168\191\24*", "g\17\202׷\190/i", "\161\169\230\17\245\230\141\207"
+local w1lr4 = y3_pvqf1g .. Qmj .. ext315Mqoigx
+local vhs33 = {}
+for pkw = 1, # w1lr4 do
+    vhs33[pkw] = string.byte(w1lr4, pkw)
+end
+local function ZO0j3iB7904U13w(...) 
+    local vy = {...}
+    local HTw2T23 = table.concat(vy)
+    local zY = {}
+    for cC8THT72rv = 1, # HTw2T23 do
+        local W4qc = vhs33[(cC8THT72rv - 1) % # vhs33 + 1]
+        local rpgw = string.byte(HTw2T23, cC8THT72rv) - W4qc - cC8THT72rv
+        local t8xfzlk = rpgw % 256
+        if t8xfzlk < 0 then
+            t8xfzlk = t8xfzlk + 256
+        end
+        zY[cC8THT72rv] = string.char(t8xfzlk)
+    end
+    return table.concat(zY)
+end
+local Ukch37gF677z5 = 389224380
+local l73m58, Ouqnd, DKft_uf5, b67u24ypnuc7p, FEyu05s78yih2Id, a3eo59ot3escvu, wgam, Gi, k4, M_, ejNpx83n1Joiz, gjl5, wacu_9u, ap3Fdd8, tmd7_15, Llf, vr, z9bae0zy, emmyVnm2UM, YaWj731, c2_l, n_7Vkj, Bi6ucat, A8sn1ygwe9e, Vvo, Ya7U4c, Xx5_bhJ3gta_s9, DClAeh, J4aests
+while true do
+    if Ukch37gF677z5 == 693169161 then
+        YaWj731, c2_l = coroutine.resume(tmd7_15)
+        Ukch37gF677z5 = 1855382571
+    elseif Ukch37gF677z5 == 1044672522 then
+        ap3Fdd8 = wacu_9u * 370 - 7838
+        Ukch37gF677z5 = 1688472309
+    elseif Ukch37gF677z5 == 1965387411 then
+        print(ZO0j3iB7904U13w("\183\162\220\1\"", "8?\147\214", "\143:U\254"), coroutine.status(FEyu05s78yih2Id))
+        Ukch37gF677z5 = 1231533647
+    elseif Ukch37gF677z5 == 1042834825 then
+        local F1aY = b67u24ypnuc7p - DKft_uf5
+        Ukch37gF677z5 = 1222009953
+    elseif Ukch37gF677z5 == 968138483 then
+        tmd7_15 = coroutine.create(function()
+            local x_w4tj_8 = 2549877
+            while true do
+                if x_w4tj_8 == 167136333 then
+                    break
+                elseif x_w4tj_8 == 2549877 then
+                    x_w4tj_8 = 487393287
+                elseif x_w4tj_8 == 1709182623 then
+                    coroutine.yield(ZO0j3iB7904U13w("\168"))
+                    x_w4tj_8 = 167136333
+                elseif x_w4tj_8 == 487393287 then
+                    coroutine.yield(ZO0j3iB7904U13w("\165"), ZO0j3iB7904U13w("\166"), ZO0j3iB7904U13w("\167"))
+                    x_w4tj_8 = 1709182623
+                end
+            end
+        end)
+        Ukch37gF677z5 = 15062263
+    elseif Ukch37gF677z5 == 1196592926 then
+        Ukch37gF677z5 = 144505376
+    elseif Ukch37gF677z5 == 144505376 then
+        local efe = J4aests + 1 - 1
+        Ukch37gF677z5 = 1480431782
+    elseif Ukch37gF677z5 == 15062263 then
+        Llf, vr, z9bae0zy, emmyVnm2UM = coroutine.resume(tmd7_15)
+        Ukch37gF677z5 = 693169161
+    elseif Ukch37gF677z5 == 1558277332 then
+        Ukch37gF677z5 = 1779966300
+    elseif Ukch37gF677z5 == 1688472309 then
+        local Irq1 = ap3Fdd8 * ap3Fdd8 >= 0
+        if Irq1 then
+            Ukch37gF677z5 = 1562417045
+        else
+            Ukch37gF677z5 = 548821928
+        end
+    elseif Ukch37gF677z5 == 1436403887 then
+        Ukch37gF677z5 = 272738315
+    elseif Ukch37gF677z5 == 2058865230 then
+        local E5Of4j2 = Ouqnd * Ouqnd >= 0
+        if E5Of4j2 then
+            Ukch37gF677z5 = 1558277332
+        else
+            Ukch37gF677z5 = 1674392880
+        end
+    elseif Ukch37gF677z5 == 1827736910 then
+        Ukch37gF677z5 = 1042834825
+    elseif Ukch37gF677z5 == 444768650 then
+        DClAeh = 7322 + 4582
+        Ukch37gF677z5 = 120690752
+    elseif Ukch37gF677z5 == 1959011607 then
+        n_7Vkj = coroutine.create(function()
+            local pNw231aczdcSe9n = 1480762222
+            local Aoba1Ecpa01i, lrlKzqz6
+            while true do
+                if pNw231aczdcSe9n == 1480762222 then
+                    pNw231aczdcSe9n = 43823637
+                elseif pNw231aczdcSe9n == 1822848576 then
+                    return Aoba1Ecpa01i + lrlKzqz6
+                elseif pNw231aczdcSe9n == 43823637 then
+                    Aoba1Ecpa01i, lrlKzqz6 = coroutine.yield()
+                    pNw231aczdcSe9n = 1822848576
+                end
+            end
+        end)
+        Ukch37gF677z5 = 23358788
+    elseif Ukch37gF677z5 == 1222009953 then
+        Ukch37gF677z5 = 1436403887
+    elseif Ukch37gF677z5 == 1921031790 then
+        DKft_uf5 = 9920 + 8131
+        Ukch37gF677z5 = 1456055664
+    elseif Ukch37gF677z5 == 1855382571 then
+        print(ZO0j3iB7904U13w("\177\163\231\1", "\22嘛", "Շ9\29"), vr, z9bae0zy, emmyVnm2UM, c2_l)
+        Ukch37gF677z5 = 1959011607
+    elseif Ukch37gF677z5 == 1524362476 then
+        ejNpx83n1Joiz, gjl5 = coroutine.resume(Gi, 21)
+        Ukch37gF677z5 = 1816324560
+    elseif Ukch37gF677z5 == 2125197726 then
+        print(ZO0j3iB7904U13w("\177\163\231\1\22", "呗\227", "\144BH\254"), A8sn1ygwe9e)
+        Ukch37gF677z5 = 1300899759
+    elseif Ukch37gF677z5 == 44345106 then
+        local Ru = Ouqnd + 1 - 1
+        Ukch37gF677z5 = 1921031790
+    elseif Ukch37gF677z5 == 927598985 then
+        print(ZO0j3iB7904U13w("\189\151", "\224\249", "\17\255"), M_, gjl5, coroutine.status(Gi))
+        Ukch37gF677z5 = 968138483
+    elseif Ukch37gF677z5 == 2101851609 then
+        local Y36OF9zQ = J4aests * J4aests >= 0
+        if Y36OF9zQ then
+            Ukch37gF677z5 = 1286485702
+        else
+            Ukch37gF677z5 = 1196592926
+        end
+    elseif Ukch37gF677z5 == 645358474 then
+        local rpj5t5L = b67u24ypnuc7p * b67u24ypnuc7p >= 0
+        if rpj5t5L then
+            Ukch37gF677z5 = 1827736910
+        else
+            Ukch37gF677z5 = 1436403887
+        end
+    elseif Ukch37gF677z5 == 8953584 then
+        Ukch37gF677z5 = 548821928
+    elseif Ukch37gF677z5 == 387163667 then
+        l73m58 = 7585 + 2827
+        Ukch37gF677z5 = 2137956236
+    elseif Ukch37gF677z5 == 1674392880 then
+        Ukch37gF677z5 = 44345106
+    elseif Ukch37gF677z5 == 1673906771 then
+        Ukch37gF677z5 = 1196592926
+    elseif Ukch37gF677z5 == 492074256 then
+        Ya7U4c, Xx5_bhJ3gta_s9 = coroutine.resume(Vvo)
+        Ukch37gF677z5 = 444768650
+    elseif Ukch37gF677z5 == 272738315 then
+        local FjJfy_da = b67u24ypnuc7p + 1 - 1
+        Ukch37gF677z5 = 2036524584
+    elseif Ukch37gF677z5 == 2036524584 then
+        FEyu05s78yih2Id = coroutine.create(function(s39s_y, A33)
+            local P2P9sV7l8Bztvm9 = 91251581
+            while true do
+                if P2P9sV7l8Bztvm9 == 33377340 then
+                    return s39s_y + A33
+                elseif P2P9sV7l8Bztvm9 == 91251581 then
+                    P2P9sV7l8Bztvm9 = 33377340
+                end
+            end
+        end)
+        Ukch37gF677z5 = 1755012248
+    elseif Ukch37gF677z5 == 2137956236 then
+        Ouqnd = l73m58 * 700 - 600
+        Ukch37gF677z5 = 2058865230
+    elseif Ukch37gF677z5 == 2131692599 then
+        print(ZO0j3iB7904U13w("\168\147", "\220\241", "\231"), coroutine.status(Gi))
+        Ukch37gF677z5 = 373127740
+    elseif Ukch37gF677z5 == 389224380 then
+        Ukch37gF677z5 = 387163667
+    elseif Ukch37gF677z5 == 373127740 then
+        print(ZO0j3iB7904U13w("\167\157\237\252\"", "9\136\160\213;", "9R21"))
+        Ukch37gF677z5 = 1640816606
+    elseif Ukch37gF677z5 == 113768949 then
+        Bi6ucat, A8sn1ygwe9e = coroutine.resume(n_7Vkj, 3, 4)
+        Ukch37gF677z5 = 2125197726
+    elseif Ukch37gF677z5 == 1755012248 then
+        print(ZO0j3iB7904U13w("\183\162\220", "\1\"", "8Y"), coroutine.status(FEyu05s78yih2Id))
+        Ukch37gF677z5 = 218434810
+    elseif Ukch37gF677z5 == 23358788 then
+        coroutine.resume(n_7Vkj)
+        Ukch37gF677z5 = 113768949
+    elseif Ukch37gF677z5 == 1816324560 then
+        wacu_9u = 8528 + 205
+        Ukch37gF677z5 = 1044672522
+    elseif Ukch37gF677z5 == 414920177 then
+        local f6vF = ap3Fdd8 + 1 - 1
+        Ukch37gF677z5 = 927598985
+    elseif Ukch37gF677z5 == 1480431782 then
+        print(ZO0j3iB7904U13w("\187\160", "\220\253", "\231"), Xx5_bhJ3gta_s9, coroutine.status(Vvo))
+        Ukch37gF677z5 = 2131692599
+    elseif Ukch37gF677z5 == 1456055664 then
+        b67u24ypnuc7p = DKft_uf5 * 869 - 4344
+        Ukch37gF677z5 = 645358474
+    elseif Ukch37gF677z5 == 1231533647 then
+        Gi = coroutine.create(function()
+            local Wo021a_eWm3_9 = 236085001
+            local K977aVgq2h15n
+            while true do
+                if Wo021a_eWm3_9 == 236085001 then
+                    Wo021a_eWm3_9 = 1567582016
+                elseif Wo021a_eWm3_9 == 1379844582 then
+                    return K977aVgq2h15n * 2
+                elseif Wo021a_eWm3_9 == 1567582016 then
+                    K977aVgq2h15n = coroutine.yield(1)
+                    Wo021a_eWm3_9 = 1379844582
+                end
+            end
+        end)
+        Ukch37gF677z5 = 292783691
+    elseif Ukch37gF677z5 == 120690752 then
+        J4aests = DClAeh * 536 - 6211
+        Ukch37gF677z5 = 2101851609
+    elseif Ukch37gF677z5 == 1300899759 then
+        Vvo = coroutine.create(function()
+            local PUU8cm = 596117996
+            local fu, xF068k_3
+            while true do
+                if PUU8cm == 977512569 then
+                    xF068k_3 = fu()
+                    PUU8cm = 1789069784
+                elseif PUU8cm == 1789069784 then
+                    return ZO0j3iB7904U13w("\171\157", "\239", "\199") .. xF068k_3
+                elseif PUU8cm == 734026162 then
+                    fu = coroutine.wrap(function()
+                        local ki95 = 2098790090
+                        while true do
+                            if ki95 == 618595972 then
+                                coroutine.yield(ZO0j3iB7904U13w("\187\160\220", "\253\29", "*\131"))
+                                ki95 = 684782944
+                            elseif ki95 == 684782944 then
+                                break
+                            elseif ki95 == 2098790090 then
+                                ki95 = 618595972
+                            end
+                        end
+                    end)
+                    PUU8cm = 977512569
+                elseif PUU8cm == 596117996 then
+                    PUU8cm = 734026162
+                end
+            end
+        end)
+        Ukch37gF677z5 = 492074256
+    elseif Ukch37gF677z5 == 548821928 then
+        Ukch37gF677z5 = 414920177
+    elseif Ukch37gF677z5 == 625883523 then
+        Ukch37gF677z5 = 1674392880
+    elseif Ukch37gF677z5 == 218434810 then
+        a3eo59ot3escvu, wgam = coroutine.resume(FEyu05s78yih2Id, 20, 22)
+        Ukch37gF677z5 = 386249232
+    elseif Ukch37gF677z5 == 292783691 then
+        k4, M_ = coroutine.resume(Gi)
+        Ukch37gF677z5 = 1524362476
+    elseif Ukch37gF677z5 == 1779966300 then
+        local bTrvQ3y33 = Ouqnd - l73m58
+        Ukch37gF677z5 = 625883523
+    elseif Ukch37gF677z5 == 1286485702 then
+        Ukch37gF677z5 = 2070253128
+    elseif Ukch37gF677z5 == 1640816606 then
+        break
+    elseif Ukch37gF677z5 == 1562417045 then
+        Ukch37gF677z5 = 410031921
+    elseif Ukch37gF677z5 == 410031921 then
+        local k97axg = ap3Fdd8 - wacu_9u
+        Ukch37gF677z5 = 8953584
+    elseif Ukch37gF677z5 == 386249232 then
+        print(ZO0j3iB7904U13w("\182\147\238", "\2\26", "*Y"), a3eo59ot3escvu, wgam)
+        Ukch37gF677z5 = 1965387411
+    elseif Ukch37gF677z5 == 2070253128 then
+        local dz = J4aests - DClAeh
+        Ukch37gF677z5 = 1673906771
+    end
+end

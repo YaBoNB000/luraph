@@ -1,0 +1,160 @@
+local dIbTrv, fy33x5ur9, ft_uf55_l6 = "\138\5\142!\154߻3", " \235\132\8.\2090,", "\7\248ɶB\154b\6"
+local hwrorv96753n = dIbTrv .. fy33x5ur9 .. ft_uf55_l6
+local p9zgtI9 = {}
+for Damwac = 1, # hwrorv96753n do
+    p9zgtI9[Damwac] = string.byte(hwrorv96753n, Damwac)
+end
+local function Cj(...) 
+    local mz87w = {...}
+    local Afiacs5v1ozh = table.concat(mz87w)
+    local PXL166e_ = {}
+    for J4aests = 1, # Afiacs5v1ozh do
+        local dz = p9zgtI9[(J4aests - 1) % # p9zgtI9 + 1]
+        local efe = string.byte(Afiacs5v1ozh, J4aests) - dz - J4aests
+        local P2P9sV7l8Bztvm9 = efe % 256
+        if P2P9sV7l8Bztvm9 < 0 then
+            P2P9sV7l8Bztvm9 = P2P9sV7l8Bztvm9 + 256
+        end
+        PXL166e_[J4aests] = string.char(P2P9sV7l8Bztvm9)
+    end
+    return table.concat(PXL166e_)
+end
+local IniQupUca0g7j = 896725254
+local wgam, K977aVgq2h15n, M_, ejNpx83n1Joiz, G080mn6Hkliw7yg, h2Id, a3eo59ot3escvu, Llf, vr
+while true do
+    if IniQupUca0g7j == 2099996232 then
+        K977aVgq2h15n = wgam * 700 - 600
+        IniQupUca0g7j = 1127274400
+    elseif IniQupUca0g7j == 601828229 then
+        IniQupUca0g7j = 1818096280
+    elseif IniQupUca0g7j == 1782614407 then
+        IniQupUca0g7j = 2112537839
+    elseif IniQupUca0g7j == 252890055 then
+        local gjl5 = ejNpx83n1Joiz - M_
+        IniQupUca0g7j = 450487736
+    elseif IniQupUca0g7j == 1818096280 then
+        local z9bae0zy = vr - Llf
+        IniQupUca0g7j = 1376052937
+    elseif IniQupUca0g7j == 2112537839 then
+        IniQupUca0g7j = 1052838489
+    elseif IniQupUca0g7j == 1601808895 then
+        h2Id = coroutine.create(function()
+            local YaWj731 = 458876719
+            local l345Eyu05s78y
+            while true do
+                if YaWj731 == 458876719 then
+                    YaWj731 = 629029254
+                elseif YaWj731 == 673328436 then
+                    break
+                elseif YaWj731 == 629029254 then
+                    l345Eyu05s78y = coroutine.isyieldable()
+                    YaWj731 = 504680444
+                elseif YaWj731 == 504680444 then
+                    coroutine.yield(l345Eyu05s78y)
+                    YaWj731 = 673328436
+                end
+            end
+        end)
+        IniQupUca0g7j = 1388040455
+    elseif IniQupUca0g7j == 172174830 then
+        IniQupUca0g7j = 252890055
+    elseif IniQupUca0g7j == 1779200077 then
+        local tygwe9ec = vr * vr >= 0
+        if tygwe9ec then
+            IniQupUca0g7j = 601828229
+        else
+            IniQupUca0g7j = 480684355
+        end
+    elseif IniQupUca0g7j == 450487736 then
+        IniQupUca0g7j = 1026995798
+    elseif IniQupUca0g7j == 675137623 then
+        a3eo59ot3escvu = coroutine.create(function()
+            local t4 = 587321740
+            while true do
+                if t4 == 1230593338 then
+                    coroutine.yield()
+                    t4 = 114470617
+                elseif t4 == 587321740 then
+                    t4 = 1230593338
+                elseif t4 == 114470617 then
+                    break
+                end
+            end
+        end)
+        IniQupUca0g7j = 606615200
+    elseif IniQupUca0g7j == 606615200 then
+        coroutine.resume(a3eo59ot3escvu)
+        IniQupUca0g7j = 574535379
+    elseif IniQupUca0g7j == 958495165 then
+        M_ = 9920 + 8131
+        IniQupUca0g7j = 353928082
+    elseif IniQupUca0g7j == 480684355 then
+        IniQupUca0g7j = 447040786
+    elseif IniQupUca0g7j == 1526508164 then
+        break
+    elseif IniQupUca0g7j == 353928082 then
+        ejNpx83n1Joiz = M_ * 869 - 4344
+        IniQupUca0g7j = 1201285358
+    elseif IniQupUca0g7j == 543351628 then
+        print(Cj("\247|\242\154\191N5", "\180\146Z\251x\156A", "\171\1618nK8\188"))
+        IniQupUca0g7j = 1526508164
+    elseif IniQupUca0g7j == 970512589 then
+        print(Cj("\238s\0", "\152\4", "I\252"), coroutine.status(a3eo59ot3escvu))
+        IniQupUca0g7j = 473202324
+    elseif IniQupUca0g7j == 380456738 then
+        local tmd7_15 = ejNpx83n1Joiz + 1 - 1
+        IniQupUca0g7j = 874028372
+    elseif IniQupUca0g7j == 1882737973 then
+        print(Cj("\244z\10\142", "\4Q&\156", "\139a\244N"), G080mn6Hkliw7yg == true)
+        IniQupUca0g7j = 675137623
+    elseif IniQupUca0g7j == 1026995798 then
+        IniQupUca0g7j = 380456738
+    elseif IniQupUca0g7j == 839773694 then
+        IniQupUca0g7j = 1581110833
+    elseif IniQupUca0g7j == 1052838489 then
+        local k4 = K977aVgq2h15n + 1 - 1
+        IniQupUca0g7j = 958495165
+    elseif IniQupUca0g7j == 473202324 then
+        Llf = 8528 + 205
+        IniQupUca0g7j = 1187617867
+    elseif IniQupUca0g7j == 1127274400 then
+        local lyFcw7 = K977aVgq2h15n * K977aVgq2h15n >= 0
+        if lyFcw7 then
+            IniQupUca0g7j = 839773694
+        else
+            IniQupUca0g7j = 2112537839
+        end
+    elseif IniQupUca0g7j == 1388040455 then
+        coroutine.resume(h2Id)
+        IniQupUca0g7j = 1882737973
+    elseif IniQupUca0g7j == 574535379 then
+        coroutine.close(a3eo59ot3escvu)
+        IniQupUca0g7j = 970512589
+    elseif IniQupUca0g7j == 896725254 then
+        IniQupUca0g7j = 1582783323
+    elseif IniQupUca0g7j == 1376052937 then
+        IniQupUca0g7j = 480684355
+    elseif IniQupUca0g7j == 1581110833 then
+        local Gi = K977aVgq2h15n - wgam
+        IniQupUca0g7j = 1782614407
+    elseif IniQupUca0g7j == 1201285358 then
+        local Kj8_7i8i_atH88s = ejNpx83n1Joiz * ejNpx83n1Joiz >= 0
+        if Kj8_7i8i_atH88s then
+            IniQupUca0g7j = 172174830
+        else
+            IniQupUca0g7j = 1026995798
+        end
+    elseif IniQupUca0g7j == 1187617867 then
+        vr = Llf * 370 - 7838
+        IniQupUca0g7j = 1779200077
+    elseif IniQupUca0g7j == 447040786 then
+        local emmyVnm2UM = vr + 1 - 1
+        IniQupUca0g7j = 543351628
+    elseif IniQupUca0g7j == 874028372 then
+        G080mn6Hkliw7yg = coroutine.isyieldable()
+        IniQupUca0g7j = 1601808895
+    elseif IniQupUca0g7j == 1582783323 then
+        wgam = 7585 + 2827
+        IniQupUca0g7j = 2099996232
+    end
+end

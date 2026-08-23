@@ -1,0 +1,380 @@
+local wgul, Sf5lu94p, I0eo = ".G\211c\131\180@\9", "!\147\2353\179Z0q", "\4j`??\29\147\""
+local Kvimfq5sB7C8 = wgul .. Sf5lu94p .. I0eo
+local Ir1eR1mq_lk9y41 = {}
+for ck0 = 1, # Kvimfq5sB7C8 do
+    Ir1eR1mq_lk9y41[ck0] = string.byte(Kvimfq5sB7C8, ck0)
+end
+local function qR6m(...) 
+    local Mx08 = {...}
+    local Fa14 = table.concat(Mx08)
+    local h_g46gur8v = {}
+    for sRrrz33vj = 1, # Fa14 do
+        local W_cmw = Ir1eR1mq_lk9y41[(sRrrz33vj - 1) % # Ir1eR1mq_lk9y41 + 1]
+        local Xwe_x5h2 = string.byte(Fa14, sRrrz33vj) - W_cmw - sRrrz33vj
+        local cx = Xwe_x5h2 % 256
+        if cx < 0 then
+            cx = cx + 256
+        end
+        h_g46gur8v[sRrrz33vj] = string.char(cx)
+    end
+    return table.concat(h_g46gur8v)
+end
+local f6vF = 1203429728
+local Llf, vr, YaWj731, c2_l, Mn6Hkliw7y, xF068k_3, Vvo, Ya7U4c, FEyu05s78yih2Id, Xx5_bhJ3gta_s9, l73m58, Ouqnd, wgam, bTrvQ3y33, Ru, DKft_uf5, n_7Vkj, Bi6ucat, k4, M_, ejNpx83n1Joiz, b67u24ypnuc7p, F1aY, FjJfy_da
+while true do
+    if f6vF == 1070982879 then
+        print(qR6m("\146\184D", "\219\239\31", "\181K"), wgam)
+        f6vF = 91251581
+    elseif f6vF == 179615414 then
+        local z9bae0zy = vr - Llf
+        f6vF = 1665492599
+    elseif f6vF == 1656391196 then
+        YaWj731 = 9920 + 8131
+        f6vF = 943978531
+    elseif f6vF == 1904254587 then
+        f6vF = 440678578
+    elseif f6vF == 1203429728 then
+        f6vF = 1436816588
+    elseif f6vF == 1029140090 then
+        if Ya7U4c >= 0 and xF068k_3 > Vvo or Ya7U4c < 0 and xF068k_3 < Vvo then
+            f6vF = 786512390
+        else
+            local A33 = xF068k_3
+            local Xa59x_w4tj_8 = 579025952
+            local But8f7xt49d9c = false
+            while true do
+                if Xa59x_w4tj_8 == 1145748597 then
+                    break
+                elseif Xa59x_w4tj_8 == 579025952 then
+                    Xa59x_w4tj_8 = 1741709161
+                elseif Xa59x_w4tj_8 == 1828249552 then
+                    Mn6Hkliw7y = Mn6Hkliw7y + A33
+                    Xa59x_w4tj_8 = 1145748597
+                elseif Xa59x_w4tj_8 == 1741709161 then
+                    local Wm3 = A33 % 3 == 0
+                    if Wm3 then
+                        Xa59x_w4tj_8 = 1808641962
+                    else
+                        Xa59x_w4tj_8 = 2002730852
+                    end
+                elseif Xa59x_w4tj_8 == 1808641962 then
+                    Xa59x_w4tj_8 = 1145748597
+                elseif Xa59x_w4tj_8 == 2002730852 then
+                    Xa59x_w4tj_8 = 1828249552
+                end
+            end
+            if But8f7xt49d9c then
+                f6vF = 786512390
+            else
+                xF068k_3 = xF068k_3 + Ya7U4c
+                f6vF = 1029140090
+            end
+        end
+    elseif f6vF == 853617222 then
+        f6vF = 2047405294
+    elseif f6vF == 283464648 then
+        wgam = 0
+        f6vF = 1920670785
+    elseif f6vF == 1306444785 then
+        local J4aests = c2_l * c2_l >= 0
+        if J4aests then
+            f6vF = 1904254587
+        else
+            f6vF = 1528500897
+        end
+    elseif f6vF == 91251581 then
+        k4 = 0
+        f6vF = 33377340
+    elseif f6vF == 28438073 then
+        local fu = Bi6ucat + 1 - 1
+        f6vF = 1070982879
+    elseif f6vF == 467097070 then
+        f6vF = 28438073
+    elseif f6vF == 128553497 then
+        print(qR6m("\146\184D", "\219\246/", "\180K"), Mn6Hkliw7y)
+        f6vF = 619714980
+    elseif f6vF == 1716842798 then
+        b67u24ypnuc7p, F1aY, FjJfy_da = 1, 4, 1
+        f6vF = 1606094843
+    elseif f6vF == 1407250943 then
+        f6vF = 467097070
+    elseif f6vF == 2032091820 then
+        print(qR6m("\155\1907ܨ", "&\182\128\154\16", "\22\163/֤"))
+        f6vF = 925523384
+    elseif f6vF == 1574770363 then
+        f6vF = 593699677
+    elseif f6vF == 786512390 then
+        f6vF = 128553497
+    elseif f6vF == 614052359 then
+        n_7Vkj = 8528 + 205
+        f6vF = 1969519008
+    elseif f6vF == 1774620471 then
+        f6vF = 1763586121
+    elseif f6vF == 2002468366 then
+        local Ekbt0veg531m = 2063436061
+        local Mow9q9o = false
+        while true do
+            if Ekbt0veg531m == 1665531410 then
+                Ekbt0veg531m = 519479958
+            elseif Ekbt0veg531m == 386422659 then
+                k4 = k4 + 1
+                Ekbt0veg531m = 1990488383
+            elseif Ekbt0veg531m == 2003618043 then
+                Ekbt0veg531m = 1323825033
+            elseif Ekbt0veg531m == 2063436061 then
+                Ekbt0veg531m = 386422659
+            elseif Ekbt0veg531m == 1990488383 then
+                local OF9zQ7c = k4 % 2 == 0
+                if OF9zQ7c then
+                    Ekbt0veg531m = 2003618043
+                else
+                    Ekbt0veg531m = 1665531410
+                end
+            elseif Ekbt0veg531m == 1323825033 then
+                local sq0j = k4 >= 6
+                if sq0j then
+                    Mow9q9o = true
+                    break
+                else
+                    Ekbt0veg531m = 2063436061
+                end
+            elseif Ekbt0veg531m == 519479958 then
+                M_ = M_ + k4
+                Ekbt0veg531m = 1323825033
+            end
+        end
+        if Mow9q9o then
+            f6vF = 1774620471
+        else
+            f6vF = 2002468366
+        end
+    elseif f6vF == 1472386202 then
+        f6vF = 614052359
+    elseif f6vF == 897320157 then
+        Xx5_bhJ3gta_s9, l73m58, Ouqnd = 1, 6, 1
+        f6vF = 1705295121
+    elseif f6vF == 619714980 then
+        FEyu05s78yih2Id = {}
+        f6vF = 897320157
+    elseif f6vF == 1385821359 then
+        local K977aVgq2h15n, Gi = bTrvQ3y33(Ru, DKft_uf5)
+        if K977aVgq2h15n == nil then
+            f6vF = 1472386202
+        else
+            DKft_uf5 = K977aVgq2h15n
+            local z50e5Of4j22rpj5 = 1785795524
+            local xLhi = false
+            while true do
+                if z50e5Of4j22rpj5 == 1785795524 then
+                    z50e5Of4j22rpj5 = 1953449560
+                elseif z50e5Of4j22rpj5 == 1125196033 then
+                    z50e5Of4j22rpj5 = 1712998772
+                elseif z50e5Of4j22rpj5 == 1730034377 then
+                    z50e5Of4j22rpj5 = 884636477
+                elseif z50e5Of4j22rpj5 == 1712998772 then
+                    wgam = wgam + Gi
+                    z50e5Of4j22rpj5 = 884636477
+                elseif z50e5Of4j22rpj5 == 884636477 then
+                    break
+                elseif z50e5Of4j22rpj5 == 1953449560 then
+                    local f67 = K977aVgq2h15n == qR6m("\145")
+                    if f67 then
+                        z50e5Of4j22rpj5 = 1730034377
+                    else
+                        z50e5Of4j22rpj5 = 1125196033
+                    end
+                end
+            end
+            if xLhi then
+                f6vF = 1472386202
+            else
+                f6vF = 1385821359
+            end
+        end
+    elseif f6vF == 351951026 then
+        vr = Llf * 700 - 600
+        f6vF = 517018137
+    elseif f6vF == 1763586121 then
+        print(qR6m("\146\184D\219", "\250\31\183v", "\139\0170"), M_)
+        f6vF = 1831313733
+    elseif f6vF == 33377340 then
+        M_ = 0
+        f6vF = 2002468366
+    elseif f6vF == 2011206839 then
+        f6vF = 1282976937
+    elseif f6vF == 1282976937 then
+        local A8sn1ygwe9e = Bi6ucat - n_7Vkj
+        f6vF = 1407250943
+    elseif f6vF == 1498879472 then
+        f6vF = 1528500897
+    elseif f6vF == 457878679 then
+        local lrlKzqz6 = c2_l + 1 - 1
+        f6vF = 445840809
+    elseif f6vF == 1665492599 then
+        f6vF = 853617222
+    elseif f6vF == 568812868 then
+        print(qR6m("\157\174I\219", "\237\30\180", "z\162\215"), ejNpx83n1Joiz)
+        f6vF = 2032091820
+    elseif f6vF == 593699677 then
+        print(qR6m("\146\184D", "\219\235\27", "\183K"), FEyu05s78yih2Id[1], FEyu05s78yih2Id[2], FEyu05s78yih2Id[3])
+        f6vF = 283464648
+    elseif f6vF == 1528500897 then
+        f6vF = 457878679
+    elseif f6vF == 943978531 then
+        c2_l = YaWj731 * 869 - 4344
+        f6vF = 1306444785
+    elseif f6vF == 2047405294 then
+        local emmyVnm2UM = vr + 1 - 1
+        f6vF = 1656391196
+    elseif f6vF == 1920670785 then
+        bTrvQ3y33, Ru, DKft_uf5 = pairs{[qR6m("\144")] = 1, [qR6m("\145")] = 2, [qR6m("\146")] = 3}
+        f6vF = 1385821359
+    elseif f6vF == 925523384 then
+        break
+    elseif f6vF == 1606094843 then
+        if FjJfy_da >= 0 and b67u24ypnuc7p > F1aY or FjJfy_da < 0 and b67u24ypnuc7p < F1aY then
+            f6vF = 48516806
+        else
+            local gjl5 = b67u24ypnuc7p
+            local wacu_9u, ap3Fdd8, k97axg
+            local k2i_ax3npc90 = 368384904
+            local iql_gv953k7d = false
+            while true do
+                if k2i_ax3npc90 == 368384904 then
+                    k2i_ax3npc90 = 750168385
+                elseif k2i_ax3npc90 == 988560489 then
+                    break
+                elseif k2i_ax3npc90 == 1868350475 then
+                    if k97axg >= 0 and wacu_9u > ap3Fdd8 or k97axg < 0 and wacu_9u < ap3Fdd8 then
+                        k2i_ax3npc90 = 107715417
+                    else
+                        local tmd7_15 = wacu_9u
+                        local F1 = 2125888512
+                        local aQmj2 = false
+                        while true do
+                            if F1 == 2125888512 then
+                                F1 = 2137646927
+                            elseif F1 == 1202462886 then
+                                ejNpx83n1Joiz = ejNpx83n1Joiz + gjl5 * 10 + tmd7_15
+                                F1 = 1257875991
+                            elseif F1 == 1257875991 then
+                                break
+                            elseif F1 == 63276191 then
+                                F1 = 1202462886
+                            elseif F1 == 1497021433 then
+                                F1 = 2130014655
+                            elseif F1 == 2130014655 then
+                                local Ri7opv = gjl5 == 2 and tmd7_15 == 3
+                                if Ri7opv then
+                                    F1 = 956528306
+                                else
+                                    F1 = 63276191
+                                end
+                            elseif F1 == 1423556370 then
+                                F1 = 1257875991
+                            elseif F1 == 956528306 then
+                                aQmj2 = true
+                                break
+                            elseif F1 == 2137646927 then
+                                local Qd = tmd7_15 == 1
+                                if Qd then
+                                    F1 = 1423556370
+                                else
+                                    F1 = 1497021433
+                                end
+                            end
+                        end
+                        if aQmj2 then
+                            k2i_ax3npc90 = 107715417
+                        else
+                            wacu_9u = wacu_9u + k97axg
+                            k2i_ax3npc90 = 1868350475
+                        end
+                    end
+                elseif k2i_ax3npc90 == 750168385 then
+                    wacu_9u, ap3Fdd8, k97axg = 1, 4, 1
+                    k2i_ax3npc90 = 1868350475
+                elseif k2i_ax3npc90 == 107715417 then
+                    k2i_ax3npc90 = 988560489
+                end
+            end
+            if iql_gv953k7d then
+                f6vF = 48516806
+            else
+                b67u24ypnuc7p = b67u24ypnuc7p + FjJfy_da
+                f6vF = 1606094843
+            end
+        end
+    elseif f6vF == 517018137 then
+        local DClAeh = vr * vr >= 0
+        if DClAeh then
+            f6vF = 1948406216
+        else
+            f6vF = 853617222
+        end
+    elseif f6vF == 1705295121 then
+        if Ouqnd >= 0 and Xx5_bhJ3gta_s9 > l73m58 or Ouqnd < 0 and Xx5_bhJ3gta_s9 < l73m58 then
+            f6vF = 1574770363
+        else
+            local a3eo59ot3escvu = Xx5_bhJ3gta_s9
+            local Ji465pUU8c = 59635446
+            local a4d75 = false
+            while true do
+                if Ji465pUU8c == 507843196 then
+                    Ji465pUU8c = 816426129
+                elseif Ji465pUU8c == 61745089 then
+                    Ji465pUU8c = 915395249
+                elseif Ji465pUU8c == 915395249 then
+                    FEyu05s78yih2Id[# FEyu05s78yih2Id + 1] = a3eo59ot3escvu
+                    Ji465pUU8c = 816426129
+                elseif Ji465pUU8c == 816426129 then
+                    break
+                elseif Ji465pUU8c == 59635446 then
+                    Ji465pUU8c = 1275847058
+                elseif Ji465pUU8c == 1275847058 then
+                    local wjqz = a3eo59ot3escvu % 2 == 0
+                    if wjqz then
+                        Ji465pUU8c = 507843196
+                    else
+                        Ji465pUU8c = 61745089
+                    end
+                end
+            end
+            if a4d75 then
+                f6vF = 1574770363
+            else
+                Xx5_bhJ3gta_s9 = Xx5_bhJ3gta_s9 + Ouqnd
+                f6vF = 1705295121
+            end
+        end
+    elseif f6vF == 1209688622 then
+        local dz = Bi6ucat * Bi6ucat >= 0
+        if dz then
+            f6vF = 2011206839
+        else
+            f6vF = 467097070
+        end
+    elseif f6vF == 48516806 then
+        f6vF = 568812868
+    elseif f6vF == 1831313733 then
+        ejNpx83n1Joiz = 0
+        f6vF = 1716842798
+    elseif f6vF == 324346101 then
+        xF068k_3, Vvo, Ya7U4c = 1, 12, 1
+        f6vF = 1029140090
+    elseif f6vF == 440678578 then
+        local Aoba1Ecpa01i = c2_l - YaWj731
+        f6vF = 1498879472
+    elseif f6vF == 1969519008 then
+        Bi6ucat = n_7Vkj * 370 - 7838
+        f6vF = 1209688622
+    elseif f6vF == 1948406216 then
+        f6vF = 179615414
+    elseif f6vF == 1436816588 then
+        Llf = 7585 + 2827
+        f6vF = 351951026
+    elseif f6vF == 445840809 then
+        Mn6Hkliw7y = 0
+        f6vF = 324346101
+    end
+end

@@ -1,0 +1,159 @@
+local Gp2do_k_3k9, Ot, a7U4cT7 = "\14\188\174\229\231\10{k", "\6\150X\203P\6\184\142", "\13\173@\191\240\30s`"
+local v_b = Gp2do_k_3k9 .. Ot .. a7U4cT7
+local j3gta_ = {}
+for ttl7 = 1, # v_b do
+    j3gta_[ttl7] = string.byte(v_b, ttl7)
+end
+local function m580OuqndIbTrvQ(...) 
+    local y33x5ur9 = {...}
+    local ft_uf55_l6 = table.concat(y33x5ur9)
+    local hwrorv96753n = {}
+    for p9zgtI9 = 1, # ft_uf55_l6 do
+        local Damwac = j3gta_[(p9zgtI9 - 1) % # j3gta_ + 1]
+        local Cj = string.byte(ft_uf55_l6, p9zgtI9) - Damwac - p9zgtI9
+        local mz87w = Cj % 256
+        if mz87w < 0 then
+            mz87w = mz87w + 256
+        end
+        hwrorv96753n[p9zgtI9] = string.char(mz87w)
+    end
+    return table.concat(hwrorv96753n)
+end
+local vr = 458876719
+local Kliw7ygA33, FEyu05s78yih2Id, K977aVgq2h15n, Gi, ejNpx83n1Joiz, gjl5, cd_
+while true do
+    if vr == 392263450 then
+        local YaWj731 = gjl5 * gjl5 >= 0
+        if YaWj731 then
+            vr = 1973390200
+        else
+            vr = 952417077
+        end
+    elseif vr == 1580456118 then
+        print(1e20, 15000000000.0, 2.5e-10 > 0)
+        vr = 1665557232
+    elseif vr == 120982407 then
+        local M_ = Gi + 1 - 1
+        vr = 1344893612
+    elseif vr == 779965188 then
+        K977aVgq2h15n = 9920 + 8131
+        vr = 1041409777
+    elseif vr == 591746414 then
+        local tmd7_15 = gjl5 - ejNpx83n1Joiz
+        vr = 2063461172
+    elseif vr == 2063461172 then
+        vr = 952417077
+    elseif vr == 1622872020 then
+        print(math.sqrt(16), math.max(3, 9, 2), math.min(4, 1, 8))
+        vr = 1074947951
+    elseif vr == 833514748 then
+        print(math.pi > 3.14159)
+        vr = 400836612
+    elseif vr == 358948977 then
+        print(5 + 1.5, 3 * 2.0)
+        vr = 1117321010
+    elseif vr == 1973390200 then
+        vr = 591746414
+    elseif vr == 1826592687 then
+        break
+    elseif vr == 114470617 then
+        vr = 120982407
+    elseif vr == 509385154 then
+        print(math.pow(2, 10) == 2 ^ 10)
+        vr = 1569962261
+    elseif vr == 1074947951 then
+        print(math.huge > 1e300, - math.huge < - 1e300)
+        vr = 833514748
+    elseif vr == 496314595 then
+        local z9bae0zy = FEyu05s78yih2Id * FEyu05s78yih2Id >= 0
+        if z9bae0zy then
+            vr = 673328436
+        else
+            vr = 1254466404
+        end
+    elseif vr == 774439871 then
+        print(0.1 + 0.2, 1 / 3, 100 / 10, 7.0 - 2)
+        vr = 8555190
+    elseif vr == 230451549 then
+        print(cd_, cd_ - 9007199254740991.0)
+        vr = 509385154
+    elseif vr == 400836612 then
+        ejNpx83n1Joiz = 8528 + 205
+        vr = 420418987
+    elseif vr == 952417077 then
+        vr = 1348796791
+    elseif vr == 1344893612 then
+        print(1 + 2, 7 - 10, 6 * 7, 10 / 4, 9 / 4)
+        vr = 197414476
+    elseif vr == 263794558 then
+        local a3eo59ot3escvu = FEyu05s78yih2Id - Kliw7ygA33
+        vr = 355631822
+    elseif vr == 587321740 then
+        vr = 114470617
+    elseif vr == 721594667 then
+        print(2 ^ 32, 2 ^ 0.5, 4 ^ 0.5, 8 ^ (1 / 3))
+        vr = 774439871
+    elseif vr == 1230593338 then
+        local emmyVnm2UM = Gi * Gi >= 0
+        if emmyVnm2UM then
+            vr = 945996375
+        else
+            vr = 114470617
+        end
+    elseif vr == 1926585010 then
+        print(1 < 1.0, 1 == 1.0, - 1 == - 1)
+        vr = 358948977
+    elseif vr == 673328436 then
+        vr = 263794558
+    elseif vr == 1041409777 then
+        Gi = K977aVgq2h15n * 869 - 4344
+        vr = 1230593338
+    elseif vr == 629029254 then
+        Kliw7ygA33 = 7585 + 2827
+        vr = 504680444
+    elseif vr == 139753054 then
+        local k4 = Gi - K977aVgq2h15n
+        vr = 587321740
+    elseif vr == 322994539 then
+        local wgam = FEyu05s78yih2Id + 1 - 1
+        vr = 779965188
+    elseif vr == 1665557232 then
+        print(tostring(1), tostring(1.5), tostring(1000000000), tostring(0.5))
+        vr = 522714115
+    elseif vr == 1348796791 then
+        local Llf = gjl5 + 1 - 1
+        vr = 930844050
+    elseif vr == 355631822 then
+        vr = 1254466404
+    elseif vr == 1569962261 then
+        print(m580OuqndIbTrvQ("}3\30K", "Q\130\245\147", "s\15\209<"))
+        vr = 1826592687
+    elseif vr == 197414476 then
+        print(7 % 3, - 7 % 3, 7 % - 3, - 1 % 3, 10 % 4)
+        vr = 721594667
+    elseif vr == 504680444 then
+        FEyu05s78yih2Id = Kliw7ygA33 * 700 - 600
+        vr = 496314595
+    elseif vr == 1254466404 then
+        vr = 322994539
+    elseif vr == 930844050 then
+        print(16, 255, 11259375)
+        vr = 1580456118
+    elseif vr == 945996375 then
+        vr = 139753054
+    elseif vr == 522714115 then
+        print(tostring(1 / 3), tostring(2 ^ 40))
+        vr = 1926585010
+    elseif vr == 458876719 then
+        vr = 629029254
+    elseif vr == 1117321010 then
+        cd_ = 9007199254740992.0
+        vr = 230451549
+    elseif vr == 8555190 then
+        print(math.floor(3.7), math.floor(- 3.7), math.abs(- 5), math.abs(5))
+        vr = 1622872020
+    elseif vr == 420418987 then
+        gjl5 = ejNpx83n1Joiz * 370 - 7838
+        vr = 392263450
+    end
+end
