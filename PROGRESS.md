@@ -59,6 +59,13 @@
 - 系统调研 Luraph 及同类商业混淆器（含 Luraph v14 的公开逆向分析）
 - 完成「分层混淆体系 + 自定义 VM 设计草案 + 实现规划」
 - 成果文档：**`docs/obfuscation-research.md`**（本次学习的完整记录）
+- **Luraph v15 样本两轮分析**（`docs/luraph15-analysis.md`）：
+  第一轮（架构/解码流水线/VM/别名表/PRNG）+ 第二轮深挖（15 项新验证机制：
+  continue 扁平分发/帧运行器原语解包/双帧运行器/UL 跨 yield 传表/常量补码/
+  多 LCG/错误重写状态机/共享元表寄存器银行等）+ **25 项功能对比表**
+  （采纳 20 / 延后 v2 2 / 拒绝 2 / 我方独有 1——v15 已知手段已全覆盖）
+- **实施计划**（`docs/implementation-plan.md`）：L1–L7 每个方法的模块归属/
+  优先级/状态 + 里程碑 M0–M6 验收标准
 
 ### 1.4 Rust 工具链（✅ 完成，hello world 构建运行通过）
 
@@ -96,7 +103,10 @@ luraph/
 ├── README.md
 ├── docs/
 │   ├── obfuscation-research.md # 混淆技术学习记录（VM 设计草案 + 实现规划 + 语料清单）
-│   └── luraph15-analysis.md    # Luraph v15 样本分析报告（三层分发/7-bit 分块/LCG 密钥流）
+│   ├── luraph15-analysis.md    # Luraph v15 样本分析报告（含第二轮深挖 15 项新机制
+│   │                           #   + 25 项功能对比表 + 分析边界声明）
+│   └── implementation-plan.md  # ★ 实施计划：将实施哪些混淆方法（L1–L7 逐项）+ 目前进度
+│                               #   + 里程碑 M0–M6 验收标准（活文档）
 ├── samples/
 │   └── luraph15.txt            # 用户提供的 Luraph v15.0 混淆样本（171KB）
 └── lph/                        # 过渡参考代码（Lua，将来被 Rust 取代）
