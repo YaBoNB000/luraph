@@ -1,14 +1,15 @@
 //! luraph-rs — commercial-grade Lua 5.1 / Luau obfuscator.
 //!
-//! M0 (foundation): parse -> resolve -> print (round-trip, no obfuscation
-//! passes yet). Later milestones add: mangle/strings/flatten/junk/numbers/
-//! body/vmgen passes and presets.
+//! Pipeline: parse -> symtab -> [mangle] -> [strings] -> print
+//! (later: desugar/flatten/junk/numbers/body/antidbg/vmgen)
 
 mod ast;
 mod lexer;
+mod mangle;
 mod parser;
 mod printer;
 mod rng;
+mod strings;
 mod symtab;
 
 use std::process::ExitCode;
@@ -19,6 +20,9 @@ struct Options {
 	dialect: &'static str, // "5.1" | "luau"
 	input: String,
 	output: Option<String>,
+	seed: u64,
+	do_mangle: bool,
+	do_strings: bool,
 }
 
 fn print_help() {
@@ -29,10 +33,12 @@ Usage: luraph-rs [options] <input.lua> [output.lua]
 Options:
   --dialect <5.1|luau>   target dialect (default: 5.1)
   -o, --output <file>    output file (default: stdout)
+  --seed <n>             PRNG seed (default: time-based; use a fixed seed
+                         for reproducible output)
+  --no-mangle            disable L1 name mangling (default: enabled)
+  --no-strings           disable L2 string encryption (default: enabled)
   -h, --help             show this help
   --version              show version
-
-M0: round-trip pipeline (parse -> resolve -> print), no obfuscation passes.
 ",
 		VERSION
 	);
@@ -44,6 +50,9 @@ fn main() -> ExitCode {
 		dialect: "5.1",
 		input: String::new(),
 		output: None,
+		seed: 0,
+		do_mangle: true,
+		do_strings: true,
 	};
 	let mut i = 0;
 	let mut positional: Vec<String> = Vec::new();
@@ -80,6 +89,22 @@ fn main() -> ExitCode {
 				}
 				opts.output = Some(args[i].clone());
 			}
+			"--seed" => {
+				i += 1;
+				if i >= args.len() {
+					eprintln!("error: --seed requires a number");
+					return ExitCode::FAILURE;
+				}
+				match args[i].parse() {
+					Ok(v) => opts.seed = v,
+					Err(_) => {
+						eprintln!("error: --seed must be a number");
+						return ExitCode::FAILURE;
+					}
+				}
+			}
+			"--no-mangle" => opts.do_mangle = false,
+			"--no-strings" => opts.do_strings = false,
 			s if s.starts_with('-') => {
 				eprintln!("error: unknown option '{}'", s);
 				print_help();
@@ -100,6 +125,15 @@ fn main() -> ExitCode {
 	}
 
 	let luau = opts.dialect == "luau";
+	let seed = if opts.seed == 0 {
+		// time-based default seed
+		std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.map(|d| d.as_nanos() as u64)
+			.unwrap_or(1)
+	} else {
+		opts.seed
+	};
 
 	let src = match std::fs::read_to_string(&opts.input) {
 		Ok(s) => s,
@@ -111,9 +145,17 @@ fn main() -> ExitCode {
 
 	let result = (|| -> Result<String, String> {
 		let mut block = parser::parse(&src, luau).map_err(|e| e.to_string())?;
-		let table = symtab::resolve(&mut block);
-		let out = printer::print_chunk(&table, &block);
-		Ok(out)
+		let mut table = symtab::resolve(&mut block);
+		let mut rng = rng::Rng::new(seed);
+		if opts.do_mangle {
+			mangle::mangle(&mut table, &mut rng);
+		}
+		if opts.do_strings {
+			let reserved: std::collections::HashSet<String> =
+				table.globals.iter().cloned().collect();
+			strings::apply_strings(&mut block, &mut table, &mut rng, &reserved);
+		}
+		Ok(printer::print_chunk(&table, &block))
 	})();
 
 	match result {

@@ -93,19 +93,14 @@ impl<'a> Printer<'a> {
 				self.out.push_str(&self.ind());
 				self.out.push_str("end");
 			}
-			Stmt::FuncDecl { parts, ismethod, func } => {
+			Stmt::FuncDecl { obj, name, ismethod, func } => {
 				self.out.push_str(&self.ind());
 				self.out.push_str("function ");
-				for (i, p) in parts.iter().enumerate() {
-					if i > 0 {
-						if i == parts.len() - 1 && *ismethod {
-							self.out.push(':');
-						} else {
-							self.out.push('.');
-						}
-					}
-					self.out.push_str(p);
+				if let Some(o) = obj {
+					self.print_expr(o, Ctx::Base);
+					self.out.push(if *ismethod { ':' } else { '.' });
 				}
+				self.out.push_str(name);
 				self.print_func_signature(func);
 				self.indent += 1;
 				self.out.push('\n');
@@ -278,19 +273,23 @@ impl<'a> Printer<'a> {
 
 	fn print_func_signature(&mut self, f: &FuncDef) {
 		self.out.push('(');
-		let params: Vec<&str> = if f.has_self {
-			f.params[1..].iter().map(|s| s.as_str()).collect()
-		} else {
-			f.params.iter().map(|s| s.as_str()).collect()
-		};
-		for (i, p) in params.iter().enumerate() {
-			if i > 0 {
+		// for method declarations (`:name`), params[0] is the implicit `self`
+		// provided by the `:` syntax — the body references it by the fixed
+		// name `self` (keep_name), so skip it in the printed signature
+		let start = if f.has_self { 1 } else { 0 };
+		for i in start..f.params.len() {
+			if i > start {
 				self.out.push_str(", ");
 			}
-			self.out.push_str(p);
+			let name = if i < f.param_syms.len() {
+				self.table.name_of(f.param_syms[i])
+			} else {
+				f.params[i].as_str()
+			};
+			self.out.push_str(name);
 		}
 		if f.vararg {
-			if !params.is_empty() {
+			if !f.params.is_empty() {
 				self.out.push_str(", ");
 			}
 			self.out.push_str("...");
@@ -399,13 +398,18 @@ impl<'a> Printer<'a> {
 				}
 				self.out.push('}');
 			}
-			Expr::Function { params, vararg, body } => {
+			Expr::Function { params, param_syms, vararg, body } => {
 				self.out.push_str("function(");
 				for (i, p) in params.iter().enumerate() {
 					if i > 0 {
 						self.out.push_str(", ");
 					}
-					self.out.push_str(p);
+					let name = if i < param_syms.len() {
+						self.table.name_of(param_syms[i])
+					} else {
+						p.as_str()
+					};
+					self.out.push_str(name);
 				}
 				if *vararg {
 					if !params.is_empty() {
@@ -484,17 +488,28 @@ fn is_printable_key(b: &[u8]) -> bool {
 
 /// Byte-exact string literal content (UTF-8-aware: valid printable UTF-8
 /// passes through; everything else is \ddd-escaped).
+///
+/// IMPORTANT: a decimal escape followed by a literal digit byte would merge
+/// on re-lex (`\1` + `2` => `\12`). When the next byte is a digit we emit a
+/// 3-digit zero-padded escape (`\001`) so the lexer stops at exactly 3 digits.
 pub fn print_string_bytes(bytes: &[u8]) -> String {
 	let mut out = String::new();
 	let mut i = 0usize;
 	while i < bytes.len() {
 		let b = bytes[i];
+		let next_is_digit = bytes.get(i + 1).map_or(false, |&n| n >= b'0' && n <= b'9');
 		if b < 0x80 {
 			match b {
 				b'"' => out.push_str("\\\""),
 				b'\\' => out.push_str("\\\\"),
 				c if (0x20..0x7f).contains(&c) => out.push(c as char),
-				_ => out.push_str(&format!("\\{}", b)),
+				_ => {
+					if next_is_digit {
+						out.push_str(&format!("\\{:03}", b));
+					} else {
+						out.push_str(&format!("\\{}", b));
+					}
+				}
 			}
 			i += 1;
 		} else {

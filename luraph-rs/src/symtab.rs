@@ -12,6 +12,10 @@ use crate::ast::*;
 pub struct Sym {
 	pub name: String,
 	pub is_param: bool,
+	/// true for the implicit `self` param of a method declaration — the `:`
+	/// syntax binds the local to the FIXED name `self`, so it must not be
+	/// mangled
+	pub keep_name: bool,
 }
 
 pub struct SymTable {
@@ -59,6 +63,7 @@ impl<'a> Resolver<'a> {
 		self.table.syms.push(Sym {
 			name: name.to_string(),
 			is_param,
+			keep_name: false,
 		});
 		let id = (self.table.syms.len() - 1) as SymId;
 		self.scopes.last_mut().unwrap().push((name.to_string(), id));
@@ -122,17 +127,27 @@ impl<'a> Resolver<'a> {
 					}
 				}
 			}
-			Expr::Function { body, .. } => {
-				self.resolve_func_body(body, &[]);
+			Expr::Function { params, param_syms, body, .. } => {
+				self.resolve_func_body(body, params, param_syms, false);
 			}
 			_ => {}
 		}
 	}
 
-	fn resolve_func_body(&mut self, body: &mut Block, params: &[String]) {
+	fn resolve_func_body(
+		&mut self,
+		body: &mut Block,
+		params: &[String],
+		param_syms: &mut Vec<u32>,
+		self_param: bool,
+	) {
 		self.new_scope();
 		for p in params {
-			self.declare(p, true);
+			param_syms.push(self.declare(p, true));
+		}
+		if self_param && !param_syms.is_empty() {
+			let id = param_syms[0];
+			self.table.syms[id as usize].keep_name = true;
 		}
 		self.resolve_block(body);
 		self.pop_scope();
@@ -157,12 +172,27 @@ impl<'a> Resolver<'a> {
 				}
 			}
 			Stmt::LocalFunc { name, sym, func } => {
-				// body does NOT see `name` (Lua 5.1 semantics)
-				self.resolve_func_body(&mut func.body, &func.params);
+				// `local function f`: f IS visible inside its own body
+				// (recursive local functions work in both 5.1 and Luau —
+				// verified empirically; 5.2 changed this, we don't target it)
 				*sym = self.declare(name, false);
+				self.resolve_func_body(
+					&mut func.body,
+					&func.params,
+					&mut func.param_syms,
+					false,
+				);
 			}
-			Stmt::FuncDecl { func, .. } => {
-				self.resolve_func_body(&mut func.body, &func.params);
+			Stmt::FuncDecl { obj, func, .. } => {
+				if let Some(o) = obj {
+					self.resolve_expr(o);
+				}
+				self.resolve_func_body(
+					&mut func.body,
+					&func.params,
+					&mut func.param_syms,
+					func.has_self,
+				);
 			}
 			Stmt::Assign { targets, values } => {
 				// resolve values first (LHS may alias globals; targets are

@@ -128,6 +128,9 @@ pub enum Expr {
 	Table { fields: Vec<TableField> },
 	Function {
 		params: Vec<String>,
+		/// SymId per parameter (filled by symtab; printer uses it so that
+		/// mangling renames the declaration, not just body references)
+		param_syms: Vec<SymId>,
 		vararg: bool,
 		body: Block,
 	},
@@ -161,7 +164,10 @@ pub enum Stmt {
 	},
 	LocalFunc { name: String, sym: SymId, func: Box<FuncDef> },
 	FuncDecl {
-		parts: Vec<String>,
+		/// dotted object chain (None for bare `function f()`); the LAST name
+		/// (or method name) is in `name`; obj is the expr before it
+		obj: Option<Expr>,
+		name: String,
 		ismethod: bool,
 		func: Box<FuncDef>,
 	},
@@ -193,6 +199,9 @@ pub enum Stmt {
 #[derive(Debug, Clone)]
 pub struct FuncDef {
 	pub params: Vec<String>,
+	/// SymId per parameter (filled by symtab; used by the printer so that
+	/// mangling renames the declaration, not just the body references)
+	pub param_syms: Vec<SymId>,
 	pub vararg: bool,
 	pub body: Block,
 	/// true when this is a method declaration (params[0] == "self" implicit)

@@ -1,8 +1,9 @@
 # 项目进度（PROGRESS）
 
 > 最后更新：2026-08-23
-> 当前状态：✅ 环境 ✅ 研究 ✅ v15 分析 🟢 **M0 地基完成**（用户已发「开始」信号；
-> Rust 骨架 + lexer/parser/symtab/printer 完成，round-trip 62 项检查全绿）
+> 当前状态：✅ 环境 ✅ 研究 ✅ v15 分析 ✅ M0 地基 ✅ **M1 完成**
+> （L1 名称混淆 + L2 字符串加密；全语料混淆示例见 `luraph-rs/examples/`；
+> 矩阵 62 项全绿）
 
 ## 0. 需求（用户确认）
 
@@ -111,15 +112,32 @@
 - Luau CLI 构建无尾调用优化 → 共享语料递归深度限 5000
 - Luau 0.735 无花括号函数体 `{}`（新语法）
 
+### ✅ M1 完成（2026-08-23）
+
+| 模块 | 文件 | 说明 |
+|---|---|---|
+| L1 名称混淆 | `luraph-rs/src/mangle.rs` | 局部/参数/循环变量/local function 名 → 随机名（短/中/长混合；避开关键字+程序全局名+互相碰撞）；**隐式 `self` 保持固定名**（`:m()` 语法绑定固定名 `self`） |
+| L2 字符串加密 | `luraph-rs/src/strings.rs` | 全部字符串 → `dec(chunk1,chunk2,chunk3)` 运行时解密；加性密钥流 `enc=(b+key[i%24]+i)%256`（5.1 无位运算安全，双方言 `%` 均 floor——实测）；密钥 3 段拆分嵌入+运行时展开；解密器/密钥表名随机化 |
+| 混淆示例 | `luraph-rs/examples/*.lua` | **17 个语料 × 对应方言的混淆输出**（`tests/gen_examples.sh` 重新生成） |
+
+**M1 验收**：矩阵 62/62 全绿（混淆后输出在双解释器上与原代码输出一致）。
+
+**M1 阶段新发现/修复**：
+- `local function f` 自引用在 **5.1 和 Luau 都可见**（递归 local function 双方言可用；
+  5.2 才改为不可见，我们两个目标方言都不受影响）→ symtab 先声明后解析函数体
+- 隐式 `self` 参数不可重命名（`:m()` 固定绑定名 `self`）→ `Sym.keep_name` 标志
+- 打印器转义陷阱：`\1` 后跟数字字节会被 re-lex 合并成 `\12` → 后随数字时强制
+  3 位零填充 `\001`
+- `function V.fn` 点链对象必须是 Expr（过 symtab/mangle），不能是裸字符串
+- 匿名函数参数必须进 symtab（之前漏了，参数会逃过混淆）
+
 ### ⬜ 剩余（按 implementation-plan.md 里程碑推进）
 
-- [ ] **M1**：`mangle`(L1 名称混淆) + `strings`(L2 字符串加密 + 运行时加载器)
-- [ ] **M2**：`desugar`/`flatten`/`junk`(L3 控制流：CFG 扁平化状态机)
+- [ ] **M2**：`desugar`/`flatten`/`junk`（L3 控制流：CFG 扁平化状态机——核心视觉特征）
 - [ ] **M3**：`numbers`(L4) + `body`(L5 整体加密) + `antidbg`(L7)
-- [ ] **M4/M5**：**VM（L6）**：`vmgen/isa.rs` + `compiler.rs` + `template.rs`
-  + VMC 每构建随机化
+- [ ] **M4/M5**：**VM（L6）**：`vmgen/isa.rs` + `compiler.rs` + `template.rs` + VMC 每构建随机化
 - [ ] **M6**：CLI 预设（low/medium/high/vm）+ README 产品文档
-- 每个 pass 完成后执行强制工作流（矩阵全绿才算完成）
+- 每个 pass 完成后执行强制工作流（矩阵全绿 + examples 重新生成才算完成）
 
 ## 4. 目录结构（当前）
 
@@ -150,10 +168,15 @@ luraph/
 │   │   ├── parser.rs           #   双方言语法（Pratt/注解剥离/去糖）
 │   │   ├── symtab.rs           #   作用域解析
 │   │   ├── printer.rs          #   打印器（优先级括号/字节精确字符串）
-│   │   └── rng.rs              #   Park-Miller PRNG
+│   │   ├── mangle.rs             #   L1 名称混淆
+│   │   ├── strings.rs            #   L2 字符串加密 + 运行时解密加载器
+│   │   ├── rng.rs              #   Park-Miller PRNG
 │   └── tests/
 │       ├── cases/*.lua         #   17 个测试语料
-│       └── run_tests.sh        #   测试矩阵（62 项检查）
+│       ├── run_tests.sh        #   测试矩阵（62 项检查）
+│       └── gen_examples.sh     #   生成混淆示例
+├── examples/（在 luraph-rs/examples/）
+│   └── *.5.1.lua / *.luau.lua  # ★ 所有常用语法的混淆示例（对照 tests/cases/）
 └── lph/                        # 早期 Lua 参考实现（已被 Rust 取代，仅存档）
     ├── rng.lua
     ├── lexer.lua

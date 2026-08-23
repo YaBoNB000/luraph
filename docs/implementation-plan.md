@@ -132,6 +132,11 @@
 
 ## 4. 更新日志
 
+- **2026-08-23（M1 完成）** mangle(L1) + strings(L2) 完成：名称混淆（含
+  self keep_name 规则）、加性密钥流字符串加密（密钥 3 段拆分）、17 个语料的
+  混淆示例生成到 `luraph-rs/examples/`。矩阵 62/62 全绿。新发现：local function
+  自引用双方言可见；转义数字合并陷阱；FuncDecl 点链对象需走 symtab。
+  下一步：M2 = L3 控制流（desugar + CFG 扁平化 + junk）。
 - **2026-08-23（M0 完成）** Rust 骨架 + lexer/parser/symtab/printer 完成；
   17 个测试语料 × 双方言 62 项检查全绿（round-trip 语义等价验证通过）；
   新增方言发现：`\x` 转义差异、5.1 无 coroutine.close、Luau CLI 无 TCO、

@@ -286,15 +286,27 @@ impl Parser {
 
 	fn funcdecl(&mut self) -> Result<Stmt, ParseError> {
 		let first = self.expect(TokKind::Name, None)?;
-		let mut parts = vec![first.text.clone()];
+		let mut obj: Option<Expr> = None;
+		let mut name = first.text.clone();
 		let mut ismethod = false;
+		// push the current `name` into the object chain
+		let push = |obj: &mut Option<Expr>, name: String| {
+			let cur = match obj.take() {
+				None => Expr::Ident { name, sym: None },
+				Some(o) => Expr::Dot {
+					obj: Box::new(o),
+					name,
+				},
+			};
+			*obj = Some(cur);
+		};
 		loop {
 			if self.eat(TokKind::Punct, Some(".")) {
-				let n = self.expect(TokKind::Name, None)?;
-				parts.push(n.text);
+				push(&mut obj, name.clone());
+				name = self.expect(TokKind::Name, None)?.text;
 			} else if self.eat(TokKind::Punct, Some(":")) {
-				let n = self.expect(TokKind::Name, None)?;
-				parts.push(n.text);
+				push(&mut obj, name.clone());
+				name = self.expect(TokKind::Name, None)?.text;
 				ismethod = true;
 				break;
 			} else {
@@ -303,7 +315,8 @@ impl Parser {
 		}
 		let func = self.funcbody(ismethod)?;
 		Ok(Stmt::FuncDecl {
-			parts,
+			obj,
+			name,
 			ismethod,
 			func: Box::new(func),
 		})
@@ -347,6 +360,7 @@ impl Parser {
 		self.expect_kw("end")?;
 		Ok(FuncDef {
 			params,
+			param_syms: Vec::new(),
 			vararg,
 			body,
 			has_self,
@@ -738,6 +752,7 @@ impl Parser {
 					let f = self.funcbody(false)?;
 					Ok(Expr::Function {
 						params: f.params,
+						param_syms: f.param_syms,
 						vararg: f.vararg,
 						body: f.body,
 					})
@@ -1011,8 +1026,9 @@ fn clone_expr(e: &Expr) -> Expr {
 				})
 				.collect(),
 		},
-		Expr::Function { params, vararg, body } => Expr::Function {
+		Expr::Function { params, param_syms, vararg, body } => Expr::Function {
 			params: params.clone(),
+			param_syms: param_syms.clone(),
 			vararg: *vararg,
 			body: clone_block(body),
 		},
@@ -1040,8 +1056,9 @@ fn clone_stmt(s: &Stmt) -> Stmt {
 			sym: *sym,
 			func: Box::new(clone_func(func)),
 		},
-		Stmt::FuncDecl { parts, ismethod, func } => Stmt::FuncDecl {
-			parts: parts.clone(),
+		Stmt::FuncDecl { obj, name, ismethod, func } => Stmt::FuncDecl {
+			obj: obj.as_ref().map(clone_expr),
+			name: name.clone(),
 			ismethod: *ismethod,
 			func: Box::new(clone_func(func)),
 		},
@@ -1091,6 +1108,7 @@ fn clone_stmt(s: &Stmt) -> Stmt {
 fn clone_func(f: &FuncDef) -> FuncDef {
 	FuncDef {
 		params: f.params.clone(),
+		param_syms: f.param_syms.clone(),
 		vararg: f.vararg,
 		body: clone_block(&f.body),
 		has_self: f.has_self,
