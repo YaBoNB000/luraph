@@ -351,8 +351,47 @@ tests/
 
 ---
 
-## 6. 参考资料
+## 6. 测试语料清单（所有常用语法，强制覆盖）
 
+> 每次混淆模块改动后，以下语料必须全部通过 `lua51` + `luau` 双方言
+> 语法校验（`loadstring`/`luau-compile`）+ 运行对比（stdout/退出码一致）。
+> 语料文件：`tests/cases/*.lua`（待「开始」后建立），Luau 专属用例单独标记。
+
+1. **运算符与优先级**：全部二元/一元运算符；易错组合 `-2^2`、`2^-3`、
+   `not x and y`、`1..2..3`、`a and b or c`、`#t ^ 2`
+2. **控制流**：if/elseif/else、嵌套 if、while、repeat-until、数字 for（含负步长/无步长）、
+   泛型 for（pairs/ipairs/自定义迭代器）、do 块、break 在多层嵌套各位置
+3. **函数**：local/global/方法（`t:m`）定义、嵌套闭包、upvalue 读/写、递归、
+   互相递归、匿名函数、变参（`...`、`select`、`unpack`）、尾调用
+   （`return f(...)`、`return ...`）、`local function` 自引用（不可见语义）
+4. **表**：`{}`、`{a=1}`、`[k]=v`、混合数组/哈希、多维索引、方法调用链、
+   `table.insert/remove/sort/concat/maxn`
+5. **元表**：`__index`（表/函数）、`__newindex`、`__call`、`__add` 等算术 metamethod、
+   `__tostring`、`__len`、`setmetatable`/`getmetatable`/`rawget`/`rawset`
+6. **字符串**：单/双引号、全部转义（`\n \t \r \a \b \f \v \\ \" \' \ddd \xhh`、
+   含 `\0`）、长字符串 `[[ ]]` / `[==[ ]==]`、换行续行、`string.format/sub/rep/
+   gmatch/gsub/match/find/byte/char`
+7. **数字**：整数、浮点、十六进制 `0x1F`、科学计数 `1.5e-3`、`#` 取长、
+   浮点边界（`0.1+0.2`、`math.huge`、`-0`、`1e308`）、`math.floor/abs/sqrt/random`
+8. **多值语义**：`a,b = f()`、`local a,b = f()`、`return a, b`、`{f()}` 尾展开、
+   `a and b or c` 多值、`unpack(t)`、`#f()`
+9. **标准库/运行时**：`print`、`error`+`pcall`/`xpcall`、`tostring/type/tonumber`、
+   `os.time/clock/date`、`coroutine.create/resume/yield/wait`（含跨协程多值）、
+   `select`
+10. **空/边界**：空函数体、空 if 分支、空串 `""`、单语句脚本、`return`（无值）、
+    顶层表达式语句
+11. **Luau 专属**（仅 luau 目标验证）：`continue`、复合赋值 `+= -= *= /= //= %= ^=`、
+    `//` 负数、反引号插值（含 `\{` 转义、多表达式、无占位符）、类型注解（局部/参数/
+    返回/泛型/联合/交叉/表类型）、`type X = ...` 别名、`export type`
+12. **风格脚本**：模拟 Roblox 事件连接（`Connect`/`Disconnect` 闭包模式）、
+    游戏主循环、require/module 模式（`local M = {} return M`）
+
+---
+
+## 7. 参考资料
+
+0. **Luraph 15 混淆脚本（用户提供 `luraph15.txt`）**：⏳ 文件待重新上传，
+   到位后单独写入 `docs/luraph15-analysis.md` 并在 PROGRESS.md 登记
 1. Luraph 官方资料与 Grokipedia 综述（架构/历史/宣称）
 2. vfxecho/obfuscated-lua —— Luraph v14 逆向分析（SoA 格式/决策树/unrolled VM/LZW 解码器）
 3. CodePal《Luraph Deobfuscator Guide》（分层模型、VM hooking 思路）
