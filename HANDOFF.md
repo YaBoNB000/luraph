@@ -21,12 +21,15 @@
 ## 2. 用户的硬性要求（必须遵守）
 
 1. **在用户明确说「开始」之前，不要编写混淆器代码**（写文档/环境/调研可以）
-2. **每次更改完混淆模块后**（强制工作流）：
+2. **每次更改完混淆模块后**（强制工作流，用户 2026-08-23 再次强调）：
    - 产出一个混淆脚本（用测试语料跑当前已实现的全部 pass）
    - 用 `lua51` 和 `luau` **两个解释器**验证：语法（`loadstring`/`luau-compile`）
      + 实际运行（stdout 与退出码和原始脚本一致）
    - 语料必须覆盖**所有常用语法**（清单见 `docs/obfuscation-research.md` 第 6 节）
    - 任一项不通过 = 该模块改动未完成，不许宣称完成
+   - **更新所有相关 md**（implementation-plan 四处 + PROGRESS + HANDOFF +
+     examples/README，见 §8 第 11 条）
+   - **commit + push 到 GitHub**（分叉时先 merge 远端，勿 force push）
 3. 混淆器语言 = **Rust**（不要用 Lua/其他语言写混淆器本体；`lph/` 里的 Lua
    代码只是早期参考实现，**不复用**）
 4. 学习/调研的结论要**写入笔记**（`docs/`），用户会随时检查笔记
@@ -195,7 +198,15 @@ Roblox buffer 数据层 + base-N token 转义 + 每帧 Lua 闭包 + 超级指令
 9. 字符串 `\0` 合法，输出用转义字面量；长字符串归一化为带转义短串
 10. 所有随机性走种子 PRNG（`--seed` 可复现；同 seed 输出逐字节一致，
     不同 seed 编码完全不同——这是验收标准之一）
-11. 每次重要节点更新 `PROGRESS.md`；学习/分析结论写 `docs/`
+11. **每完成一个混淆 pass（用户已强调，必做，缺一不可）**：
+    ① 矩阵全绿 + examples 重新生成（§2.2 强制工作流）；
+    ② **同步更新所有相关 md**：`docs/implementation-plan.md`（§1 状态列 +
+    §2 进度表 + §3 里程碑 + 更新日志，四处一起改）+ `PROGRESS.md`
+    （进度/目录结构）+ 本文件（状态表/文件地图，如有变化）+
+    `luraph-rs/examples/README.md`（已实现 pass 列表）；
+    ③ **`git commit` + `git push origin <工作分支>` 上传 GitHub**
+    （历史分叉时先 merge 远端再 push，勿 force push）
+    —— 只改代码不更新 md / 不推 GitHub = 该 pass 未完成
 12. 工作分支是 `arena/01a02d14-luraph`（本会话）；新会话的分支以当时的
     环境说明为准，别动 main
 13. Rust 构建：`cd luraph-rs && CARGO_NET_OFFLINE=true /home/user/tools/bin/cargo build`

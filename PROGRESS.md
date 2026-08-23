@@ -18,6 +18,11 @@
      （`lua51 -e 'assert(loadstring(s))'` / `luau-compile`，并实际执行对比输出）
   3. 测试语料必须覆盖**所有常用语法**（见 `docs/obfuscation-research.md` 第 5 节语料清单，
      随模块增长持续补充），任何一步不通过 = 该模块改动未完成
+  4. **同步更新所有相关 md**（用户 2026-08-23 强调）：
+     `docs/implementation-plan.md`（§1 状态列 + §2 进度表 + §3 里程碑 + 更新日志）+
+     `PROGRESS.md` + `HANDOFF.md`（如有变化）+ `luraph-rs/examples/README.md`
+  5. **commit + push 到 GitHub**（历史分叉时先 merge 远端，勿 force push）
+     —— 不更新 md / 不推 GitHub = 该模块改动未完成
 - 用户提供的 **Luraph 15 混淆脚本**（`samples/luraph15.txt`，从 origin/main 拉取）：
   ✅ **分析完成** → `docs/luraph15-analysis.md`（三层分发/7-bit 分块寄存器/
   LCG 状态机密钥流/buffer 数据层/142 handler/脱壳评估/对本项目的设计启示）
