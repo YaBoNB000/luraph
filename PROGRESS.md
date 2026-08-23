@@ -2,8 +2,9 @@
 
 > 最后更新：2026-08-23
 > 当前状态：✅ 环境 ✅ 研究 ✅ v15 分析 ✅ M0 地基 ✅ M1 词法+字符串 ✅ **M2 控制流完成**
-> （L3 CFG 扁平化状态机 + 循环嵌套子状态机 + junk；全语料混淆示例见
-> `luraph-rs/examples/`；矩阵 68 项全绿；下一步 M3 = L4 数值 + L5 整体加密 + L7 反篡改）
+> （L3 CFG 扁平化状态机 + 循环嵌套子状态机 + junk；L1 minify 单行压缩已补齐；
+> 全语料混淆示例见 `luraph-rs/examples/`（现为单行紧凑形态）；矩阵 68 项全绿；
+> 下一步 M3 = L4 数值 + L5 整体加密 + L7 反篡改）
 
 ## 0. 需求（用户确认）
 
@@ -136,6 +137,17 @@
 - `function V.fn` 点链对象必须是 Expr（过 symtab/mangle），不能是裸字符串
 - 匿名函数参数必须进 symtab（之前漏了，参数会逃过混淆）
 
+### ✅ L1 minify 补齐（2026-08-23，M1 域最后一个 pass）
+
+| 模块 | 文件 | 说明 |
+|---|---|---|
+| L1 minify | `luraph-rs/src/minify.rs` | 输出层 **token 感知单行压缩**：用目标方言词法器重 lex 打印器输出，再按最小空白规则重发射（默认开，`--no-minify` 保留缩进形态）。只在真正的危险边界插空格：① 标识符/关键字/数字相邻（`localx`/`elseif`/`1end`）② `-`+`-`（`a - -b` 会黏成 `--` 注释吞掉整行）③ `..` 与数字或 `.` 相邻（`1..2` 会被当坏浮点，Luau 直接拒绝）。字符串按 `print_string_bytes` 字节精确重编码。全语料输出现为单行 Luraph 式紧凑形态 |
+
+**minify 验收**：单测 19/19（token 序列不变、`--`/`..` 边界、幂等性、
+转义回环）+ 矩阵 68/68（minify 默认开）+ `--no-flatten` 全语料 +
+同 seed 逐字节复现。两个语料真实暴露的坑：`- - 5`→`--5`（edge）、
+`1 .. 2`→`1..2`（basics，Luau Malformed number）。
+
 ### ✅ M2 完成（2026-08-23）
 
 | 模块 | 文件 | 说明 |
@@ -189,13 +201,15 @@ luraph/
 │   ├── Cargo.toml              #   std-only 零依赖
 │   ├── src/
 │   │   ├── main.rs             #   CLI（--dialect/-o/--seed/--no-mangle/
-│   │   │                       #     --no-strings/--no-flatten/--no-junk）
+│   │   │                       #     --no-strings/--no-flatten/--no-junk/
+│   │   │                       #     --minify(默认)/--no-minify）
 │   │   ├── ast.rs              #   AST 定义
 │   │   ├── lexer.rs            #   双方言词法（11 单测）
 │   │   ├── parser.rs           #   双方言语法（Pratt/注解剥离/去糖）
 │   │   ├── symtab.rs           #   作用域解析
 │   │   ├── printer.rs          #   打印器（优先级括号/字节精确字符串）
 │   │   ├── mangle.rs             #   L1 名称混淆（保留 self：方法固定参数名）
+│   │   ├── minify.rs             #   L1 token 感知单行压缩（默认开）
 │   │   ├── strings.rs            #   L2 字符串加密 + 运行时解密加载器
 │   │   ├── junk.rs               #   L3 垃圾代码 + 透明谓词
 │   │   ├── flatten.rs            #   ★ L3 CFG 扁平化状态机（循环=嵌套子状态机）

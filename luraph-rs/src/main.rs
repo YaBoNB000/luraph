@@ -8,6 +8,7 @@ mod flatten;
 mod junk;
 mod lexer;
 mod mangle;
+mod minify;
 mod parser;
 mod printer;
 mod rng;
@@ -24,6 +25,7 @@ struct Options {
 	output: Option<String>,
 	seed: u64,
 	do_mangle: bool,
+	do_minify: bool,
 	do_strings: bool,
 	do_flatten: bool,
 	do_junk: bool,
@@ -39,6 +41,8 @@ Options:
   -o, --output <file>    output file (default: stdout)
   --seed <n>             PRNG seed (default: time-based; use a fixed seed
                          for reproducible output)
+  --minify               L1 minify output to a single compact line (default: enabled)
+  --no-minify            keep the normalized (indented) printer output
   --no-mangle            disable L1 name mangling (default: enabled)
   --no-strings           disable L2 string encryption (default: enabled)
   --no-flatten           disable L3 loop desugar + CFG flattening (default: enabled)
@@ -58,6 +62,7 @@ fn main() -> ExitCode {
 		output: None,
 		seed: 0,
 		do_mangle: true,
+		do_minify: true,
 		do_strings: true,
 		do_flatten: true,
 		do_junk: true,
@@ -112,6 +117,8 @@ fn main() -> ExitCode {
 				}
 			}
 			"--no-mangle" => opts.do_mangle = false,
+		"--minify" => opts.do_minify = true,
+		"--no-minify" => opts.do_minify = false,
 			"--no-strings" => opts.do_strings = false,
 			"--no-flatten" => opts.do_flatten = false,
 			"--no-junk" => opts.do_junk = false,
@@ -174,7 +181,12 @@ fn main() -> ExitCode {
 		if opts.do_strings {
 			strings::apply_strings(&mut block, &mut table, &mut rng, &reserved);
 		}
-		Ok(printer::print_chunk(&table, &block))
+		let out = printer::print_chunk(&table, &block);
+		if opts.do_minify {
+			minify::minify(&out, luau).map_err(|e| format!("minify: {}", e))
+		} else {
+			Ok(out)
+		}
 	})();
 
 	match result {

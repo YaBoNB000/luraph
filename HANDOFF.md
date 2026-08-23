@@ -45,7 +45,7 @@
 | Luraph v15 样本分析 | ✅ 完成（`docs/luraph15-analysis.md`） |
 | VM 设计草案（ISA/解释器模板/VMC 随机面） | ✅ 完成（research 文档 §2.6 + v15 报告 §8 的采纳决策） |
 | M0 地基（lexer/parser/AST/symtab/printer round-trip） | ✅ 完成 |
-| M1（L1 名称混淆 + L2 字符串加密） | ✅ 完成 |
+| M1（L1 名称混淆 + **L1 minify 单行压缩** + L2 字符串加密） | ✅ 完成 |
 | **M2（L3 控制流：CFG 扁平化状态机 + 循环嵌套子状态机 + junk）** | ✅ **完成（矩阵 68/68 全绿）** |
 | **下一步：M3 = numbers(L4) + body(L5 整体加密) + antidbg(L7)** | ⬜ 待用户指示 |
 
