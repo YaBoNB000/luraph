@@ -1,0 +1,1803 @@
+//! L6 VM — compiler: AST → bytecode.
+//!
+//! One recursive walk compiles the whole program. Function indexes are
+//! assigned post-order (a nested function is fully compiled before its
+//! CLOSURE instruction is emitted in the parent). Registers are naive
+//! (no liveness analysis in M4): every subexpression gets a fresh
+//! register; loop variables get a FRESH slot per iteration to keep
+//! Lua's per-iteration capture semantics.
+//!
+//! Multi-value rules:
+//! - `local a, b = f()` / `a, b = f()`: the trailing call fills the
+//!   remaining targets — the count is known at compile time, so the
+//!   call uses a fixed nres into scratch regs, then stores.
+//! - `return e1, ..., f()`: truly variable — the CALL records
+//!   (lastbase, lastn); RETURN(base, 255, 0, pre) merges
+//!   V[base+1..base+pre] + V[lastbase+1..lastbase+lastn].
+//! - table trailing call: CALLT stores results from the counter and
+//!   advances it (variable, runtime).
+//!
+//! Upvalues (shared-cell model, Lua 5.1 style):
+//! - a cell = { v = <creating frame's V array>, i = <slot> }
+//! - a function's upvalue list = symbols referenced by its own code or
+//!   by any nested function that are declared in an enclosing function
+//! - materialization invariant: if a nested function references a
+//!   symbol declared higher up, every intermediate function
+//!   materializes it (GETUP into a fresh register at function entry)
+//! - upvalue descriptor = the creating frame's V slot (1-based)
+
+use crate::ast::*;
+use crate::rng::Rng;
+use crate::symtab::SymTable;
+use crate::vmgen::isa::{self, Const, Instr, Op, OpMap};
+use std::collections::{HashMap, HashSet};
+
+pub struct VmProgram {
+	pub opmap: OpMap,
+	pub fns: Vec<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Label(u32);
+
+struct Ctx<'a> {
+	program: &'a mut VmProgram,
+	rng: &'a mut Rng,
+	symtab: &'a crate::symtab::SymTable,
+	/// next nested-function slot (global DFS order over the chunk)
+	next_fn_slot: usize,
+	/// scope chain of declared syms -> reg (outermost first)
+	scopes: Vec<HashMap<SymId, u16>>,
+	/// upvalues of the current function: sym -> up idx
+	upvals: HashMap<SymId, u16>,
+	/// upvalue descriptors (creating frame's V slot, 1-based), up-idx order
+	upsrc: Vec<u16>,
+	next_reg: u16,
+	nparams: u16,
+	vararg: bool,
+	consts: Vec<Const>,
+	const_map: HashMap<(u8, u64), u16>,
+	code: Vec<Instr>,
+	/// label -> [positions]; entry 0 = label position (code len when
+	/// here() ran), entries 1.. = jump-instruction slots (instr index + 1)
+	labels: HashMap<u32, (Option<usize>, Vec<usize>)>,
+	/// loop stack: (break_label, continue_label)
+	loops: Vec<(Label, Label)>,
+	/// syms whose declaration executes PER LOOP ITERATION (declared in
+	/// a loop body while compiling): their captures get SNAPSHOT
+	/// upvalue cells (5.1 creates fresh locals each iteration, so each
+	/// closure must bind the value at its own creation)
+	iter_syms: HashSet<SymId>,
+	/// number of loop-body scopes currently being compiled
+	loop_body_scopes: u32,
+}
+
+/// Collision-free constant key: (tag, payload).
+fn const_key(c: &Const) -> (u8, u64) {
+	match c {
+		Const::Nil => (0, 0),
+		Const::Bool(b) => (1, *b as u64),
+		Const::Num(v) => (2, v.to_bits()),
+		Const::Str(b) => {
+			let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+			for x in b {
+				h ^= *x as u64;
+				h = h.wrapping_mul(0x1_0000_0001_b3);
+			}
+			(3, h)
+		}
+	}
+}
+
+impl<'a> Ctx<'a> {
+	fn new_main(
+		program: &'a mut VmProgram,
+		rng: &'a mut Rng,
+		symtab: &'a crate::symtab::SymTable,
+	) -> Ctx<'a> {
+		Ctx {
+			program,
+			rng,
+			symtab,
+			next_fn_slot: 0,
+			scopes: vec![HashMap::new()],
+			upvals: HashMap::new(),
+			upsrc: Vec::new(),
+			next_reg: 0,
+			nparams: 0,
+			vararg: false,
+			consts: Vec::new(),
+			const_map: HashMap::new(),
+			code: Vec::new(),
+			labels: HashMap::new(),
+			loops: Vec::new(),
+			iter_syms: HashSet::new(),
+			loop_body_scopes: 0,
+		}
+	}
+
+	fn tmp(&mut self) -> u16 {
+		let r = self.next_reg;
+		self.next_reg += 1;
+		r
+	}
+
+	fn reserve(&mut self, n: u16) -> u16 {
+		let r = self.next_reg;
+		self.next_reg += n;
+		r
+	}
+
+	fn kidx(&mut self, c: Const) -> u16 {
+		let k = const_key(&c);
+		if let Some(&i) = self.const_map.get(&k) {
+			return i;
+		}
+		let i = self.consts.len() as u16;
+		self.consts.push(c);
+		self.const_map.insert(k, i);
+		i
+	}
+
+	fn emit(&mut self, ins: Instr) -> usize {
+		self.code.push(ins);
+		self.code.len() - 1
+	}
+
+	fn new_label(&mut self) -> Label {
+		Label(self.rng.int(1, 1_000_000_000) as u32)
+	}
+
+	fn here(&mut self, l: &Label) {
+		let e = self
+			.labels
+			.entry(l.0)
+			.or_insert_with(|| (None, Vec::new()));
+		e.0 = Some(self.code.len());
+	}
+
+	fn jmp(&mut self, op: Op, reg: u16, l: &Label) {
+		let pos = self.emit(Instr::ab(op, reg, 0));
+		self.labels
+			.entry(l.0)
+			.or_insert_with(|| (None, Vec::new()))
+			.1
+			.push(pos + 1);
+	}
+
+	fn resolve_labels(&mut self) {
+		let labels = std::mem::take(&mut self.labels);
+		for (_, (pos, jumps)) in labels {
+			if let Some(base) = pos {
+				// pc is a 1-based BYTE offset into the bytecode stream;
+				// each instruction is 9 bytes (1 opcode + 4 x u16)
+				let target = base as u16 * 9 + 1;
+				for p in jumps {
+					self.code[p - 1].b = target;
+				}
+			}
+		}
+	}
+
+
+	fn lookup(&self, s: SymId) -> Option<u16> {
+		for sc in self.scopes.iter().rev() {
+			if let Some(&r) = sc.get(&s) {
+				return Some(r);
+			}
+		}
+		None
+	}
+
+	fn declare(&mut self, s: SymId, r: u16) {
+		if self.loop_body_scopes > 0 {
+			self.iter_syms.insert(s);
+		}
+		self.scopes.last_mut().unwrap().insert(s, r);
+	}
+
+	fn push_scope(&mut self) {
+		self.scopes.push(HashMap::new());
+	}
+
+	fn pop_scope(&mut self) {
+		self.scopes.pop();
+	}
+
+	fn finish(mut self, nregs: u16) -> Vec<u8> {
+		// implicit trailing return (a chunk/function without an explicit
+		// return returns nothing — the code must terminate)
+		let needs_return = self
+			.code
+			.last()
+			.map(|i| i.op != Op::Return)
+			.unwrap_or(true);
+		if needs_return {
+			self.emit(Instr::abcd(Op::Return, 0, 0, 0, 0));
+		}
+		self.resolve_labels();
+		let map = &self.program.opmap;
+		let mut out = Vec::with_capacity(self.code.len() * 13 + 64);
+		isa::push_u16(&mut out, nregs);
+		isa::push_u16(&mut out, self.nparams);
+		out.push(self.vararg as u8);
+		isa::push_u16(&mut out, self.upsrc.len() as u16);
+		for s in &self.upsrc {
+			isa::push_u16(&mut out, *s);
+		}
+		isa::push_u16(&mut out, self.consts.len() as u16);
+		for c in &self.consts {
+			c.encode(&mut out);
+		}
+		for ins in &self.code {
+			ins.encode(map, &mut out);
+		}
+		out
+	}
+}
+
+// ---------------------------------------------------------------------------
+// upvalue analysis
+// ---------------------------------------------------------------------------
+
+struct FnAnalysis {
+	/// symbols referenced by this function's own code, declared outside
+	direct_up: Vec<SymId>,
+	/// symbols referenced by nested functions (transitively), declared
+	/// outside this function -> this function must materialize them
+	nested_up: Vec<SymId>,
+}
+
+/// Syms referenced by an expression at THIS level (not entering nested
+/// function bodies). Globals (sym None) never enter.
+fn expr_refs(e: &Expr, out: &mut HashSet<SymId>) {
+	match e {
+		Expr::Ident { sym: Some(s), .. } => {
+			out.insert(*s);
+		}
+		Expr::Dot { obj, .. } => expr_refs(obj, out),
+		Expr::Index { obj, idx } => {
+			expr_refs(obj, out);
+			expr_refs(idx, out);
+		}
+		Expr::Call { func, args } => {
+			expr_refs(func, out);
+			for a in args {
+				expr_refs(a, out);
+			}
+		}
+		Expr::Method { obj, args, .. } => {
+			expr_refs(obj, out);
+			for a in args {
+				expr_refs(a, out);
+			}
+		}
+		Expr::Bin { l, r, .. } => {
+			expr_refs(l, out);
+			expr_refs(r, out);
+		}
+		Expr::Un { e, .. } => expr_refs(e, out),
+		Expr::Table { fields } => {
+			for f in fields {
+				match f {
+					TableField::Array(e) => expr_refs(e, out),
+					TableField::Key { key, value } => {
+						expr_refs(key, out);
+						expr_refs(value, out);
+					}
+				}
+			}
+		}
+		_ => {}
+	}
+}
+
+/// Collect all function nodes nested inside a block (any depth), plus
+/// LocalFunc/FuncDecl statements, as (body, param_syms) pairs.
+fn collect_bodies<'a>(block: &'a Block, out: &mut Vec<(&'a Block, &'a [SymId])>) {
+	for s in &block.stmts {
+		match s {
+			Stmt::LocalFunc { func, .. } => out.push((&func.body, &func.param_syms)),
+			Stmt::FuncDecl { func, .. } => out.push((&func.body, &func.param_syms)),
+			_ => {}
+		}
+		match s {
+			Stmt::Local { values, .. } => {
+				for v in values {
+					if let Some(e) = v {
+						expr_bodies(e, out);
+					}
+				}
+			}
+			Stmt::Assign { values, .. } => {
+				for v in values {
+					expr_bodies(v, out);
+				}
+			}
+			Stmt::ExprStmt(e) => expr_bodies(e, out),
+			Stmt::Return(es) => {
+				for e in es {
+					expr_bodies(e, out);
+				}
+			}
+			Stmt::If { cond, thenb, elsifs, elseb } => {
+				expr_bodies(cond, out);
+				collect_bodies(thenb, out);
+				for (c, b) in elsifs {
+					expr_bodies(c, out);
+					collect_bodies(b, out);
+				}
+				if let Some(b) = elseb {
+					collect_bodies(b, out);
+				}
+			}
+			Stmt::While { cond, body } => {
+				expr_bodies(cond, out);
+				collect_bodies(body, out);
+			}
+			Stmt::Repeat { body, cond } => {
+				collect_bodies(body, out);
+				expr_bodies(cond, out);
+			}
+			Stmt::ForNum { start, limit, step, body, .. } => {
+				expr_bodies(start, out);
+				expr_bodies(limit, out);
+				if let Some(st) = step {
+					expr_bodies(st, out);
+				}
+				collect_bodies(body, out);
+			}
+			Stmt::ForGen { iters, body, .. } => {
+				for i in iters {
+					expr_bodies(i, out);
+				}
+				collect_bodies(body, out);
+			}
+			Stmt::Do(b) => collect_bodies(b, out),
+			_ => {}
+		}
+	}
+}
+
+fn expr_bodies<'a>(e: &'a Expr, out: &mut Vec<(&'a Block, &'a [SymId])>) {
+	match e {
+		Expr::Function { body, param_syms, .. } => {
+			out.push((body, param_syms));
+			collect_bodies(body, out);
+		}
+		Expr::Dot { obj, .. } => expr_bodies(obj, out),
+		Expr::Index { obj, idx } => {
+			expr_bodies(obj, out);
+			expr_bodies(idx, out);
+		}
+		Expr::Call { func, args } => {
+			expr_bodies(func, out);
+			for a in args {
+				expr_bodies(a, out);
+			}
+		}
+		Expr::Method { obj, args, .. } => {
+			expr_bodies(obj, out);
+			for a in args {
+				expr_bodies(a, out);
+			}
+		}
+		Expr::Bin { l, r, .. } => {
+			expr_bodies(l, out);
+			expr_bodies(r, out);
+		}
+		Expr::Un { e, .. } => expr_bodies(e, out),
+		Expr::Table { fields } => {
+			for f in fields {
+				match f {
+					TableField::Array(e) => expr_bodies(e, out),
+					TableField::Key { key, value } => {
+						expr_bodies(key, out);
+						expr_bodies(value, out);
+					}
+				}
+			}
+		}
+		_ => {}
+	}
+}
+
+/// Syms declared at all depths of a block, excluding nested function
+/// bodies (which have their own scopes).
+fn collect_declared_all(block: &Block, out: &mut Vec<SymId>) {
+	for s in &block.stmts {
+		match s {
+			Stmt::Local { syms, values, .. } => {
+				out.extend(syms.iter().copied());
+				for v in values {
+					if let Some(e) = v {
+						collect_declared_expr(e, out);
+					}
+				}
+			}
+			Stmt::LocalFunc { sym, .. } => out.push(*sym),
+			Stmt::FuncDecl { .. } => {}
+			Stmt::Assign { values, .. } => {
+				for v in values {
+					collect_declared_expr(v, out);
+				}
+			}
+			Stmt::ExprStmt(e) => collect_declared_expr(e, out),
+			Stmt::If { thenb, elsifs, elseb, .. } => {
+				collect_declared_all(thenb, out);
+				for (_, b) in elsifs {
+					collect_declared_all(b, out);
+				}
+				if let Some(b) = elseb {
+					collect_declared_all(b, out);
+				}
+			}
+			Stmt::While { body, .. } => collect_declared_all(body, out),
+			Stmt::Repeat { body, .. } => collect_declared_all(body, out),
+			Stmt::Do(b) => collect_declared_all(b, out),
+			Stmt::ForNum { var_sym, body, .. } => {
+				out.push(*var_sym);
+				collect_declared_all(body, out);
+			}
+			Stmt::ForGen { syms, body, .. } => {
+				out.extend(syms.iter().copied());
+				collect_declared_all(body, out);
+			}
+			_ => {}
+		}
+	}
+}
+
+fn collect_declared_expr(e: &Expr, out: &mut Vec<SymId>) {
+	match e {
+		Expr::Function { body, .. } => collect_declared_all(body, out),
+		Expr::Call { func, args } => {
+			collect_declared_expr(func, out);
+			for a in args {
+				collect_declared_expr(a, out);
+			}
+		}
+		Expr::Method { obj, args, .. } => {
+			collect_declared_expr(obj, out);
+			for a in args {
+				collect_declared_expr(a, out);
+			}
+		}
+		Expr::Table { fields } => {
+			for f in fields {
+				match f {
+					TableField::Array(e) => collect_declared_expr(e, out),
+					TableField::Key { key, value } => {
+						collect_declared_expr(key, out);
+						collect_declared_expr(value, out);
+					}
+				}
+			}
+		}
+		_ => {}
+	}
+}
+
+/// References at the top level of a block (excluding nested function
+/// bodies). For LocalFunc/FuncDecl the body IS the function's own code —
+/// its references belong to the nested function's analysis, not this
+/// function's direct refs (except self-recursive references, which are
+/// handled as declarations).
+fn collect_block_refs_own(block: &Block, out: &mut HashSet<SymId>) {
+	for s in &block.stmts {
+		match s {
+			Stmt::LocalFunc { .. } | Stmt::FuncDecl { .. } => {
+				// FuncDecl's object expression is THIS function's code
+				if let Stmt::FuncDecl { obj, .. } = s {
+					if let Some(o) = obj {
+						expr_refs(o, out);
+					}
+				}
+			}
+			Stmt::Local { values, .. } => {
+				for v in values {
+					if let Some(e) = v {
+						expr_refs(e, out);
+					}
+				}
+			}
+			Stmt::Assign { targets, values } => {
+				for t in targets {
+					expr_refs(t, out);
+				}
+				for v in values {
+					expr_refs(v, out);
+				}
+			}
+			Stmt::ExprStmt(e) => expr_refs(e, out),
+			Stmt::If { cond, thenb, elsifs, elseb } => {
+				expr_refs(cond, out);
+				refs_in_sub(thenb, out);
+				for (c, b) in elsifs {
+					expr_refs(c, out);
+					refs_in_sub(b, out);
+				}
+				if let Some(b) = elseb {
+					refs_in_sub(b, out);
+				}
+			}
+			Stmt::While { cond, body } => {
+				expr_refs(cond, out);
+				refs_in_sub(body, out);
+			}
+			Stmt::Repeat { body, cond } => {
+				refs_in_sub(body, out);
+				expr_refs(cond, out);
+			}
+			Stmt::ForNum {
+				start, limit, step, body, ..
+			} => {
+				expr_refs(start, out);
+				expr_refs(limit, out);
+				if let Some(st) = step {
+					expr_refs(st, out);
+				}
+				refs_in_sub(body, out);
+			}
+			Stmt::ForGen { iters, body, .. } => {
+				for i in iters {
+					expr_refs(i, out);
+				}
+				refs_in_sub(body, out);
+			}
+			Stmt::Do(b) => refs_in_sub(b, out),
+			Stmt::Return(es) => {
+				for e in es {
+					expr_refs(e, out);
+				}
+			}
+			_ => {}
+		}
+	}
+}
+
+/// References in a sub-block, skipping the bodies of nested functions
+/// (those are analyzed separately).
+fn refs_in_sub(block: &Block, out: &mut HashSet<SymId>) {
+	// collect_block_refs_own already skips nested function bodies
+	collect_block_refs_own(block, out);
+	// but it recurses into sub-blocks including ones containing nested
+	// functions — the skip happens at the LocalFunc/FuncDecl level
+	// (bodies not entered) ✓
+}
+
+/// Full analysis of one function body.
+fn analyze(block: &Block, params: &[SymId]) -> FnAnalysis {
+	let mut declared = Vec::new();
+	declared.extend(params.iter().copied());
+	collect_declared_all(block, &mut declared);
+	let declared_set: HashSet<SymId> = declared.iter().copied().collect();
+
+	// direct refs of this function's own code
+	let mut direct = HashSet::new();
+	collect_block_refs_own(block, &mut direct);
+	direct.retain(|s| !declared_set.contains(s));
+
+	// nested function refs (transitive, ANY depth): every symbol
+	// referenced by a nested body that is declared neither in that
+	// body's own subtree (params + all inner declarations) nor in this
+	// function's subtree lives in an ANCESTOR of this function; nested
+	// contexts start with a fresh scope stack, so this function must
+	// upvalue+materialize it for the descriptor lookup to succeed.
+	let mut bodies: Vec<(&Block, &[SymId])> = Vec::new();
+	collect_bodies(block, &mut bodies);
+	let mut nested = HashSet::new();
+	for (b, bparams) in &bodies {
+		let mut own_decl = Vec::new();
+		own_decl.extend(bparams.iter().copied());
+		collect_declared_all(b, &mut own_decl);
+		let own_set: HashSet<SymId> = own_decl.iter().copied().collect();
+		// direct refs of this nested fn's own code
+		let mut refs = HashSet::new();
+		collect_block_refs_own(b, &mut refs);
+		refs.retain(|s| !own_set.contains(s));
+		refs.retain(|s| !declared_set.contains(s));
+		nested.extend(refs);
+	}
+
+	let mut direct_up: Vec<SymId> = direct.iter().copied().collect();
+	direct_up.sort_unstable();
+	let mut nested_up: Vec<SymId> = nested.iter().copied().collect();
+	nested_up.sort_unstable();
+	nested_up.dedup();
+	FnAnalysis {
+		direct_up,
+		nested_up,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// code generation
+// ---------------------------------------------------------------------------
+
+fn compile_chunk(block: &Block, table: &SymTable, rng: &mut Rng) -> VmProgram {
+	let total = count_fns_count(block);
+	let mut program = VmProgram {
+		opmap: OpMap::new(rng),
+		// slots 0..total-1 = nested functions (DFS order); the main chunk
+		// is compiled last and becomes slot `total` (PF[#FN] in the
+		// template)
+		fns: vec![Vec::new(); total],
+	};
+	{
+		let mut ctx = Ctx::new_main(&mut program, rng, table);
+		ctx.compile_block(block);
+		let nregs = ctx.next_reg;
+		let bytes = ctx.finish(nregs);
+		program.fns.push(bytes);
+	}
+	program
+}
+
+/// Count nested function occurrences in the same DFS order the compiler
+/// assigns slots.
+fn count_fns(block: &Block, n: &mut usize) {
+	for s in &block.stmts {
+		count_stmt(s, n);
+	}
+}
+
+fn count_fns_count(block: &Block) -> usize {
+	let mut n = 0;
+	count_fns(block, &mut n);
+	n
+}
+
+fn count_stmt(s: &Stmt, n: &mut usize) {
+	match s {
+		Stmt::Local { values, .. } => {
+			for v in values {
+				if let Some(e) = v {
+					count_expr(e, n);
+				}
+			}
+		}
+		Stmt::LocalFunc { func, .. } => {
+			*n += 1;
+			count_fns(&func.body, n);
+		}
+		Stmt::FuncDecl { func, obj, .. } => {
+			if let Some(o) = obj {
+				count_expr(o, n);
+			}
+			*n += 1;
+			count_fns(&func.body, n);
+		}
+		Stmt::Assign { targets, values } => {
+			for t in targets {
+				count_expr(t, n);
+			}
+			for v in values {
+				count_expr(v, n);
+			}
+		}
+		Stmt::ExprStmt(e) => {
+			count_expr(e, n);
+		}
+		Stmt::Return(es) => {
+			for e in es {
+				count_expr(e, n);
+			}
+		}
+		Stmt::If { cond, thenb, elsifs, elseb } => {
+			count_expr(cond, n);
+			count_fns(thenb, n);
+			for (c, b) in elsifs {
+				count_expr(c, n);
+				count_fns(b, n);
+			}
+			if let Some(b) = elseb {
+				count_fns(b, n);
+			}
+		}
+		Stmt::While { cond, body } => {
+			count_expr(cond, n);
+			count_fns(body, n);
+		}
+		Stmt::Repeat { body, cond } => {
+			count_fns(body, n);
+			count_expr(cond, n);
+		}
+		Stmt::ForNum { start, limit, step, body, .. } => {
+			count_expr(start, n);
+			count_expr(limit, n);
+			if let Some(st) = step {
+				count_expr(st, n);
+			}
+			count_fns(body, n);
+		}
+		Stmt::ForGen { iters, body, .. } => {
+			for i in iters {
+				count_expr(i, n);
+			}
+			count_fns(body, n);
+		}
+		Stmt::Do(b) => {
+			count_fns(b, n);
+		}
+		_ => {}
+	}
+}
+
+fn count_expr(e: &Expr, n: &mut usize) {
+	match e {
+		Expr::Function { body, .. } => {
+			*n += 1;
+			count_fns(body, n);
+		}
+		Expr::Dot { obj, .. } => count_expr(obj, n),
+		Expr::Index { obj, idx } => {
+			count_expr(obj, n);
+			count_expr(idx, n);
+		}
+		Expr::Call { func, args } => {
+			count_expr(func, n);
+			for a in args {
+				count_expr(a, n);
+			}
+		}
+		Expr::Method { obj, args, .. } => {
+			count_expr(obj, n);
+			for a in args {
+				count_expr(a, n);
+			}
+		}
+		Expr::Bin { l, r, .. } => {
+			count_expr(l, n);
+			count_expr(r, n);
+		}
+		Expr::Un { e, .. } => count_expr(e, n),
+		Expr::Table { fields } => {
+			for f in fields {
+				match f {
+					TableField::Array(e) => count_expr(e, n),
+					TableField::Key { key, value } => {
+						count_expr(key, n);
+						count_expr(value, n);
+					}
+				}
+			}
+		}
+		_ => {}
+	}
+}
+
+impl<'a> Ctx<'a> {
+	fn compile_block(&mut self, block: &Block) {
+		// every block is a Lua scope
+		self.push_scope();
+		for s in block.stmts.iter() {
+			self.compile_stmt(s);
+		}
+		self.pop_scope();
+	}
+
+	fn compile_stmt(&mut self, s: &Stmt) {
+		match s {
+			Stmt::Local { names, syms, values } => {
+				let _ = names;
+				self.compile_local(syms, values);
+			}
+			Stmt::LocalFunc { name, sym, func } => {
+				let _ = name;
+				let r = self.tmp();
+				// the function name is a local of the CURRENT scope
+				// (visible to the rest of the enclosing block)
+				self.declare(*sym, r);
+				self.compile_function(r, &func.body, &func.params, &func.param_syms, false);
+			}
+			Stmt::FuncDecl { obj, name, func, .. } => {
+				if let Some(o) = obj {
+					let t = self.tmp();
+					self.compile_expr(o, t);
+					let r = self.tmp();
+					self.compile_function(
+						r,
+						&func.body,
+						&func.params,
+						&func.param_syms,
+						func.has_self,
+					);
+					let k = self.kidx(Const::Str(name.as_bytes().to_vec()));
+					let kreg = self.tmp();
+					self.emit(Instr::ab(Op::LoadK, kreg, k));
+					self.emit(Instr::abc(Op::SetTab, t, kreg, r));
+				} else {
+					let r = self.tmp();
+					self.compile_function(
+						r,
+						&func.body,
+						&func.params,
+						&func.param_syms,
+						false,
+					);
+					let k = self.kidx(Const::Str(name.as_bytes().to_vec()));
+					self.emit(Instr::ab(Op::SetGlobal, r, k));
+				}
+			}
+			_ => self.compile_stmt_rest(s),
+		}
+	}
+
+	/// `names = values` with the Lua multi-value rule: the LAST value may
+	/// be a call that fills all remaining targets (count is known at
+	/// compile time).
+	fn compile_local(&mut self, syms: &[SymId], values: &[Option<Expr>]) {
+		let n = syms.len();
+		let mut locals = vec![0u16; n];
+		let last_is_call = values
+			.last()
+			.and_then(|v| v.as_ref())
+			.map(is_call)
+			.unwrap_or(false);
+		if last_is_call && n > 0 {
+			// preceding values = values.len() - 1 (the last is the call)
+			let npre = (values.len() - 1).min(n - 1);
+			let nres = (n - npre) as u16;
+			for i in 0..npre {
+				let r = self.tmp();
+				locals[i] = r;
+				self.declare(syms[i], r);
+				match values.get(i) {
+					Some(Some(e)) => {
+						self.compile_expr(e, r)
+					}
+					_ => {
+						let _ = self.emit(Instr::ab(Op::LoadNil, r, 1));
+					}
+				}
+			}
+			// target slots FIRST (before the call scratch — the result
+			// writes land at freg+1.. which must not clobber them)
+			let mut call_locals = Vec::new();
+			for i in 0..nres as usize {
+				let r = self.tmp();
+				let idx = npre + i;
+				locals[idx] = r;
+				self.declare(syms[idx], r);
+				call_locals.push(r);
+			}
+			// the trailing call -> scratch, then move into the targets
+			let call = values[npre].as_ref().unwrap();
+			let (nargs, has_vararg) = call_arg_info(call);
+			let freg = self.reserve(1 + nargs.max(1));
+			self.compile_call_into(call, freg, nres, has_vararg);
+			for i in 0..nres as usize {
+				self.emit(Instr::ab(Op::Move, call_locals[i], freg + 1 + i as u16));
+			}
+		} else {
+			for i in 0..n {
+				let r = self.tmp();
+				locals[i] = r;
+				self.declare(syms[i], r);
+				match values.get(i) {
+					Some(Some(e)) => {
+						self.compile_expr(e, r)
+					}
+					_ => {
+						let _ = self.emit(Instr::ab(Op::LoadNil, r, 1));
+					}
+				}
+			}
+		}
+	}
+
+	fn compile_stmt_rest(&mut self, s: &Stmt) {
+		match s {
+			Stmt::Assign { targets, values } => {
+				// targets first (5.1 semantics), then values, then store
+				let mut tinfos: Vec<Target> = Vec::new();
+				for t in targets {
+					tinfos.push(self.eval_target(t));
+				}
+				let n = targets.len();
+				let last_is_call = values.last().map(is_call).unwrap_or(false);
+				if last_is_call && n > 0 {
+					let npre = (values.len() - 1).min(n - 1);
+					let nres = (n - npre) as u16;
+					for i in 0..npre {
+						let r = self.tmp();
+						self.compile_expr(&values[i], r);
+						self.store_target(&tinfos[i], r);
+					}
+					let call = values[npre].clone();
+					let (nargs, has_vararg) = call_arg_info(&call);
+					let freg = self.reserve(1 + nargs.max(1));
+					self.compile_call_into(&call, freg, nres, has_vararg);
+					for i in 0..nres as usize {
+						let idx = npre + i;
+						let r = freg + 1 + i as u16;
+						if idx < n {
+							self.store_target(&tinfos[idx], r);
+						}
+					}
+				} else {
+					// pad missing values with nil (a, b = x -> b = nil)
+					let knil = self.kidx(Const::Nil);
+					for (i, v) in values.iter().enumerate() {
+						let r = self.tmp();
+						self.compile_expr(v, r);
+						self.store_target(&tinfos[i], r);
+					}
+						for i in values.len()..n {
+							let r = self.tmp();
+							let _ = self.emit(Instr::ab(Op::LoadK, r, knil));
+							self.store_target(&tinfos[i], r);
+						}
+				}
+			}
+			Stmt::ExprStmt(e) => {
+				let r = self.tmp();
+				self.compile_expr(e, r);
+			}
+			Stmt::If { cond, thenb, elsifs, elseb } => {
+				let t = self.tmp();
+				self.compile_expr(cond, t);
+				let l_end = self.new_label();
+				let mut l_next = self.new_label();
+				self.jmp(Op::Jf, t, &l_next);
+				self.compile_block(thenb);
+				self.jmp(Op::Jmp, 0, &l_end);
+				for (c, b) in elsifs {
+					self.here(&l_next);
+					l_next = self.new_label();
+					let t2 = self.tmp();
+					self.compile_expr(c, t2);
+					self.jmp(Op::Jf, t2, &l_next);
+					self.compile_block(b);
+					self.jmp(Op::Jmp, 0, &l_end);
+				}
+				self.here(&l_next);
+				if let Some(b) = elseb {
+					self.compile_block(b);
+				}
+				self.here(&l_end);
+			}
+			Stmt::While { cond, body } => {
+				let l_top = self.new_label();
+				let l_end = self.new_label();
+				self.here(&l_top);
+				let t = self.tmp();
+				self.compile_expr(cond, t);
+				self.jmp(Op::Jf, t, &l_end);
+				self.loops.push((l_end.clone(), l_top.clone()));
+				self.push_scope();
+				self.loop_body_scopes += 1;
+				self.compile_block(body);
+				self.loop_body_scopes -= 1;
+				self.pop_scope();
+				self.loops.pop();
+				self.jmp(Op::Jmp, 0, &l_top);
+				self.here(&l_end);
+			}
+			Stmt::Repeat { body, cond } => {
+				let l_top = self.new_label();
+				let l_check = self.new_label();
+				let l_end = self.new_label();
+				self.here(&l_top);
+				self.loops.push((l_end.clone(), l_check.clone()));
+				// 5.1 scoping: body locals are visible in the until
+				// condition, so the body scope must stay open across it
+				// (compile_stmt directly instead of compile_block, which
+				// would pop its own scope)
+				self.push_scope();
+				self.loop_body_scopes += 1;
+				for s in body.stmts.iter() {
+					self.compile_stmt(s);
+				}
+				self.here(&l_check);
+				let t = self.tmp();
+				self.compile_expr(cond, t);
+				self.jmp(Op::Jf, t, &l_top);
+				self.here(&l_end);
+				self.loop_body_scopes -= 1;
+				self.pop_scope();
+				self.loops.pop();
+			}
+			Stmt::ForNum {
+				var,
+				var_sym,
+				start,
+				limit,
+				step,
+				body,
+			} => {
+				let _ = var;
+				let rl = self.tmp();
+				let rs = self.tmp();
+				let rc = self.tmp();
+				self.compile_expr(start, rc);
+				self.compile_expr(limit, rl);
+				match step {
+					Some(st) => self.compile_expr(st, rs),
+					None => {
+						let k = self.kidx(Const::Num(1.0));
+						self.emit(Instr::ab(Op::LoadK, rs, k));
+					}
+				}
+				let l_top = self.new_label();
+				let l_end = self.new_label();
+				let l_inc = self.new_label();
+				self.here(&l_top);
+				// break if (stp >= 0 and cur > lim) or (stp < 0 and cur < lim)
+				let k0 = self.kidx(Const::Num(0.0));
+				let r0 = self.tmp();
+				self.emit(Instr::ab(Op::LoadK, r0, k0));
+				let t1 = self.tmp();
+				self.emit(Instr::abc(Op::Ge, t1, rs, r0));
+				let t2 = self.tmp();
+				self.emit(Instr::abc(Op::Gt, t2, rc, rl));
+				let t3 = self.tmp();
+				self.emit_and(t3, t1, t2);
+				let t4 = self.tmp();
+				self.emit(Instr::abc(Op::Lt, t4, rs, r0));
+				let t5 = self.tmp();
+				self.emit(Instr::abc(Op::Lt, t5, rc, rl));
+				let t6 = self.tmp();
+				self.emit_and(t6, t4, t5);
+				let t7 = self.tmp();
+				self.emit_or(t7, t3, t6);
+				self.jmp(Op::Jt, t7, &l_end);
+				// FRESH loop variable slot per iteration (5.1 capture
+				// semantics: each iteration's closures bind distinct cells)
+				self.loops.push((l_end.clone(), l_inc.clone()));
+				self.push_scope();
+				let rv = self.tmp();
+				self.loop_body_scopes += 1;
+				self.emit(Instr::ab(Op::Move, rv, rc));
+				self.declare(*var_sym, rv);
+				self.compile_block(body);
+				self.loop_body_scopes -= 1;
+				self.pop_scope();
+				self.loops.pop();
+				self.here(&l_inc);
+				self.emit(Instr::abc(Op::Add, rc, rc, rs));
+				self.jmp(Op::Jmp, 0, &l_top);
+				self.here(&l_end);
+			}
+			Stmt::ForGen { vars, syms, iters, body } => {
+				let _ = vars;
+				let rit = self.tmp();
+				let rstt = self.tmp();
+				let rctl = self.tmp();
+				if iters.len() == 1 && is_call(&iters[0]) {
+					let call = iters[0].clone();
+					let (nargs, has_vararg) = call_arg_info(&call);
+					// it, stt, ctl = f(...)  (nres = 3, known)
+					let freg = self.reserve(1 + nargs.max(1));
+					self.compile_call_into(&call, freg, 3, has_vararg);
+					self.emit(Instr::ab(Op::Move, rit, freg + 1));
+					self.emit(Instr::ab(Op::Move, rstt, freg + 2));
+					self.emit(Instr::ab(Op::Move, rctl, freg + 3));
+				} else {
+					if iters.len() > 0 {
+						self.compile_expr(&iters[0], rit);
+					}
+					if iters.len() > 1 {
+						self.compile_expr(&iters[1], rstt);
+					}
+					if iters.len() > 2 {
+						self.compile_expr(&iters[2], rctl);
+					}
+				}
+				// loop: v1..vn = it(stt, ctl); v1 == nil? break; ctl = v1; body
+				let l_top = self.new_label();
+				let l_end = self.new_label();
+				self.here(&l_top);
+				self.loops.push((l_end.clone(), l_top.clone()));
+				let nv = syms.len() as u16;
+				let freg = self.tmp();
+				// args: stt, ctl must sit at freg+1, freg+2 at run time
+				let _ = self.reserve(2 + nv.max(2).max(2));
+				self.emit(Instr::ab(Op::Move, freg, rit));
+				self.emit(Instr::ab(Op::Move, freg + 1, rstt));
+				self.emit(Instr::ab(Op::Move, freg + 2, rctl));
+				self.emit(Instr::abcd(Op::Call, freg, 2, nv, 0));
+				// results at freg+1 .. freg+nv
+				let tnil = self.tmp();
+				let knil = self.kidx(Const::Nil);
+				self.emit(Instr::ab(Op::LoadK, tnil, knil));
+				let teq = self.tmp();
+				self.emit(Instr::abc(Op::Eq, teq, freg + 1, tnil));
+				self.jmp(Op::Jt, teq, &l_end);
+				self.emit(Instr::ab(Op::Move, rctl, freg + 1));
+				self.push_scope();
+				self.loop_body_scopes += 1;
+				for (i, s) in syms.iter().enumerate() {
+					let r = self.tmp();
+					self.emit(Instr::ab(Op::Move, r, freg + 1 + i as u16));
+					self.declare(*s, r);
+				}
+				self.compile_block(body);
+				self.loop_body_scopes -= 1;
+				self.pop_scope();
+				self.loops.pop();
+				self.jmp(Op::Jmp, 0, &l_top);
+				self.here(&l_end);
+			}
+			Stmt::Break => {
+				let (l_end, _) = *self.loops.last().expect("break outside loop");
+				self.jmp(Op::Jmp, 0, &l_end);
+			}
+			Stmt::Continue => {
+				let (_, l_cont) = *self.loops.last().expect("continue outside loop");
+				self.jmp(Op::Jmp, 0, &l_cont);
+			}
+			Stmt::Return(es) => {
+				if es.is_empty() {
+					self.emit(Instr::ab(Op::Return, 0, 0));
+				} else if is_call(es.last().unwrap()) {
+					let pre = es.len() - 1;
+					// preceding values at base+1..base+pre
+					let base = self.reserve(pre as u16);
+					for (i, e) in es.iter().take(pre).enumerate() {
+						self.compile_expr(e, base + i as u16);
+					}
+					// trailing multi-value call
+					let call = es.last().unwrap().clone();
+					let (nargs, has_vararg) = call_arg_info(&call);
+					let freg = self.reserve(1 + nargs.max(1));
+					self.compile_call_into(&call, freg, 255, has_vararg);
+					// RETURN: merge base+1..base+pre with lastbase+1..lastn
+					self.emit(Instr::abcd(Op::Return, base, 255, 0, pre as u16));
+				} else {
+					let n = es.len() as u16;
+					let base = self.reserve(n);
+					for (i, e) in es.iter().enumerate() {
+						self.compile_expr(e, base + i as u16);
+					}
+					self.emit(Instr::abcd(Op::Return, base, n, 0, 0));
+				}
+			}
+			Stmt::Do(b) => self.compile_block(b),
+			_ => {}
+		}
+	}
+
+	fn emit_and(&mut self, dst: u16, l: u16, r: u16) {
+		self.emit(Instr::ab(Op::Move, dst, l));
+		let lskip = self.new_label();
+		self.jmp(Op::Jf, dst, &lskip);
+		self.emit(Instr::ab(Op::Move, dst, r));
+		self.here(&lskip);
+	}
+
+	fn emit_or(&mut self, dst: u16, l: u16, r: u16) {
+		self.emit(Instr::ab(Op::Move, dst, l));
+		let lskip = self.new_label();
+		self.jmp(Op::Jt, dst, &lskip);
+		self.emit(Instr::ab(Op::Move, dst, r));
+		self.here(&lskip);
+	}
+
+	fn compile_expr(&mut self, e: &Expr, dst: u16) {
+		match e {
+			Expr::Num { value, .. } => {
+				let k = self.kidx(Const::Num(*value));
+				self.emit(Instr::ab(Op::LoadK, dst, k));
+			}
+			Expr::Str { bytes } => {
+				let k = self.kidx(Const::Str(bytes.clone()));
+				self.emit(Instr::ab(Op::LoadK, dst, k));
+			}
+			Expr::Bool { value } => {
+				let k = self.kidx(Const::Bool(*value));
+				self.emit(Instr::ab(Op::LoadK, dst, k));
+			}
+			Expr::Nil => {
+				let k = self.kidx(Const::Nil);
+				self.emit(Instr::ab(Op::LoadK, dst, k));
+			}
+				Expr::Vararg => {
+					// value position: first vararg
+					let t = self.tmp();
+					self.emit(Instr::ab(Op::VarArgTab, t, 0));
+					let kreg = self.tmp();
+					let k1 = self.kidx(Const::Num(1.0));
+					self.emit(Instr::ab(Op::LoadK, kreg, k1));
+					self.emit(Instr::abc(Op::GetTab, dst, t, kreg));
+				}
+			Expr::Ident { name, sym } => match sym {
+				Some(s) => {
+					if let Some(r) = self.lookup(*s) {
+						self.emit(Instr::ab(Op::Move, dst, r));
+					} else if let Some(u) = self.upvals.get(s).copied() {
+						self.emit(Instr::ab(Op::GetUp, dst, u));
+					} else {
+						// defensive: treat as global by name
+						let k = self.kidx(Const::Str(name.as_bytes().to_vec()));
+						self.emit(Instr::ab(Op::GetGlobal, dst, k));
+					}
+				}
+				None => {
+					let k = self.kidx(Const::Str(name.as_bytes().to_vec()));
+					self.emit(Instr::ab(Op::GetGlobal, dst, k));
+				}
+			},
+			Expr::Dot { obj, name } => {
+				let t = self.tmp();
+				self.compile_expr(obj, t);
+				let kreg = self.tmp();
+				let k = self.kidx(Const::Str(name.as_bytes().to_vec()));
+				self.emit(Instr::ab(Op::LoadK, kreg, k));
+				self.emit(Instr::abc(Op::GetTab, dst, t, kreg));
+			}
+			Expr::Index { obj, idx } => {
+				let t = self.tmp();
+				let k = self.tmp();
+				self.compile_expr(obj, t);
+				self.compile_expr(idx, k);
+				self.emit(Instr::abc(Op::GetTab, dst, t, k));
+			}
+			Expr::Bin { op, l, r } => match op {
+				BinOp::And => {
+					self.compile_expr(l, dst);
+					let lskip = self.new_label();
+					self.jmp(Op::Jf, dst, &lskip);
+					self.compile_expr(r, dst);
+					self.here(&lskip);
+				}
+				BinOp::Or => {
+					self.compile_expr(l, dst);
+					let lskip = self.new_label();
+					self.jmp(Op::Jt, dst, &lskip);
+					self.compile_expr(r, dst);
+					self.here(&lskip);
+				}
+				_ => {
+					let tl = self.tmp();
+					let tr = self.tmp();
+					self.compile_expr(l, tl);
+					self.compile_expr(r, tr);
+					let iop = match op {
+						BinOp::Add => Op::Add,
+						BinOp::Sub => Op::Sub,
+						BinOp::Mul => Op::Mul,
+						BinOp::Div => Op::Div,
+						BinOp::Idiv => Op::Idiv,
+						BinOp::Mod => Op::Mod,
+						BinOp::Pow => Op::Pow,
+						BinOp::Concat => Op::Concat,
+						BinOp::Eq => Op::Eq,
+						BinOp::Ne => Op::Ne,
+						BinOp::Lt => Op::Lt,
+						BinOp::Gt => Op::Gt,
+						BinOp::Le => Op::Le,
+						BinOp::Ge => Op::Ge,
+						_ => unreachable!(),
+					};
+					self.emit(Instr::abc(iop, dst, tl, tr));
+				}
+			},
+			Expr::Un { op, e } => {
+				if *op == UnOp::Len && matches!(e.as_ref(), Expr::Vararg) {
+					self.emit(Instr::ab(Op::VarArgC, dst, 0));
+					return;
+				}
+				let t = self.tmp();
+				self.compile_expr(e, t);
+				let uop = match op {
+					UnOp::Minus => Op::Unm,
+					UnOp::Not => Op::Not,
+					UnOp::Len => Op::Len,
+				};
+				self.emit(Instr::ab(uop, dst, t));
+			}
+			Expr::Call { .. } => {
+				let (nargs, has_vararg) = call_arg_info(e);
+				let freg = self.reserve(1 + nargs.max(1));
+				self.compile_call_into(e, freg, 1, has_vararg);
+				if freg + 1 != dst {
+					self.emit(Instr::ab(Op::Move, dst, freg + 1));
+				}
+			}
+			Expr::Method { obj, name, args } => {
+				let t = self.tmp();
+				self.compile_expr(obj, t);
+				let kreg = self.tmp();
+				let k = self.kidx(Const::Str(name.as_bytes().to_vec()));
+				self.emit(Instr::ab(Op::LoadK, kreg, k));
+				let n = (args.len() + 1) as u16;
+				let freg = self.reserve(1 + n);
+				// freg = method, freg+1 = obj, freg+2.. = args
+				self.emit(Instr::abc(Op::GetTab, freg, t, kreg));
+				self.emit(Instr::ab(Op::Move, freg + 1, t));
+				for (i, a) in args.iter().enumerate() {
+					self.compile_expr(a, freg + 2 + i as u16);
+				}
+				self.emit(Instr::abcd(Op::Call, freg, n, 1, 0));
+				if freg + 1 != dst {
+					self.emit(Instr::ab(Op::Move, dst, freg + 1));
+				}
+			}
+			Expr::Table { fields } => {
+				self.emit(Instr::ab(Op::NewTab, dst, 0));
+				let cnt = self.tmp();
+				let k0 = self.kidx(Const::Num(0.0));
+				self.emit(Instr::ab(Op::LoadK, cnt, k0));
+				let last = fields.len().saturating_sub(1);
+				for (i, f) in fields.iter().enumerate() {
+					match f {
+						TableField::Array(e) => {
+							if i == last && is_call(e) {
+						// trailing call: CALLT (multi-value into the
+						// table, counter advances)
+						let (nargs, has_vararg) = call_arg_info(e);
+						let _ = has_vararg; // table context: no vararg
+						let freg = self.reserve(1 + nargs.max(1));
+						self.compile_call_t(e, freg, dst, cnt);
+							} else if i == last && matches!(e, Expr::Vararg) {
+								self.emit(Instr::ab(Op::VarArgTabN, dst, cnt));
+							} else {
+								let v = self.tmp();
+								self.compile_expr(e, v);
+								self.emit(Instr::abc(Op::TabN, dst, cnt, v));
+							}
+						}
+						TableField::Key { key, value } => {
+							let kv = self.tmp();
+							let vv = self.tmp();
+							self.compile_expr(key, kv);
+							self.compile_expr(value, vv);
+							self.emit(Instr::abc(Op::SetTab, dst, kv, vv));
+						}
+					}
+				}
+			}
+			Expr::Function {
+				params,
+				param_syms,
+				vararg,
+				body,
+			} => {
+				self.compile_function(dst, body, params, param_syms, *vararg);
+			}
+		}
+	}
+
+	/// The trailing argument of a call expression, if any.
+	fn call_tail<'e>(e: &'e Expr) -> Option<&'e Expr> {
+		let args = match e {
+			Expr::Call { args, .. } => args,
+			Expr::Method { args, .. } => args,
+			_ => return None,
+		};
+		args.last().filter(|a| is_call(a))
+	}
+
+	/// (fixed arg count, has trailing call) for `e`; the method count
+	/// includes the self slot.
+	fn call_nfixed(e: &Expr) -> (u16, bool) {
+		let (args, is_m) = match e {
+			Expr::Call { args, .. } => (args, false),
+			Expr::Method { args, .. } => (args, true),
+			_ => unreachable!(),
+		};
+		let has_tail = args.last().map(is_call).unwrap_or(false);
+		let fixed = if has_tail {
+			(args.len() - 1) as u16 + if is_m { 1 } else { 0 }
+		} else {
+			args.iter().filter(|a| !matches!(a, Expr::Vararg)).count() as u16
+				+ if is_m { 1 } else { 0 }
+		};
+		(fixed, has_tail)
+	}
+
+	/// Compile the callee plus the first `nfixed` arg slots (each a
+	/// single value): callee at freg, args at freg+1.. (freg+2.. for
+	/// methods). The tail call (if any) is NOT compiled here.
+	fn compile_call_prefix(&mut self, e: &Expr, freg: u16, nfixed: u16) {
+		match e {
+			Expr::Call { func, args } => {
+				self.compile_expr(func, freg);
+				for (i, a) in args.iter().enumerate() {
+					if (i as u16) >= nfixed {
+						break;
+					}
+					if matches!(a, Expr::Vararg) {
+						continue;
+					}
+					self.compile_expr(a, freg + 1 + i as u16);
+				}
+			}
+			Expr::Method { obj, name, args } => {
+				let treg = self.tmp();
+				self.compile_expr(obj, treg);
+				let kreg = self.tmp();
+				let k = self.kidx(Const::Str(name.as_bytes().to_vec()));
+				self.emit(Instr::ab(Op::LoadK, kreg, k));
+				self.emit(Instr::abc(Op::GetTab, freg, treg, kreg));
+				self.emit(Instr::ab(Op::Move, freg + 1, treg));
+				// nfixed includes the self slot: compile nfixed-1 args
+				for (i, a) in args.iter().enumerate() {
+					if (i as u16) >= nfixed - 1 {
+						break;
+					}
+					if matches!(a, Expr::Vararg) {
+						continue;
+					}
+					self.compile_expr(a, freg + 2 + i as u16);
+				}
+			}
+			_ => unreachable!(),
+		}
+	}
+
+	/// Compile `e` as a call whose results are FULLY EXPANDED: results
+	/// overwrite the args at freg+1.. and the result count is stored in
+	/// the function slot freg (consumed by a CallE/CallM above). A
+	/// trailing call in `e` is itself expanded (recursive CallE chain).
+	fn compile_call_expand(&mut self, e: &Expr, freg: u16) {
+		let (nfixed, has_tail) = Self::call_nfixed(e);
+		self.compile_call_prefix(e, freg, nfixed);
+		let mut d: u16 = 0;
+		if has_tail {
+			let tail = Self::call_tail(e).unwrap().clone();
+			let (inargs, _) = call_arg_info(&tail);
+			let ifreg = freg + nfixed + 1;
+			if inargs > 0 {
+				self.reserve(inargs);
+			}
+			self.compile_call_expand(&tail, ifreg);
+			d |= 2;
+		}
+		let varg = match e {
+			Expr::Call { args, .. } => args.iter().any(|a| matches!(a, Expr::Vararg)),
+			Expr::Method { args, .. } => args.iter().any(|a| matches!(a, Expr::Vararg)),
+			_ => false,
+		};
+		if varg {
+			d |= 1;
+		}
+		self.emit(Instr::abcd(Op::CallE, freg, nfixed, 0, d));
+	}
+
+	/// Compile `call` with the function register at `freg` (args at
+	/// freg+1..freg+nargs), `nres` results (255 = variable), optional
+	/// vararg append. Results land at freg+1.. (over the args). A
+	/// trailing call arg expands all its results (5.1 call-arg rule).
+	fn compile_call_into(&mut self, e: &Expr, freg: u16, nres: u16, has_vararg: bool) {
+		let (nfixed, has_tail) = Self::call_nfixed(e);
+		self.compile_call_prefix(e, freg, nfixed);
+		if has_tail {
+			let tail = Self::call_tail(e).unwrap().clone();
+			let (inargs, _) = call_arg_info(&tail);
+			let ifreg = freg + nfixed + 1;
+			if inargs > 0 {
+				self.reserve(inargs);
+			}
+			self.compile_call_expand(&tail, ifreg);
+			self.emit(Instr::abcd(Op::CallM, freg, nfixed, nres, has_vararg as u16));
+		} else {
+			self.emit(Instr::abcd(Op::Call, freg, nfixed, nres, has_vararg as u16));
+		}
+	}
+
+	/// Trailing table call: CALLT — f at freg, args freg+1.., results into
+	/// `t` from counter+1, counter advances. A trailing call arg expands
+	/// (d = nfixed*2 + tail_flag).
+	fn compile_call_t(&mut self, e: &Expr, freg: u16, t: u16, cnt: u16) {
+		let (nfixed, has_tail) = Self::call_nfixed(e);
+		self.compile_call_prefix(e, freg, nfixed);
+		let mut d = nfixed * 2;
+		if has_tail {
+			let tail = Self::call_tail(e).unwrap().clone();
+			let (inargs, _) = call_arg_info(&tail);
+			let ifreg = freg + nfixed + 1;
+			if inargs > 0 {
+				self.reserve(inargs);
+			}
+			self.compile_call_expand(&tail, ifreg);
+			d |= 1;
+		}
+		self.emit(Instr::abcd(Op::CallT, freg, t, cnt, d));
+	}
+
+	fn compile_function(
+		&mut self,
+		dst: u16,
+		body: &Block,
+		params: &[String],
+		param_syms: &[SymId],
+		vararg: bool,
+	) {
+		let _ = params;
+		let analysis = analyze(body, param_syms);
+
+		// upvalue list = materialize (nested refs) ∪ direct refs
+		let mut ups: Vec<SymId> = analysis.nested_up.clone();
+		for s in &analysis.direct_up {
+			if !ups.contains(s) {
+				ups.push(*s);
+			}
+		}
+		ups.sort_unstable();
+		ups.dedup();
+		if std::env::var("LURAPH_VM_DBG").is_ok() {
+			let nm = |v: Vec<SymId>| {
+				let t: Vec<String> = v
+					.iter()
+					.map(|&s| format!("{}({})", self.symtab.name_of(s), s))
+					.collect();
+				t.join(",")
+			};
+			let scopes_dbg: Vec<String> = self
+				.scopes
+				.iter()
+				.map(|sc| {
+					let e: Vec<String> = sc
+						.iter()
+						.map(|(s, r)| format!("{}({})@{}", self.symtab.name_of(*s), s, r))
+						.collect();
+					e.join("|")
+				})
+				.collect();
+			eprintln!(
+				"[fn] direct_up=[{}] nested_up=[{}] ups=[{}]",
+				nm(analysis.direct_up.clone()),
+				nm(analysis.nested_up.clone()),
+				nm(ups.clone())
+			);
+			eprintln!("[fn] scopes={:?}", scopes_dbg);
+		}
+
+		// descriptors = the innermost enclosing scope holding the sym
+		let mut descriptors: Vec<u16> = Vec::new();
+		for s in &ups {
+			let mut found = None;
+			for sc in self.scopes.iter().rev() {
+				if let Some(&r) = sc.get(s) {
+					found = Some(r + 1);
+					break;
+				}
+			}
+			match found {
+				Some(slot) => {
+					// snapshot cell for per-iteration locals
+					descriptors.push(if self.iter_syms.contains(s) {
+						slot | 0x8000
+					} else {
+						slot
+					});
+				}
+				None => panic!(
+					"upvalue descriptor miss: sym {} not in any enclosing scope (ups mis-analyzed?)",
+					s
+				),
+			}
+		}
+
+		let child_index = self.next_fn_slot;
+		self.next_fn_slot += 1;
+		let nparams = param_syms.len() as u16;
+		let mut child = Ctx {
+			program: self.program,
+			rng: self.rng,
+			symtab: self.symtab,
+			next_fn_slot: self.next_fn_slot,
+			scopes: vec![HashMap::new()],
+			upvals: HashMap::new(),
+			upsrc: descriptors,
+			// temporaries start AFTER the parameter registers
+			next_reg: nparams,
+			nparams,
+			vararg,
+			consts: Vec::new(),
+			const_map: HashMap::new(),
+			code: Vec::new(),
+			labels: HashMap::new(),
+			loops: Vec::new(),
+			iter_syms: HashSet::new(),
+			loop_body_scopes: 0,
+		};
+		for (i, s) in ups.iter().enumerate() {
+			child.upvals.insert(*s, i as u16);
+		}
+		// params occupy regs 0..nparams-1
+		child.push_scope();
+		for (i, s) in param_syms.iter().enumerate() {
+			child.declare(*s, i as u16);
+		}
+		// materialize ALL upvalues (direct + nested) into fresh regs so
+		// that (a) the child's own direct refs can use a register and
+		// (b) GRANDCHILD descriptor lookups find the symbol in this
+		// function's scope (a grandchild may upvalue a symbol this
+		// function only DIRECTLY references — it must be materialized
+		// here or the grandchild's descriptor lookup misses it)
+		for s in &ups {
+			let u = child.upvals[s];
+			let r = child.next_reg;
+			child.next_reg += 1;
+			child.emit(Instr::ab(Op::GetUp, r, u));
+			child.declare(*s, r);
+		}
+		child.compile_block(body);
+		child.pop_scope();
+		let slot_end = child.next_fn_slot;
+		let nregs = child.next_reg;
+		let bytes = child.finish(nregs);
+		self.next_fn_slot = slot_end;
+		if child_index >= self.program.fns.len() { panic!("slot overflow: child_index={} len={} next={}", child_index, self.program.fns.len(), self.next_fn_slot); }
+		self.program.fns[child_index] = bytes;
+
+		self.emit(Instr::ab(Op::Closure, dst, child_index as u16));
+	}
+
+	fn eval_target(&mut self, t: &Expr) -> Target {
+		match t {
+			Expr::Ident { name, sym } => match sym {
+				Some(s) => Target::Local(*s),
+				None => Target::Global(self.kidx(Const::Str(name.as_bytes().to_vec()))),
+			},
+			Expr::Dot { obj, name } => {
+				let treg = self.tmp();
+				self.compile_expr(obj, treg);
+				let kreg = self.tmp();
+				let k = self.kidx(Const::Str(name.as_bytes().to_vec()));
+				// the key must live in a register (SetTab reads V[k+1])
+				self.emit(Instr::ab(Op::LoadK, kreg, k));
+				Target::Index2 { t: treg, k: kreg }
+			}
+			Expr::Index { obj, idx } => {
+				let treg = self.tmp();
+				let kreg = self.tmp();
+				self.compile_expr(obj, treg);
+				self.compile_expr(idx, kreg);
+				Target::Index2 { t: treg, k: kreg }
+			}
+			_ => panic!("invalid assignment target"),
+		}
+	}
+
+	fn store_target(&mut self, t: &Target, vreg: u16) {
+		match t {
+			Target::Local(s) => {
+				if let Some(r) = self.lookup(*s) {
+					self.emit(Instr::ab(Op::Move, r, vreg));
+					// a materialized upvalue is a LOCAL register here, but
+					// the value lives in a shared cell: forward the write so
+					// sibling closures and the creating frame observe it
+					if let Some(u) = self.upvals.get(&s).copied() {
+						self.emit(Instr::ab(Op::SetUp, u, r));
+					}
+				} else if let Some(u) = self.upvals.get(s).copied() {
+					self.emit(Instr::ab(Op::SetUp, u, vreg));
+				} else {
+					panic!("store to unknown local");
+				}
+			}
+			Target::Global(k) => {
+				self.emit(Instr::ab(Op::SetGlobal, vreg, *k));
+			}
+			Target::Index2 { t, k } => {
+				self.emit(Instr::abc(Op::SetTab, *t, *k, vreg));
+			}
+		}
+	}
+}
+
+#[derive(Debug, Clone)]
+enum Target {
+	Local(SymId),
+	Global(u16),
+	/// table register + key register (key is materialized by the time
+	/// eval_target returns, so it survives value compilation)
+	Index2 { t: u16, k: u16 },
+}
+
+fn is_call(e: &Expr) -> bool {
+	matches!(e, Expr::Call { .. } | Expr::Method { .. })
+}
+
+fn call_arg_info(e: &Expr) -> (u16, bool) {
+	match e {
+		Expr::Call { args, .. } => {
+			let n = args
+				.iter()
+				.filter(|a| !matches!(a, Expr::Vararg))
+				.count() as u16;
+			let v = args.iter().any(|a| matches!(a, Expr::Vararg));
+			(n, v)
+		}
+		Expr::Method { args, .. } => ((args.len() + 1) as u16, false),
+		_ => (0, false),
+	}
+}
+
+// ---------------------------------------------------------------------------
+// entry point
+// ---------------------------------------------------------------------------
+
+pub fn compile(block: &Block, table: &SymTable, rng: &mut Rng) -> VmProgram {
+	compile_chunk(block, table, rng)
+}
+
+#[cfg(test)]
+mod dbg {
+	use super::*;
+	use crate::parser;
+	use crate::symtab;
+
+	#[test]
+	fn dbg_header() {
+		let src = std::fs::read_to_string("/tmp/mv1.lua").unwrap();
+		let mut block = parser::parse(&src, false).unwrap();
+		let mut table = symtab::resolve(&mut block);
+		eprintln!("count_fns={}", count_fns_count(&block));
+		if let crate::ast::Stmt::If { thenb, .. } = &block.stmts[0] {
+			eprintln!("thenb stmts: {}", thenb.stmts.len());
+			for (si, s) in thenb.stmts.iter().enumerate() {
+				eprintln!("  thenb[{}] = {:?}", si, std::mem::discriminant(s));
+				if let crate::ast::Stmt::Local { values, .. } = s {
+					for (vi, v) in values.iter().enumerate() {
+						eprintln!("    value[{}] = {:?}", vi, v.as_ref().map(|e| std::mem::discriminant(e)));
+					}
+				}
+			}
+		}
+		for (si, s) in block.stmts.iter().enumerate() {
+			eprintln!("stmt[{}] = {:?}", si, std::mem::discriminant(s));
+			if let crate::ast::Stmt::Local { values, .. } = s {
+				for (vi, v) in values.iter().enumerate() {
+					if let Some(e) = v {
+						eprintln!("  value[{}] = {:?}", vi, std::mem::discriminant(e));
+						if let crate::ast::Expr::Function { body, .. } = e {
+							eprintln!("    fn body stmts: {}", body.stmts.len());
+						}
+					} else {
+						eprintln!("  value[{}] = None", vi);
+					}
+				}
+			}
+		}
+		let mut rng = crate::rng::Rng::new(42);
+		let prog = compile_chunk(&block, &table, &mut rng);
+		eprintln!("fns={}", prog.fns.len());
+		let names = ["Jmp","Jf","Jt","LoadNil","LoadK","Move","Add","Sub","Mul","Div","Mod","Pow","Concat","Unm","Not","Len","Lt","Le","Gt","Ge","Eq","Ne","Idiv","NewTab","GetTab","SetTab","TabN","CallT","Closure","Call","VarArgTab","VarArgC","VarArgTabN","GetGlobal","SetGlobal","GetUp","SetUp","Return","Nop","CallE","CallM"];
+		let mut wire2name: Vec<Option<&str>> = vec![None; 256];
+		for (i, nm) in names.iter().enumerate() {
+			wire2name[prog.opmap.to_wire[i] as usize] = Some(*nm);
+		}
+		for (fi, b) in prog.fns.iter().enumerate() {
+			eprintln!("=== FN[{}] len={}", fi, b.len());
+			let u16 = |p: usize| (b[p] as u16) | ((b[p + 1] as u16) << 8);
+			let mut p = 0;
+			let nregs = u16(p); p += 2;
+			let nparams = u16(p); p += 2;
+			let vararg = b[p]; p += 1;
+			let nups = u16(p); p += 2;
+			eprintln!("nregs={nregs} nparams={nparams} vararg={vararg} nups={nups}");
+			p += 2 * nups as usize;
+			let nconst = u16(p); p += 2;
+			for i in 0..nconst as usize {
+				let t = b[p]; p += 1;
+				match t {
+					0 => eprintln!("  C[{i}] = nil"),
+					1 => { eprintln!("  C[{i}] = bool {}", b[p] == 1); p += 1; }
+					_ => {
+						let l = u16(p) as usize; p += 2;
+						let txt = String::from_utf8_lossy(&b[p..p + l]).to_string();
+						let kind = if t == 2 { "num" } else { "str" };
+						eprintln!("  C[{i}] = {kind} {:?}", &txt[..txt.len().min(20)]);
+						p += l;
+					}
+				}
+			}
+			for (i, chunk) in b[p..].chunks(9).enumerate() {
+				if chunk.len() == 9 {
+					let nm = wire2name[chunk[0] as usize].unwrap_or("??");
+					let a = (chunk[1] as u16) | ((chunk[2] as u16) << 8);
+					let bb = (chunk[3] as u16) | ((chunk[4] as u16) << 8);
+					let cc = (chunk[5] as u16) | ((chunk[6] as u16) << 8);
+					let dd = (chunk[7] as u16) | ((chunk[8] as u16) << 8);
+					eprintln!("  [{i}] {nm} a={a} b={bb} c={cc} d={dd}");
+				}
+			}
+		}
+	}
+}

@@ -1,0 +1,4 @@
+# prebuilt interpreter binaries (real copies live in /home/user/tools/bin)
+tools/
+# build artifacts
+luraph-rs/target/
