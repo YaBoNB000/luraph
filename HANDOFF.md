@@ -47,7 +47,7 @@
 | M0 地基（lexer/parser/AST/symtab/printer round-trip） | ✅ 完成 |
 | M1（L1 名称混淆 + **L1 minify 单行压缩** + L2 字符串加密） | ✅ 完成 |
 | **M2（L3 控制流：CFG 扁平化状态机 + 循环嵌套子状态机 + junk）** | ✅ **完成（矩阵 68/68 全绿）** |
-| **M3 进行中：numbers(L4) ✅ → body(L5 整体加密) → antidbg(L7)** | 🟡 进行中 |
+| **M3 进行中：numbers(L4) ✅ + body(L5 整体加密) ✅ → antidbg(L7)** | 🟡 进行中 |
 
 **继续开发时**按 `docs/implementation-plan.md` §3 的里程碑顺序（M3 → M4/M5
 VM → M6 产品化）。每个 pass 完成后执行 §2.2 强制工作流（矩阵全绿 +

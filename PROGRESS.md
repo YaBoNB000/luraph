@@ -4,7 +4,7 @@
 > 当前状态：✅ 环境 ✅ 研究 ✅ v15 分析 ✅ M0 地基 ✅ M1 词法+字符串 ✅ **M2 控制流完成**
 > （L3 CFG 扁平化状态机 + 循环嵌套子状态机 + junk；L1 minify 单行压缩已补齐；
 > 全语料混淆示例见 `luraph-rs/examples/`（现为单行紧凑形态）；矩阵 68 项全绿；
-> **M3 进行中：L4 numbers ✅** → L5 body → L7 antidbg）
+> **M3 进行中：L4 numbers ✅ + L5 body ✅** → L7 antidbg）
 
 ## 0. 需求（用户确认）
 
@@ -180,9 +180,19 @@ for、nested break、repeat+until 局部变量、全局同名遮蔽均有语料�
 小值压力）+ 矩阵 68/68 全绿。顺带修复打印机 Idiv 去糖缺括号既有 bug
 （`math.floor(l / r)` 操作数需 Bin 上下文括号，luau_idiv 语料暴露）。
 
+### ✅ M3-2: body 完成（2026-08-23，L5 整体加密）
+
+| 模块 | 文件 | 说明 |
+|---|---|---|
+| L5 整体加密 | `luraph-rs/src/body.rs` | 流水线最外层：打印当前程序（minify 紧凑形态）→ 全新 24B 密钥加性加密（复用 L2 密钥流，新密钥）→ 密文切 3~5 块 Str 字面量 → 复用 L2 加载器（密钥 3 段+字节表+DEC 解密函数）→ 最终 `loadstring(DEC(C1..CN))()`。输出只剩容器：无任何程序结构/明文，只有密文字符串 |
+
+**body 验收**：矩阵 68/68 全绿（默认开，双解释器）；容器形态人工
+确认（仅密钥+解密器+密文+一个 loadstring 调用）；loadstring 进保留名
+（防遮蔽）。
+
 ### ⬜ 剩余（按 implementation-plan.md 里程碑推进）
 
-- [ ] **M3**：~~numbers(L4)~~ ✅ + `body`(L5 整体加密) + `antidbg`(L7)
+- [ ] **M3**：~~numbers(L4)~~ ✅ + ~~body(L5)~~ ✅ + `antidbg`(L7)
 - [ ] **M4/M5**：**VM（L6）**：`vmgen/isa.rs` + `compiler.rs` + `template.rs` + VMC 每构建随机化
 - [ ] **M6**：CLI 预设（low/medium/high/vm）+ README 产品文档
 - 每个 pass 完成后执行强制工作流（矩阵全绿 + examples 重新生成才算完成）
@@ -212,7 +222,8 @@ luraph/
 │   ├── src/
 │   │   ├── main.rs             #   CLI（--dialect/-o/--seed/--no-mangle/
 │   │   │                       #     --no-strings/--no-flatten/--no-junk/
-│   │   │                       #     --minify(默认)/--no-minify/--no-numbers)
+│   │   │                       #     --minify(默认)/--no-minify/--no-numbers/
+│   │   │                       #     --no-body)
 │   │   ├── ast.rs              #   AST 定义
 │   │   ├── lexer.rs            #   双方言词法（11 单测）
 │   │   ├── parser.rs           #   双方言语法（Pratt/注解剥离/去糖）
@@ -222,6 +233,7 @@ luraph/
 │   │   ├── minify.rs             #   L1 token 感知单行压缩（默认开）
 │   │   ├── strings.rs            #   L2 字符串加密 + 运行时解密加载器
 │   │   ├── numbers.rs            #   L4 数字字面量拆分（默认开）
+│   │   ├── body.rs               #   L5 整体加密容器（默认开）
 │   │   ├── junk.rs               #   L3 垃圾代码 + 透明谓词
 │   │   ├── flatten.rs            #   ★ L3 CFG 扁平化状态机（循环=嵌套子状态机）
 │   │   ├── desugar.rs            #   （已退出流水线，存档）

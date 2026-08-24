@@ -4,6 +4,7 @@
 //! (later: numbers/body/antidbg/vmgen)
 
 mod ast;
+mod body;
 mod flatten;
 mod junk;
 mod lexer;
@@ -28,6 +29,7 @@ struct Options {
 	do_mangle: bool,
 	do_minify: bool,
 	do_numbers: bool,
+	do_body: bool,
 	do_strings: bool,
 	do_flatten: bool,
 	do_junk: bool,
@@ -46,6 +48,7 @@ Options:
   --minify               L1 minify output to a single compact line (default: enabled)
   --no-minify            keep the normalized (indented) printer output
   --no-numbers           disable L4 numeric literal rewriting (default: enabled)
+  --no-body              disable L5 whole-program encryption (default: enabled)
   --no-mangle            disable L1 name mangling (default: enabled)
   --no-strings           disable L2 string encryption (default: enabled)
   --no-flatten           disable L3 loop desugar + CFG flattening (default: enabled)
@@ -67,6 +70,7 @@ fn main() -> ExitCode {
 		do_mangle: true,
 		do_minify: true,
 		do_numbers: true,
+		do_body: true,
 		do_strings: true,
 		do_flatten: true,
 		do_junk: true,
@@ -124,6 +128,7 @@ fn main() -> ExitCode {
 		"--minify" => opts.do_minify = true,
 		"--no-minify" => opts.do_minify = false,
 		"--no-numbers" => opts.do_numbers = false,
+		"--no-body" => opts.do_body = false,
 			"--no-strings" => opts.do_strings = false,
 			"--no-flatten" => opts.do_flatten = false,
 			"--no-junk" => opts.do_junk = false,
@@ -188,6 +193,9 @@ fn main() -> ExitCode {
 		}
 		if opts.do_numbers {
 			numbers::apply_numbers(&mut block, &mut rng);
+		}
+		if opts.do_body {
+			body::apply_body(&mut block, &mut table, &mut rng, &mut reserved, luau);
 		}
 		let out = printer::print_chunk(&table, &block);
 		if opts.do_minify {

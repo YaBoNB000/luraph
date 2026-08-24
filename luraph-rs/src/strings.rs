@@ -18,7 +18,7 @@ use crate::rng::Rng;
 use crate::symtab::{Sym, SymTable};
 use std::collections::HashSet;
 
-const KEY_LEN: usize = 24;
+pub(crate) const KEY_LEN: usize = 24;
 const PARTS: usize = 3;
 
 struct Cfg {
@@ -27,7 +27,7 @@ struct Cfg {
 	dec_name: String,
 }
 
-fn encrypt(bytes: &[u8], key: &[u8]) -> Vec<u8> {
+pub(crate) fn encrypt(bytes: &[u8], key: &[u8]) -> Vec<u8> {
 	let k = key.len();
 	bytes
 		.iter()
@@ -37,7 +37,7 @@ fn encrypt(bytes: &[u8], key: &[u8]) -> Vec<u8> {
 		.collect()
 }
 
-fn split_into_parts(bytes: &[u8], parts: usize) -> Vec<Vec<u8>> {
+pub(crate) fn split_into_parts(bytes: &[u8], parts: usize) -> Vec<Vec<u8>> {
 	if bytes.is_empty() {
 		return vec![Vec::new()];
 	}
@@ -309,7 +309,7 @@ fn xform_block(b: &Block, cfg: &Cfg) -> Block {
 ///     end
 ///     return table.concat(O)
 ///   end
-fn build_loader(
+pub(crate) fn build_loader(
 	table: &mut SymTable,
 	rng: &mut Rng,
 	reserved: &mut HashSet<String>,
