@@ -4,7 +4,7 @@
 > 当前状态：✅ 环境 ✅ 研究 ✅ v15 分析 ✅ M0 地基 ✅ M1 词法+字符串 ✅ **M2 控制流完成**
 > （L3 CFG 扁平化状态机 + 循环嵌套子状态机 + junk；L1 minify 单行压缩已补齐；
 > 全语料混淆示例见 `luraph-rs/examples/`（现为单行紧凑形态）；矩阵 68 项全绿；
-> **M3 进行中：L4 numbers ✅ + L5 body ✅** → L7 antidbg）
+> **M3 完成**（L4 数值 + L5 整体加密 + L7 反篡改）；下一步 M4 = VM 最小可用）
 
 ## 0. 需求（用户确认）
 
@@ -190,9 +190,23 @@ for、nested break、repeat+until 局部变量、全局同名遮蔽均有语料�
 确认（仅密钥+解密器+密文+一个 loadstring 调用）；loadstring 进保留名
 （防遮蔽）。
 
+### ✅ M3-3: antidbg 完成（2026-08-23，L7 反篡改 → M3 收官）
+
+| 模块 | 文件 | 说明 |
+|---|---|---|
+| L7 反篡改 | `luraph-rs/src/antidbg.rs` | 容器层四重防御：① 金丝雀自检（纯函数 `((a*M)+C)%P`，执行前校验）② 容器校验和（密文字节和 mod 随机质数 vs 构建期期望值，解密前拦截）③ 错误重写（pcall 拦截 + 行号解析双方言格式 + 随机偏移重映射 + level 0 重抛）④ 时间陷阱（全程 os.clock，5~15s 随机阈值）。陷阱全部静默死循环（无消息/无退出码提示） |
+
+**antidbg 验收**：矩阵 68/68 全绿（L1+L2+L3+L4+L5+L7 全开默认）；
+专项：篡改密文字节→挂起 ✓、篡改金丝雀→挂起 ✓、未捕获错误行号
+3→85852 重映射 + 无文件路径 + 退出码 1 ✓。
+
+### ✅ M3 完成（2026-08-23）
+
+L4 numbers + L5 body + L7 antidbg 三个 pass 全部落地，商业级预设的
+非 VM 部分（L1+L2+L3+L4+L5+L7）已全量实现。
+
 ### ⬜ 剩余（按 implementation-plan.md 里程碑推进）
 
-- [ ] **M3**：~~numbers(L4)~~ ✅ + ~~body(L5)~~ ✅ + `antidbg`(L7)
 - [ ] **M4/M5**：**VM（L6）**：`vmgen/isa.rs` + `compiler.rs` + `template.rs` + VMC 每构建随机化
 - [ ] **M6**：CLI 预设（low/medium/high/vm）+ README 产品文档
 - 每个 pass 完成后执行强制工作流（矩阵全绿 + examples 重新生成才算完成）
@@ -223,7 +237,7 @@ luraph/
 │   │   ├── main.rs             #   CLI（--dialect/-o/--seed/--no-mangle/
 │   │   │                       #     --no-strings/--no-flatten/--no-junk/
 │   │   │                       #     --minify(默认)/--no-minify/--no-numbers/
-│   │   │                       #     --no-body)
+│   │   │                       #     --no-body/--no-antidbg)
 │   │   ├── ast.rs              #   AST 定义
 │   │   ├── lexer.rs            #   双方言词法（11 单测）
 │   │   ├── parser.rs           #   双方言语法（Pratt/注解剥离/去糖）
@@ -234,6 +248,7 @@ luraph/
 │   │   ├── strings.rs            #   L2 字符串加密 + 运行时解密加载器
 │   │   ├── numbers.rs            #   L4 数字字面量拆分（默认开）
 │   │   ├── body.rs               #   L5 整体加密容器（默认开）
+│   │   ├── antidbg.rs            #   L7 反篡改容器层（金丝雀/校验和/错误重写/时间陷阱）
 │   │   ├── junk.rs               #   L3 垃圾代码 + 透明谓词
 │   │   ├── flatten.rs            #   ★ L3 CFG 扁平化状态机（循环=嵌套子状态机）
 │   │   ├── desugar.rs            #   （已退出流水线，存档）

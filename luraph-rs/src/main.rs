@@ -3,6 +3,7 @@
 //! Pipeline: parse -> symtab -> [junk] -> [mangle] -> [flatten] -> [strings] -> print
 //! (later: numbers/body/antidbg/vmgen)
 
+mod antidbg;
 mod ast;
 mod body;
 mod flatten;
@@ -30,6 +31,7 @@ struct Options {
 	do_minify: bool,
 	do_numbers: bool,
 	do_body: bool,
+	do_antidbg: bool,
 	do_strings: bool,
 	do_flatten: bool,
 	do_junk: bool,
@@ -49,6 +51,7 @@ Options:
   --no-minify            keep the normalized (indented) printer output
   --no-numbers           disable L4 numeric literal rewriting (default: enabled)
   --no-body              disable L5 whole-program encryption (default: enabled)
+  --no-antidbg           disable L7 anti-tamper (default: enabled)
   --no-mangle            disable L1 name mangling (default: enabled)
   --no-strings           disable L2 string encryption (default: enabled)
   --no-flatten           disable L3 loop desugar + CFG flattening (default: enabled)
@@ -71,6 +74,7 @@ fn main() -> ExitCode {
 		do_minify: true,
 		do_numbers: true,
 		do_body: true,
+		do_antidbg: true,
 		do_strings: true,
 		do_flatten: true,
 		do_junk: true,
@@ -129,6 +133,7 @@ fn main() -> ExitCode {
 		"--no-minify" => opts.do_minify = false,
 		"--no-numbers" => opts.do_numbers = false,
 		"--no-body" => opts.do_body = false,
+		"--no-antidbg" => opts.do_antidbg = false,
 			"--no-strings" => opts.do_strings = false,
 			"--no-flatten" => opts.do_flatten = false,
 			"--no-junk" => opts.do_junk = false,
@@ -196,6 +201,9 @@ fn main() -> ExitCode {
 		}
 		if opts.do_body {
 			body::apply_body(&mut block, &mut table, &mut rng, &mut reserved, luau);
+		}
+		if opts.do_antidbg {
+			antidbg::apply_antidbg(&mut block, &mut table, &mut rng, &mut reserved);
 		}
 		let out = printer::print_chunk(&table, &block);
 		if opts.do_minify {
