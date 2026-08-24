@@ -311,9 +311,9 @@ impl<'a> Printer<'a> {
 	fn print_expr_inner(&mut self, e: &Expr, ctx: Ctx) {
 		match e {
 			Expr::Num { value, isfloat } => self.print_num(*value, *isfloat),
-			Expr::Str { bytes } => {
+			Expr::Str { bytes, is_binary } => {
 				self.out.push('"');
-				self.out.push_str(&print_string_bytes(bytes));
+				self.out.push_str(&print_string_bytes(bytes, *is_binary));
 				self.out.push('"');
 			}
 			Expr::Bool { value } => {
@@ -378,7 +378,7 @@ impl<'a> Printer<'a> {
 					match f {
 						TableField::Array(v) => self.print_expr(v, Ctx::Top),
 						TableField::Key { key, value } => {
-							if let Expr::Str { bytes } = key {
+							if let Expr::Str { bytes, .. } = key {
 								if is_printable_key(bytes) {
 									self.out.push_str(&String::from_utf8_lossy(bytes));
 									self.out.push_str(" = ");
@@ -488,13 +488,20 @@ fn is_printable_key(b: &[u8]) -> bool {
 		&& b[0] != b'0'
 }
 
-/// Byte-exact string literal content (UTF-8-aware: valid printable UTF-8
-/// passes through; everything else is \ddd-escaped).
+/// Byte-exact string literal content.
+///
+/// `is_binary` (ciphertext / key-stream / VM bytecode blobs): EVERY
+/// non-printable-ASCII byte is \ddd-escaped — no UTF-8 passthrough, which
+/// would otherwise emit random CJK garbage from arbitrary ciphertext bytes
+/// (high bytes that happen to form valid UTF-8, e.g. E8 AF 9C = 嘱).
+///
+/// `!is_binary` (user strings): UTF-8-aware — valid printable UTF-8 passes
+/// through (readable 你好 stays readable); everything else is escaped.
 ///
 /// IMPORTANT: a decimal escape followed by a literal digit byte would merge
 /// on re-lex (`\1` + `2` => `\12`). When the next byte is a digit we emit a
 /// 3-digit zero-padded escape (`\001`) so the lexer stops at exactly 3 digits.
-pub fn print_string_bytes(bytes: &[u8]) -> String {
+pub fn print_string_bytes(bytes: &[u8], is_binary: bool) -> String {
 	let mut out = String::new();
 	let mut i = 0usize;
 	while i < bytes.len() {
@@ -512,6 +519,14 @@ pub fn print_string_bytes(bytes: &[u8]) -> String {
 						out.push_str(&format!("\\{}", b));
 					}
 				}
+			}
+			i += 1;
+		} else if is_binary {
+			// ciphertext: raw high bytes must never reach the literal
+			if next_is_digit {
+				out.push_str(&format!("\\{:03}", b));
+			} else {
+				out.push_str(&format!("\\{}", b));
 			}
 			i += 1;
 		} else {

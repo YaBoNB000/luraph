@@ -113,7 +113,10 @@ impl UnOp {
 #[derive(Debug, Clone)]
 pub enum Expr {
 	Num { value: f64, isfloat: bool },
-	Str { bytes: Vec<u8> },
+	/// `is_binary`: ciphertext/key-stream/bytecode blobs (printer escapes
+	/// every non-printable-ASCII byte — no UTF-8 passthrough, which would
+	/// otherwise emit random CJK garbage from arbitrary ciphertext bytes)
+	Str { bytes: Vec<u8>, is_binary: bool },
 	Bool { value: bool },
 	Nil,
 	Vararg,

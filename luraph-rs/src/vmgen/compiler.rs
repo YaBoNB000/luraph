@@ -1181,7 +1181,7 @@ impl<'a> Ctx<'a> {
 				let k = self.kidx(Const::Num(*value));
 				self.emit(Instr::ab(Op::LoadK, dst, k));
 			}
-			Expr::Str { bytes } => {
+			Expr::Str { bytes, .. } => {
 				let k = self.kidx(Const::Str(bytes.clone()));
 				self.emit(Instr::ab(Op::LoadK, dst, k));
 			}

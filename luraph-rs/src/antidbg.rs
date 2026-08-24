@@ -39,6 +39,7 @@ fn num(v: i64) -> Expr {
 fn str_s(bytes: &[u8]) -> Expr {
 	Expr::Str {
 		bytes: bytes.to_vec(),
+		is_binary: false,
 	}
 }
 
@@ -424,7 +425,7 @@ pub fn apply_antidbg(
 	for s in &block.stmts {
 		if let Stmt::Local { syms, values, .. } = s {
 			for (sy, v) in syms.iter().zip(values.iter()) {
-				if let Some(Expr::Str { bytes }) = v {
+				if let Some(Expr::Str { bytes, .. }) = v {
 					byte_map.insert(*sy, bytes.clone());
 				}
 			}

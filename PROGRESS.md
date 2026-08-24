@@ -221,6 +221,12 @@ makefn 闭包帧模型 + 分派循环 + `__call`/`__len`/元表处理 + Luau 冻
 luau 下的交叉验证 + luau-compile 语法校验）。种子确定性已验证
 （同 seed 逐字节一致 / 异 seed 编码完全不同）。
 
+修复（2026-08-24 后续）：**输出纯度 bug**——示例/输出中出现随机
+繁体中文字符：密文串走打印器的 UTF-8 透传路径，随机高字节恰好构成
+合法 UTF-8 时原样输出。修复 = `Expr::Str.is_binary` 全转义 + minify
+字面量原样输出（细节见 `docs/vm-l6-implementation.md`）；全部 25 个
+示例现均为纯 ASCII，矩阵 136/136 保持全绿。
+
 ### ⬜ 剩余（按 implementation-plan.md 里程碑推进）
 
 - [ ] **M5**：**VM 完整随机面**：随机二分决策树分派（2~4 层）、死指令

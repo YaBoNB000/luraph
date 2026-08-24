@@ -326,6 +326,7 @@ impl Lexer {
 
 	fn lex_short_string(&mut self, quote: u8) -> Result<Token, LexError> {
 		let line = self.line;
+		let start = self.pos;
 		self.advance(1); // opening quote
 		let mut out: Vec<u8> = Vec::new();
 		loop {
@@ -350,7 +351,12 @@ impl Lexer {
 				self.advance(1);
 			}
 		}
-		let mut t = self.mktok(TokKind::Str, String::new(), 0.0, false);
+		let mut t = self.mktok(
+			TokKind::Str,
+			String::from_utf8_lossy(&self.src[start..self.pos]).into_owned(),
+			0.0,
+			false,
+		);
 		t.bytes = out;
 		t.line = line;
 		Ok(t)
@@ -375,6 +381,7 @@ impl Lexer {
 
 	fn lex_long_string(&mut self, lvl: usize) -> Result<Token, LexError> {
 		let line = self.line;
+		let span_start = self.pos;
 		let open = format!("[{}[", "=".repeat(lvl));
 		let close = format!("]{}]", "=".repeat(lvl));
 		let cb = close.as_bytes();
@@ -387,8 +394,14 @@ impl Lexer {
 					body.remove(0);
 				}
 				self.line += self.count_newlines(self.pos, q + cb.len());
-				self.pos = q + cb.len();
-				let mut t = self.mktok(TokKind::Str, String::new(), 0.0, false);
+				let end = q + cb.len();
+				self.pos = end;
+				let mut t = self.mktok(
+					TokKind::Str,
+					String::from_utf8_lossy(&self.src[span_start..end]).into_owned(),
+					0.0,
+					false,
+				);
 				t.bytes = body;
 				t.line = line;
 				Ok(t)

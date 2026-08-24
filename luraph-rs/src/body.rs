@@ -69,6 +69,7 @@ pub fn apply_body(
 			syms: vec![id],
 			values: vec![Some(Expr::Str {
 				bytes: bytes.clone(),
+				is_binary: true,
 			})],
 		});
 	}

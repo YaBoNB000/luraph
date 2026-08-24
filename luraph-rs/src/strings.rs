@@ -141,12 +141,12 @@ fn expr_has_str(e: &Expr) -> bool {
 /// chunk Str nodes that are never revisited.
 fn xform_expr(e: &Expr, cfg: &Cfg) -> Expr {
 	match e {
-		Expr::Str { bytes } => {
+		Expr::Str { bytes, .. } => {
 			let ct = encrypt(bytes, &cfg.key);
 			let chunks = split_into_parts(&ct, PARTS);
 			let args: Vec<Expr> = chunks
 				.into_iter()
-				.map(|c| Expr::Str { bytes: c })
+				.map(|c| Expr::Str { bytes: c, is_binary: true })
 				.collect();
 			Expr::Call {
 				func: Box::new(ident(&cfg.dec_name, Some(cfg.dec))),
@@ -493,9 +493,9 @@ pub(crate) fn build_loader(
 			names: vec![n1, n2, n3],
 			syms: vec![s1, s2, s3],
 			values: vec![
-				Some(Expr::Str { bytes: k1 }),
-				Some(Expr::Str { bytes: k2 }),
-				Some(Expr::Str { bytes: k3 }),
+				Some(Expr::Str { bytes: k1, is_binary: true }),
+				Some(Expr::Str { bytes: k2, is_binary: true }),
+				Some(Expr::Str { bytes: k3, is_binary: true }),
 			],
 		},
 		Stmt::Local {

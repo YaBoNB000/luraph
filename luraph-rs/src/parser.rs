@@ -746,7 +746,7 @@ impl Parser {
 			}
 			TokKind::Str => {
 				self.next();
-				Ok(Expr::Str { bytes: t.bytes })
+				Ok(Expr::Str { bytes: t.bytes, is_binary: false })
 			}
 			TokKind::Interp => {
 				self.next();
@@ -826,7 +826,7 @@ impl Parser {
 			}
 		}
 		if args.is_empty() {
-			return Ok(Expr::Str { bytes: fmt });
+			return Ok(Expr::Str { bytes: fmt, is_binary: false });
 		}
 		let func = Expr::Dot {
 			obj: Box::new(Expr::Ident {
@@ -835,7 +835,7 @@ impl Parser {
 			}),
 			name: "format".to_string(),
 		};
-		let mut all = vec![Expr::Str { bytes: fmt }];
+		let mut all = vec![Expr::Str { bytes: fmt, is_binary: false }];
 		all.extend(args);
 		Ok(Expr::Call {
 			func: Box::new(func),
@@ -960,6 +960,7 @@ impl Parser {
 				fields.push(TableField::Key {
 					key: Expr::Str {
 						bytes: n.text.as_bytes().to_vec(),
+						is_binary: false,
 					},
 					value: v,
 				});
@@ -998,7 +999,7 @@ fn clone_expr(e: &Expr) -> Expr {
 			value: *value,
 			isfloat: *isfloat,
 		},
-		Expr::Str { bytes } => Expr::Str { bytes: bytes.clone() },
+		Expr::Str { bytes, is_binary } => Expr::Str { bytes: bytes.clone(), is_binary: *is_binary },
 		Expr::Bool { value } => Expr::Bool { value: *value },
 		Expr::Nil => Expr::Nil,
 		Expr::Vararg => Expr::Vararg,

@@ -26,7 +26,6 @@
 //! string content round-trips exactly.
 
 use crate::lexer::{Lexer, TokKind, Token};
-use crate::printer::print_string_bytes;
 
 /// Minify Lua source: returns a single-line, whitespace-minimal version
 /// with identical token sequence (hence identical semantics).
@@ -82,11 +81,11 @@ fn token_text(t: &Token) -> Result<String, String> {
 		TokKind::Name | TokKind::Punct | TokKind::Label => Ok(t.text.clone()),
 		TokKind::Num => Ok(num_text(t.num, t.isfloat)),
 		TokKind::Str => {
-			let mut s = String::with_capacity(t.bytes.len() + 4);
-			s.push('"');
-			s.push_str(&print_string_bytes(&t.bytes));
-			s.push('"');
-			Ok(s)
+			// emit the literal EXACTLY as the printer wrote it (the lexer
+			// captured the raw span) — re-encoding from decoded bytes could
+			// re-introduce high-byte passthrough (CJK garbage) for
+			// ciphertext chunks that happen to contain no control bytes
+			Ok(t.text.clone())
 		}
 		TokKind::Interp => Err("minify: backtick interpolation reached output \
 			(parser must desugar it before print)".into()),

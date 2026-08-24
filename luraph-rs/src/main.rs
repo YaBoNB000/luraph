@@ -202,6 +202,7 @@ fn main() -> ExitCode {
 				.iter()
 				.map(|b| ast::Expr::Str {
 					bytes: b.clone(),
+					is_binary: true,
 				})
 				.collect();
 			tblock.stmts.push(ast::Stmt::ExprStmt(ast::Expr::Call {
