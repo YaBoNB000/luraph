@@ -34,6 +34,12 @@ struct Options {
 	do_body: bool,
 	do_antidbg: bool,
 	do_vm: bool,
+	/// v15 structural-parity profile (Route A, 2026-08-25): Luau/Roblox-only
+	/// output shaped like a Luraph v15 sample (module table + FC entry).
+	/// P0: flag exists and is Luau-gated; emission still routes through the
+	/// legacy VM pipeline until the v15 emitter lands (P1+, see
+	/// docs/v15-structural-parity-plan.md).
+	do_v15: bool,
 	do_strings: bool,
 	do_flatten: bool,
 	do_junk: bool,
@@ -54,6 +60,7 @@ fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
 	opts.do_body = false;
 	opts.do_antidbg = false;
 	opts.do_vm = false;
+	opts.do_v15 = false;
 	opts.junk_n = 2;
 	match name {
 		"low" => {
@@ -108,9 +115,25 @@ fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
 			opts.do_vm = true;
 			opts.junk_n = 2;
 		}
+		"v15" => {
+			// Route A (2026-08-25): Luraph-v15 structural clone profile,
+			// Luau/Roblox only. P0: behaves like `vm` (stub emission);
+			// P1+ replaces the emitter (module table + :FC()(...) shell,
+			// L5 body / L7 clocks stay OFF for that profile).
+			opts.do_mangle = true;
+			opts.do_minify = true;
+			opts.do_strings = true;
+			opts.do_flatten = true;
+			opts.do_junk = true;
+			opts.do_numbers = true;
+			opts.do_body = true;
+			opts.do_antidbg = true;
+			opts.do_vm = true;
+			opts.do_v15 = true;
+		}
 		other => {
 			return Err(format!(
-				"unknown --preset '{other}' (want low|medium|high|vm|max)"
+				"unknown --preset '{other}' (want low|medium|high|vm|max|v15)"
 			));
 		}
 	}
@@ -133,6 +156,9 @@ Options:
                            high    medium+L4+L5+L7  (default)
                            vm      high+L6 private bytecode VM
                            max     strongest shipping (= vm; v2 reserved)
+                           v15     Luraph-v15 structural clone (Luau/Roblox
+                                   only; Route A -- see docs/v15-
+                                   structural-parity-plan.md)
   --minify               L1 minify output to a single compact line (default: enabled)
   --no-minify            keep the normalized (indented) printer output
   --no-numbers           disable L4 numeric literal rewriting (default: enabled)
@@ -164,6 +190,7 @@ fn main() -> ExitCode {
 		do_body: true,
 		do_antidbg: true,
 		do_vm: false,
+		do_v15: false,
 		do_strings: true,
 		do_flatten: true,
 		do_junk: true,
@@ -221,7 +248,7 @@ fn main() -> ExitCode {
 			"--preset" => {
 				i += 1;
 				if i >= args.len() {
-					eprintln!("error: --preset requires a value (low|medium|high|vm|max)");
+					eprintln!("error: --preset requires a value (low|medium|high|vm|max|v15)");
 					return ExitCode::FAILURE;
 				}
 				if let Err(e) = apply_preset(&mut opts, args[i].as_str()) {
@@ -256,6 +283,16 @@ fn main() -> ExitCode {
 	opts.input = positional[0].clone();
 	if positional.len() > 1 {
 		opts.output = Some(positional[1].clone());
+	}
+
+	if opts.do_v15 && opts.dialect != "luau" {
+		eprintln!(
+			"error: --preset v15 requires --dialect luau\n  \
+			 the v15 structural profile clones the Luraph v15 shape \
+			 (buffer/bit32/typeof/setfenv),\n  which Lua 5.1 cannot \
+			 run. Use `--preset vm` for the dual-target output."
+		);
+		return ExitCode::FAILURE;
 	}
 
 	let luau = opts.dialect == "luau";

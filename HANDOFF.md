@@ -57,6 +57,7 @@
 | **M4（L6 VM：私有字节码 + 生成混淆解释器，`--vm`）** | ✅ **完成 + 续期加固（2026-08-25）：矩阵 204/204 全绿（语料 21→29，新增 8 个 stress_*）+ 多种子回归（5 seeds）0 失败；upvalue 单 cell 别名模型 / 循环变量 per-iteration 共享 cell / 5.1 构造器存储序 / 全变长展开等 9 类语义修复；实现笔记 `docs/vm-l6-implementation.md` §8** |
 | **M5（VM 完整随机面）** | ✅ **完成（2026-08-25）**：SoA 平行数组 + 完整 7/14/21-bit + base-94 载体/token + 解码枢纽/状态元组随机 + 帧入场原语解包 + `luac51 -l` 抽查；矩阵 204/204 + 多种子 0 失败 |
 | **M6（产品化）** | ✅ **完成（2026-08-25）**：`--preset low\|medium\|high\|vm\|max`（默认 ≡ high；vm ≡ `--vm`；max = vm，v2 预留）+ 产品 README + `docs/performance.md`；预设矩阵 405/405 |
+| **v15 结构同族（路线 A）** | 🟡 **进行中**：二轮详读订正计划（5 处架构修正 + 指纹 F21–F32）；**P0 ✅**（`tests/v15_fingerprint.py` 样本 32/32、现 `vm` 产物 1/32；`--preset v15` CLI = Luau 门控 + stub 走 vm 管线）；**下一步 P1 外壳换代**，全部细节在 `docs/v15-structural-parity-plan.md` |
 
 **M5 清单**（对照 `docs/vm-l6-implementation.md` §7，全部勾完）：
 
@@ -212,6 +213,8 @@ luraph/
     ├── tests/
     │   ├── run_tests.sh        # ★ 官方矩阵（非 VM + VM 两阶段；.tools 路径回退）
     │   ├── run_presets.sh      # ★ 五档预设 × 全语料（M6，405 项）
+    │   ├── v15_fingerprint.py  # ★ v15 结构指纹 32 条（P0；样本 32/32，改
+    │   │                       #   vmgen/ 发射外壳前后对打用；解析口径坑见文件头）
     │   ├── bench_presets.sh    #   性能快照 → docs/performance.md
     │   ├── multiseed.sh        # ★ 多种子回归（VM 改动必跑；seeds 可传参，
     │   │                       #   默认 1 7 4242 31337 999999）
@@ -319,9 +322,11 @@ bash tests/run_tests.sh
 bash tests/multiseed.sh
 ```
 
-**M0–M6 已完成。** 若要输出在结构上与 `samples/luraph15.txt` 同族，
-读 `docs/v15-structural-parity-plan.md`（须先选路线 A=Roblox 克隆档
-或 B=双目标孪生；未拍板前不改 `vmgen/` 发射外壳）。
+**M0–M6 已完成。** v15 结构同族**已拍板路线 A**（Roblox/Luau 克隆档，
+2026-08-25）：P0 脚手架 ✅（`tests/v15_fingerprint.py` 32 条：样本全绿 /
+现 `vm` 产物全红；`--preset v15` = Luau 门控 + stub），**下一步 = P1 外壳
+换代**——全部路线/阶段/验收在 `docs/v15-structural-parity-plan.md`，
+改发射外壳前必读其 §1.1（五处架构修正）。
 
 **通用规则**：改 VM 三件套（isa/compiler/template）任何一处 → 先读
 `docs/vm-l6-implementation.md`（尤其 §8 的 9 类坑），改完 = 矩阵 204 +
