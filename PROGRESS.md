@@ -1,11 +1,9 @@
 # 项目进度（PROGRESS）
 
 > 最后更新：2026-08-25
-> 当前状态：✅ 环境 ✅ 研究 ✅ v15 分析 ✅ M0–M4 ✅ **M5 VM 完整随机面收官**
-> （SoA 平行数组 + 完整 7/14/21-bit + base-94/token 载体 + 解码枢纽/状态元组
-> 随机 + 帧入场原语解包 + `luac51 -l` 抽查；矩阵 **204/204 全绿** + 多种子
-> `{1,7,4242,31337,999999}` 0 失败；同 seed 逐字节一致 / 异 seed 前 2KB
-> 重合 9.5%；下一步 M6 产品化）
+> 当前状态：✅ 环境 ✅ 研究 ✅ v15 分析 ✅ **M0–M6 全部完成**
+> （M6：`--preset low|medium|high|vm|max` + 产品 README + `docs/performance.md`；
+> 官方矩阵 **204/204** + 预设矩阵 **405/405** + 多种子 0 失败）
 
 ## 0. 需求（用户确认）
 
@@ -281,10 +279,21 @@ multival/errors/bigtable/control/luau_vm），直接暴露并修复 **9 类真 b
 **验收**：矩阵 204/204；多种子 0 失败；同 seed 一致 / 异 seed 前 2KB 重合 9.5%。
 踩坑：SoA 数组不可与 opcode 名表同名（`OC`）；`AL`/`TK` 必须声明在 `decarrier` 之前。
 
+### ✅ M6 完成（2026-08-25）：产品化
+
+| 项 | 落地 |
+|---|---|
+| CLI 预设 | `--preset low\|medium\|high\|vm\|max`；默认 ≡ high；`vm` ≡ `--vm`；`max` = vm（v2 预留） |
+| 产品文档 | 根目录 `README.md` 重写（用法 / 预设表 / 约束 / 验证） |
+| 性能数据 | `docs/performance.md` + `tests/bench_presets.sh` |
+| 预设矩阵 | `tests/run_presets.sh` **405/405** |
+
+版本 0.1.0 → **0.2.0**。
+
 ### ⬜ 剩余
 
-- [ ] **M6**：CLI 预设（low/medium/high/vm/max）+ README 产品文档 + 性能数据
-- 每个 pass 完成后执行强制工作流（矩阵全绿 + examples 重新生成才算完成）
+无未完成里程碑。可选增强见 `docs/implementation-plan.md` §1 仍为 📐/⬜ 的行。
+每个 pass 完成后仍执行强制工作流。
 
 ## 4. 目录结构（当前，2026-08-25）
 

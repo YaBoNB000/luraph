@@ -62,7 +62,8 @@ tests/gen_examples.sh
   每构建随机的解码枢纽/状态元组顺序 + 帧入场原语数字槽解包。
   `--vm` 输出经 `luac51 -l` 看不到用户结构。
 
-## 尚未实现（M6）
+## 预设（M6）
 
-CLI 预设（low/medium/high/vm/max）+ 产品文档 + 性能数据。
-详见 `docs/implementation-plan.md` §3。
+根目录 `README.md` 有完整用法。示例按**默认 high** 生成（与 `--preset high`
+逐字节一致）。VM 三件示例等价于 `--preset vm`。五档对照矩阵：
+`tests/run_presets.sh`（405 项）。性能：`docs/performance.md`。

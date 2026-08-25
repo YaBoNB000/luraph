@@ -37,6 +37,84 @@ struct Options {
 	do_strings: bool,
 	do_flatten: bool,
 	do_junk: bool,
+	/// How many junk blocks to inject at each function head (max preset
+	/// raises this; VM templates stay at 2 to keep the 200-local budget).
+	junk_n: usize,
+}
+
+/// Named strength presets. Individual `--no-*` / `--vm` flags that
+/// appear *after* `--preset` override the bundle (left-to-right).
+fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
+	opts.do_mangle = false;
+	opts.do_minify = false;
+	opts.do_strings = false;
+	opts.do_flatten = false;
+	opts.do_junk = false;
+	opts.do_numbers = false;
+	opts.do_body = false;
+	opts.do_antidbg = false;
+	opts.do_vm = false;
+	opts.junk_n = 2;
+	match name {
+		"low" => {
+			// L1 + L2
+			opts.do_mangle = true;
+			opts.do_minify = true;
+			opts.do_strings = true;
+		}
+		"medium" => {
+			// low + L3
+			opts.do_mangle = true;
+			opts.do_minify = true;
+			opts.do_strings = true;
+			opts.do_flatten = true;
+			opts.do_junk = true;
+		}
+		"high" => {
+			// medium + L4 + L5 + L7  (default when no --preset)
+			opts.do_mangle = true;
+			opts.do_minify = true;
+			opts.do_strings = true;
+			opts.do_flatten = true;
+			opts.do_junk = true;
+			opts.do_numbers = true;
+			opts.do_body = true;
+			opts.do_antidbg = true;
+		}
+		"vm" => {
+			// high + L6
+			opts.do_mangle = true;
+			opts.do_minify = true;
+			opts.do_strings = true;
+			opts.do_flatten = true;
+			opts.do_junk = true;
+			opts.do_numbers = true;
+			opts.do_body = true;
+			opts.do_antidbg = true;
+			opts.do_vm = true;
+		}
+		"max" => {
+			// strongest shipping preset = vm. v2 (CPS frames /
+			// superinstructions) is reserved; extra junk would blow
+			// the VM template's 200-local budget, so intensity stays 2.
+			opts.do_mangle = true;
+			opts.do_minify = true;
+			opts.do_strings = true;
+			opts.do_flatten = true;
+			opts.do_junk = true;
+			opts.do_numbers = true;
+			opts.do_body = true;
+			opts.do_antidbg = true;
+			opts.do_vm = true;
+			opts.junk_n = 2;
+		}
+		other => {
+			return Err(format!(
+				"unknown --preset '{other}' (want low|medium|high|vm|max)"
+			));
+		}
+	}
+	Ok(())
 }
 
 fn print_help() {
@@ -49,6 +127,12 @@ Options:
   -o, --output <file>    output file (default: stdout)
   --seed <n>             PRNG seed (default: time-based; use a fixed seed
                          for reproducible output)
+  --preset <name>        named strength (flags after this override it):
+                           low     L1+L2  name+minify+strings
+                           medium  low+L3 flatten+junk
+                           high    medium+L4+L5+L7  (default)
+                           vm      high+L6 private bytecode VM
+                           max     strongest shipping (= vm; v2 reserved)
   --minify               L1 minify output to a single compact line (default: enabled)
   --no-minify            keep the normalized (indented) printer output
   --no-numbers           disable L4 numeric literal rewriting (default: enabled)
@@ -83,6 +167,7 @@ fn main() -> ExitCode {
 		do_strings: true,
 		do_flatten: true,
 		do_junk: true,
+		junk_n: 2,
 	};
 	let mut i = 0;
 	let mut positional: Vec<String> = Vec::new();
@@ -131,6 +216,17 @@ fn main() -> ExitCode {
 						eprintln!("error: --seed must be a number");
 						return ExitCode::FAILURE;
 					}
+				}
+			}
+			"--preset" => {
+				i += 1;
+				if i >= args.len() {
+					eprintln!("error: --preset requires a value (low|medium|high|vm|max)");
+					return ExitCode::FAILURE;
+				}
+				if let Err(e) = apply_preset(&mut opts, args[i].as_str()) {
+					eprintln!("error: {e}");
+					return ExitCode::FAILURE;
 				}
 			}
 			"--no-mangle" => opts.do_mangle = false,

@@ -5,8 +5,8 @@
 > §2 进度表 + §3 里程碑勾选 + 更新日志**（四处一起改，不允许只记日志不改状态），
 > 并同步 `PROGRESS.md` / `HANDOFF.md` / `examples/README.md`，
 > **最后 commit + push 到 GitHub**（用户规矩 2026-08-23）。
-> 初版：2026-08-23 ｜ 最后更新：2026-08-25（**M5 收官**：SoA + 完整 7-bit + 载体 + 枢纽/原语解包）
-> **当前状态：M0–M5 ✅ → 下一步 M6 产品化**
+> 初版：2026-08-23 ｜ 最后更新：2026-08-25（**M6 收官**：CLI 预设 + 产品 README + 性能数据）
+> **当前状态：M0–M6 ✅**
 
 ---
 
@@ -77,7 +77,7 @@
 | 7-bit 分块操作数编码 | 7/14/21-bit 变长 + 128 进制重建 + 2³² 归一化（VM 档可选开） | `vmgen/compiler.rs`+`template.rs` | P1 | ✅ M5（7/14/21/28-bit 四档；解码无位运算；≥2³¹ 做 `v-2³²`） |
 | 状态元组位置传参（混函数引用） | 状态含原语指针，每构建顺序随机 | `vmgen/template.rs` | P0 | ✅ M5（`run` 解包 `W/SA/SB/SC/SD/C` 字段序每构建 shuffle；fetch 6 元组序 shuffle） |
 | 解码枢纽状态 + 私有解码辅助 | 解码主循环枢纽 ID 每构建随机；辅助函数运行器内私有 | `vmgen/template.rs` | P0 | ✅ M5（inline fetch / `hub()` 两风格；u16/r16/decarrier 声明序 shuffle；AL/TK 固定在 decarrier 之前） |
-| base-N 编码 + token 转义 | 字符类 ASCII 32..126 + 10 特殊字符→5 字符 token（pC 同款） | `vmgen/isa.rs` | P0 | 📐 |
+| base-N 编码 + token 转义 | 字符类 ASCII 32..126 + 10 特殊字符→5 字符 token（pC 同款） | `vmgen/isa.rs` | P0 | ✅ M5（base-94 + 保留前缀 token） |
 | 元表/协程/pcall 透传宿主 | 不模拟，正确性优先 | `vmgen/compiler.rs` | P0 | ✅ M4（实测语料通过） |
 | 解释器自身再过 L1/L2/垃圾注入 | 模板生成后走同一套 pass（表名随机化） | 管线 | P0 | ✅ M4（含 L3/L4/L5/L7） |
 | 每帧新 Lua 闭包（CPS 帧模型） | 性能代价大 | — | P2(v2) | ⬜ |
@@ -98,7 +98,7 @@
 |---|---|---|---|---|
 | 双方言模式 | `--dialect 5.1\|luau`（解析/去糖/输出/VM 全链通） | 全模块 | P0 | ✅（含 for-in 方言差异：Luau 隐式 next 归一化） |
 | 种子确定性 | `--seed`（同 seed 逐字节一致，不同 seed 编码完全不同；默认时间种子） | `rng.rs` | P0 | ✅ M1 |
-| 预设 | low(L1+L2) / medium(+L3) / high(+L4+L5+L7) / vm(全开) / max(v2 特性) | `main.rs` | P0 | 🟡 单开关已有（--no-mangle/--no-strings/--no-flatten/--no-junk，M1+M2），预设命名待 M6 |
+| 预设 | low(L1+L2) / medium(+L3) / high(+L4+L5+L7，默认) / vm(全开) / max(=vm，v2 预留) | `main.rs` | P0 | ✅ M6（`--preset`；其后 `--no-*`/`--vm` 覆盖；默认 ≡ high；`tests/run_presets.sh` 405 项） |
 | 强制测试工作流 | 每 pass 完成 → 混淆样本 → lua51+luau 语法+运行对比（语料 29 个文件 + 多种子回归） | `run_tests.sh`+`gen_examples.sh` | P0 | ✅ M0 起执行中（当前 204 项检查全绿 + 5 种子回归 0 失败） |
 
 ---
@@ -111,11 +111,11 @@
 | 调研 + 双方言语义实测 | ✅ 100% | `docs/obfuscation-research.md` |
 | Luraph v15 分析（含动态分析共三轮） | ✅ 100% | `docs/luraph15-analysis.md`（§11 25 项功能对比：采纳 20 / 延后 2 / 拒绝 2 / 我方独有 1） |
 | 全部混淆方法设计（L1–L7 + VM） | ✅ 100% | 本文件 §1 + research §2.6 + v15 报告 §8/§10 |
-| **Rust 混淆器代码** | ✅ **M0–M5 完成** | M5 收官：SoA 平行数组 + 完整 7/14/21-bit + base-94 载体/token + 解码枢纽/状态元组随机 + 帧入场原语解包。下一步 M6 产品化 |
+| **Rust 混淆器代码** | ✅ **M0–M6 完成** | M6：`--preset low\|medium\|high\|vm\|max` + 产品 README + `docs/performance.md`；官方矩阵 204 + 预设矩阵 405 全绿 |
 | 测试语料 + 矩阵 | ✅ 100% | **29 个语料文件**（20 共享 + 9 Luau 专属；M4 续期新增 8 个 stress_*：upvalues/coroutines/metamethods/multival/errors/bigtable/control/luau_vm）；非 VM 102 项 + VM 102 项 = **204 项全绿**（含 VM 双解释器交叉）；**多种子回归**（seeds 1/7/4242/31337/999999 × 全语料 × 双方言 × 双阶段）0 失败 |
 | 混淆示例 | ✅ M1+M2 产出 | `luraph-rs/examples/`（`tests/gen_examples.sh` 再生成） |
 
-**一句话：设计 100%，代码 M0–M5 完成（矩阵 204/204 全绿 + 多种子回归 0 失败），下一步 M6 产品化（CLI 预设 + README + 性能数据）。**
+**一句话：设计 100%，代码 M0–M6 完成（官方矩阵 204/204 + 预设 405/405 + 多种子 0 失败）。**
 
 ---
 
@@ -130,14 +130,21 @@
 | **M4 VM 最小可用** ✅ 2026-08-24 | vmgen: isa + compiler + template（41 指令覆盖全语料） | `--vm` 输出双方言运行一致（136/136 全绿，含 luau 交叉 + luau-compile 语法校验）；同 seed 逐字节一致 / 异 seed 编码完全不同（已验证）；无原生字节码可读结构（VM 容器 = 混淆解释器 + 加密字节码串） |
 | **M4 续期（VM 语义加固）** ✅ 2026-08-25 | 应力语料（8 个 stress_*）暴露并修复 9 类 VM/管线语义 bug：upvalue 单 cell 别名模型（消灭中间副本）/ 循环变量 per-iteration 共享 cell / CallT 表存储 off-by-one / GetTab 索引错误 / 尾部多值展开（return .../a,b=.../a,b=f()）/ 5.1 构造器存储序 / 打印机后缀括号 / 多目标赋值解析 / Luau for-in 隐式 next；语料 21→29，矩阵 136→**204 全绿** + 多种子回归（5 seeds）0 失败 | 见 §4 更新日志 2026-08-25 条目 |
 | **M5 VM 完整** ✅ 2026-08-25 | SoA 平行数组 + 完整 7/14/21-bit + base-94 载体/token + 解码枢纽/状态元组随机 + 帧入场原语解包 + 反编译抽查 | 同 seed 逐字节一致；异 seed 前 2KB 重合 9.5%；`luac51 -l` 仅见 L5 容器、无用户字符串；矩阵 204/204 + 5 种子回归 0 失败 |
-| **M6 产品化** | CLI 预设打磨 + README 产品文档 + 性能数据 | 全预设 × 全语料 × 双解释器 100% 通过（research §5 验收 5 条） |
+| **M6 产品化** ✅ 2026-08-25 | CLI `--preset` + README 产品文档 + `docs/performance.md` | 全预设 × 全语料 × 双解释器：`tests/run_presets.sh` **405/405**；默认 ≡ high、`--preset vm` ≡ `--vm`；官方矩阵 204 仍绿 |
 
-**M4 已完成并加固（2026-08-25），当前进行项：M5 VM 随机面收尾（SoA/base-N/枢纽 ID/入场解包）。**
+**M0–M6 全部完成（2026-08-25）。**
 
 ---
 
 ## 4. 更新日志
 
+- **2026-08-25（M6 收官：CLI 预设 + 产品文档 + 性能）**
+  `--preset low|medium|high|vm|max`（其后 `--no-*`/`--vm` 覆盖）。
+  默认无 `--preset` ≡ `high`（L1–L5+L7，与旧行为逐字节一致）；
+  `vm` ≡ 旧 `--vm`；`max` 当前 = `vm`（v2 CPS/超级指令预留，加 junk
+  会顶 VM 模板 200-local 上限）。新增 `tests/run_presets.sh`（405 项
+  全绿）+ `tests/bench_presets.sh` + `docs/performance.md`；README
+  重写为产品文档。版本 0.1.0 → 0.2.0。官方矩阵 204 仍绿。
 - **2026-08-25（M5 收官：SoA + 完整 7-bit + 载体 + 枢纽/原语解包）**
   按 HANDOFF §7 建议顺序一次落地 M5 全部剩余项（编码器/`template.rs`
   同步改，改完跑矩阵 + 多种子）：

@@ -4,8 +4,8 @@
 > 完整了解：仓库是什么、用户要什么、现在做到哪了、环境怎么用、规矩是什么、
 > 下一步该干什么。读完此文件再动手；细节在 `docs/` 里。
 >
-> **最后更新：2026-08-25**（M5 收官：SoA + 完整 7-bit + 载体 + 枢纽/原语
-> 解包，矩阵 204/204 全绿 + 多种子 0 失败；下一步 M6 产品化）
+> **最后更新：2026-08-25**（M6 收官：`--preset` + 产品 README + 性能数据；
+> 官方 204 + 预设 405 全绿；下一步无里程碑，按需增强）
 
 ---
 
@@ -56,6 +56,7 @@
 | **M3（L4 数值 + L5 整体加密 + L7 反篡改）** | ✅ 完成（矩阵 68/68） |
 | **M4（L6 VM：私有字节码 + 生成混淆解释器，`--vm`）** | ✅ **完成 + 续期加固（2026-08-25）：矩阵 204/204 全绿（语料 21→29，新增 8 个 stress_*）+ 多种子回归（5 seeds）0 失败；upvalue 单 cell 别名模型 / 循环变量 per-iteration 共享 cell / 5.1 构造器存储序 / 全变长展开等 9 类语义修复；实现笔记 `docs/vm-l6-implementation.md` §8** |
 | **M5（VM 完整随机面）** | ✅ **完成（2026-08-25）**：SoA 平行数组 + 完整 7/14/21-bit + base-94 载体/token + 解码枢纽/状态元组随机 + 帧入场原语解包 + `luac51 -l` 抽查；矩阵 204/204 + 多种子 0 失败 |
+| **M6（产品化）** | ✅ **完成（2026-08-25）**：`--preset low\|medium\|high\|vm\|max`（默认 ≡ high；vm ≡ `--vm`；max = vm，v2 预留）+ 产品 README + `docs/performance.md`；预设矩阵 405/405 |
 
 **M5 清单**（对照 `docs/vm-l6-implementation.md` §7，全部勾完）：
 
@@ -69,9 +70,9 @@
 - ✅ 帧运行器入场原语解包（15 原语 → `P[1..80]` 随机槽，顶层 + run 双解包）
 - ✅ 反编译人工抽查（`luac51 -l` 仅见 L5 容器；用户串不可检索）
 
-**继续开发时**按 `docs/implementation-plan.md` §3 的里程碑顺序（**M6
-产品化**）。每个 pass 完成后执行 §2.2 强制工作流（矩阵全绿 + 多种子回归
-+ examples 重新生成 + 四个 md 同步 + commit/push）。
+**继续开发时**没有未完成的里程碑。新功能按需加，每项仍走 §2.2 强制
+工作流（官方矩阵 + `run_presets.sh` + 改 `vmgen/` 时多种子 + md 同步 +
+commit/push）。
 
 ## 4. 环境（全部已就绪，路径如下）
 
@@ -170,7 +171,7 @@ g++ -O2 -std=c++17 -DLUA_USE_LONGJMP=1 '-DLUA_API=extern "C"' \
 luraph/
 ├── HANDOFF.md                  # ← 本文件（新 AI 先读这个）
 ├── PROGRESS.md                 # 项目进度（每个里程碑一节，M4 续期在 §M4 续期）
-├── README.md                   # 仅标题（待 M6 产品化时重写为产品文档）
+├── README.md                   # 产品文档（预设 / 用法 / 性能摘要）
 ├── .tools/                     # ★ 工具链（gitignored，708M；重建步骤见 §4）
 │   └── bin/{rustc,cargo,lua51,luac51,luau,luau-compile}
 ├── docs/
@@ -179,6 +180,7 @@ luraph/
 │   ├── implementation-plan.md  # ★ 实施清单（§1 状态列）+ 进度表（§2）+
 │   │                           #   里程碑（§3）+ 更新日志（§4，倒序）
 │   ├── luraph15-analysis.md    # ★ Luraph v15.0 样本逆向分析（架构/脱壳/采纳决策 §8）
+│   ├── performance.md          #   M6 预设性能快照
 │   └── vm-l6-implementation.md # ★★ VM 实现笔记：架构/多值协议/upvalue 单 cell
 │                               #   模型（§8.1）/9 类 bug（§8.2）/环境语义（§8.3）/
 │                               #   M5 清单（§7）/调试工具箱（§6）—— 动 VM 前必读
@@ -192,7 +194,7 @@ luraph/
 │   └── parser.lua              #   递归下降 + Pratt（语法边界按 lparser.c 核对过）
 └── luraph-rs/                  # ★ Rust 混淆器本体（std-only，edition 2021）
     ├── src/
-    │   ├── main.rs             #   CLI（--dialect/--seed/--vm/--no-* 开关）+ 管线装配
+    │   ├── main.rs             #   CLI（--preset/--dialect/--seed/--vm/--no-*）+ 管线装配
     │   ├── lexer.rs / parser.rs / ast.rs / symtab.rs / printer.rs   # M0 地基
     │   │                       #   （printer 的 Ctx::Suffix = 后缀位置括号规则）
     │   ├── rng.rs / rng_check.rs                                # 种子 PRNG
@@ -208,6 +210,8 @@ luraph/
     │       └── mod.rs
     ├── tests/
     │   ├── run_tests.sh        # ★ 官方矩阵（非 VM + VM 两阶段；.tools 路径回退）
+    │   ├── run_presets.sh      # ★ 五档预设 × 全语料（M6，405 项）
+    │   ├── bench_presets.sh    #   性能快照 → docs/performance.md
     │   ├── multiseed.sh        # ★ 多种子回归（VM 改动必跑；seeds 可传参，
     │   │                       #   默认 1 7 4242 31337 999999）
     │   ├── gen_examples.sh     #   示例再生成（seed 42，VM 子集 3 个）
@@ -297,7 +301,7 @@ Roblox buffer 数据层 + base-N token 转义 + 每帧 Lua 闭包 + 超级指令
 弱点：无时间陷阱/显式校验和，动态 hook 仍可行。→ 全部细节在
 `docs/luraph15-analysis.md`。
 
-## 7. 开工顺序（M0–M5 已完成，从 M6 继续）
+## 7. 开工顺序（M0–M6 已完成）
 
 **接手第一步**（环境自检，1 分钟）：
 
@@ -393,7 +397,7 @@ bash tests/multiseed.sh
    **多种子回归**（≥5 个 seed × 全语料 × 双方言 × 双阶段）0 失败
 4. VM 预设输出：标准反编译器/格式化器无法恢复源码结构（人工抽查）
 5. 反篡改生效：篡改任一密文段 → 触发陷阱
-�� = 非 VM 102 + VM 102，含 5.1→luau 交叉）
+�� = 非 VM 102 + VM 102，含 5.1→luau 交叉）
 2. 输出经 `lua51 loadstring` / `luau-compile` 语法校验 0 错误
 3. 同 `--seed` 两次构建逐字节一致；不同 seed 字节码编码完全不同；
    **多种子回归**（≥5 个 seed × 全语料 × 双方言 × 双阶段）0 失败
