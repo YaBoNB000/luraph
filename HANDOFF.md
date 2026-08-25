@@ -3,6 +3,9 @@
 > **给新接手的 AI 读**：这份文档让你（从未参与过本项目对话的 AI）在 10 分钟内
 > 完整了解：仓库是什么、用户要什么、现在做到哪了、环境怎么用、规矩是什么、
 > 下一步该干什么。读完此文件再动手；细节在 `docs/` 里。
+>
+> **最后更新：2026-08-25**（M4 续期加固完成，矩阵 204/204 全绿，已推送
+> `1ae6374`；下一步 M5 收尾）
 
 ---
 
@@ -25,6 +28,9 @@
    - 产出一个混淆脚本（用测试语料跑当前已实现的全部 pass）
    - 用 `lua51` 和 `luau` **两个解释器**验证：语法（`loadstring`/`luau-compile`）
      + 实际运行（stdout 与退出码和原始脚本一致）
+   - 跑**官方矩阵** `luraph-rs/tests/run_tests.sh`（当前 204 项）；改
+     `vmgen/` 时**必须加多种子回归**（seed 置换是每构建随机的，固定
+     seed 42 测不出置换面回归，见 §8 第 16 条）
    - 语料必须覆盖**所有常用语法**（清单见 `docs/obfuscation-research.md` 第 6 节）
    - 任一项不通过 = 该模块改动未完成，不许宣称完成
    - **更新所有相关 md**（implementation-plan 四处 + PROGRESS + HANDOFF +
@@ -36,11 +42,11 @@
 5. 用户提供的 Luraph 样本已分析完毕（`docs/luraph15-analysis.md`），
    VM 设计已吸收其 v15 的关键技术（7-bit 分块/三层分发/LCG 密钥流等）
 
-## 3. 当前状态（2026-08-24）
+## 3. 当前状态（2026-08-25）
 
 | 阶段 | 状态 |
 |---|---|
-| 环境搭建（Rust / Lua 5.1 / Luau 解释器） | ✅ 完成 |
+| 环境搭建（Rust / Lua 5.1 / Luau 解释器） | ✅ 完成（工具链在仓库内 `.tools/bin`，见 §4） |
 | 混淆技术调研 + 双方言语义实测 | ✅ 完成（`docs/obfuscation-research.md`） |
 | Luraph v15 样本分析 | ✅ 完成（`docs/luraph15-analysis.md`） |
 | VM 设计草案（ISA/解释器模板/VMC 随机面） | ✅ 完成（research 文档 §2.6 + v15 报告 §8 的采纳决策） |
@@ -49,10 +55,23 @@
 | **M2（L3 控制流：CFG 扁平化状态机 + 循环嵌套子状态机 + junk）** | ✅ **完成（矩阵 68/68 全绿）** |
 | **M3（L4 数值 + L5 整体加密 + L7 反篡改）** | ✅ 完成（矩阵 68/68） |
 | **M4（L6 VM：私有字节码 + 生成混淆解释器，`--vm`）** | ✅ **完成 + 续期加固（2026-08-25）：矩阵 204/204 全绿（语料 21→29，新增 8 个 stress_*）+ 多种子回归（5 seeds）0 失败；upvalue 单 cell 别名模型 / 循环变量 per-iteration 共享 cell / 5.1 构造器存储序 / 全变长展开等 9 类语义修复；实现笔记 `docs/vm-l6-implementation.md` §8** |
+| **M5（VM 完整随机面）** | 🟡 **~60% 已落地**（见下） |
 
-**继续开发时**按 `docs/implementation-plan.md` §3 的里程碑顺序（M5 VM 完整
-随机面 → M6 产品化）。每个 pass 完成后执行 §2.2 强制工作流（矩阵全绿 +
-examples 重新生成）。
+**M5 已落地 / 剩余**（对照 `docs/vm-l6-implementation.md` §7 清单）：
+
+- ✅ 已落地：随机决策树分派（2~4 层阈值分裂 + 平铺底部，`template.rs`
+  `gen_dispatch_tree`）；Nop 死指令填充（按指令流长度注入 + 模板侧无害
+  handler）；7-bit 变长操作数基础档（1/2-byte `r16`，破坏定长步长特征）；
+  slot_perm 操作数槽随机（a/b/c/d 在 4 个流槽的每构建随机排列，编码器/
+  解码器/模板共享）
+- ⬜ 剩余（建议顺序）：① SoA 平行数组容器（opcode/操作数分存，luraph14/15
+  同款）→ ② 7-bit 完整档（7/14/21-bit + 128 进制重建 + 2³² 归一化）→
+  ③ 解码枢纽/状态元组位置每构建随机 → ④ base-N 编码 + token 转义（字节码
+  串载体）→ ⑤ 帧运行器入场原语解包随机化 → ⑥ 反编译人工抽查收尾
+
+**继续开发时**按 `docs/implementation-plan.md` §3 的里程碑顺序（M5 收尾 →
+M6 产品化）。每个 pass 完成后执行 §2.2 强制工作流（矩阵全绿 + 多种子回归
++ examples 重新生成 + 四个 md 同步 + commit/push）。
 
 ## 4. 环境（全部已就绪，路径如下）
 
@@ -114,19 +133,27 @@ curl -sL -o l.tar.gz https://codeload.github.com/zgpxgame/lua-5.1.5/tar.gz/refs/
 tar xzf l.tar.gz && cd lua-5.1.5-master/src && make generic MYLDFLAGS="-ldl -lm" -j4
 cp lua $T/bin/lua51 && cp luac $T/bin/luac51
 
-# 3) Luau 0.735（无 cmake 时的 g++ 直编路线：只编 6 个库 + 自写最小
-#    main；自写 main 必须复刻官方 CLI 运行环境，否则语料假通过/假失败：
-#    luaL_openlibs + 自定义 loadstring/collectgarbage 全局 + require 文件
-#    rehook（is_require_allowed/reset/to_parent/to_child/is_module_present/
-#    get_chunkname/get_loadname/get_cache_key/get_config_status/get_alias/
-#    load 全指针）+ luaL_sandbox。源码树见 /tmp/luau-0.735 或 codeload 重拉）
+# 3) Luau 0.735（无 cmake 时的 g++ 直编路线：7 个库 + 自写最小 main。
+#    自写 main 在仓库内 luraph-rs/tools/luau-cli-mains/（/tmp 会被重置
+#    抹掉，勿只存 /tmp！），必须复刻官方 CLI 运行环境，否则语料假通过/
+#    假失败：luaL_openlibs + 自定义 loadstring/collectgarbage 全局 +
+#    require 文件 rehook（is_require_allowed/reset/jump_to_alias/to_parent/
+#    to_child/is_module_present/get_chunkname/get_loadname/get_cache_key/
+#    get_config_status/get_alias/load 全指针）+ luaL_sandbox。
+#    注意：Require 库依赖 Config 库 → 源码列表必须含 Require/src/*.cpp
+#    + Config/src/*.cpp，include 必须含 Require/include + Config/include，
+#    否则 undefined reference to luaopen_require 等）
 curl -sL -o luau.tar.gz https://codeload.github.com/luau-lang/luau/tar.gz/refs/tags/0.735
 tar xzf luau.tar.gz && cd luau-0.735
+cp /home/user/luraph/luraph-rs/tools/luau-cli-mains/main_luau*.cpp .
+SRC=$(ls VM/src/*.cpp Common/src/*.cpp Ast/src/*.cpp Bytecode/src/*.cpp \
+       Compiler/src/*.cpp Require/src/*.cpp Config/src/*.cpp)
 g++ -O2 -std=c++17 -DLUA_USE_LONGJMP=1 '-DLUA_API=extern "C"' \
-  -I VM/include -I Common/include -I Ast/include -I Bytecode/include -I Compiler/include \
-  main_luau.cpp $(ls VM/src/*.cpp Common/src/*.cpp Ast/src/*.cpp Bytecode/src/*.cpp Compiler/src/*.cpp) \
-  -o $T/bin/luau -pthread
-# luau-compile 同法（main 只做 compile + luau_load 校验，输出字节码到 stdout）
+  -I VM/include -I Common/include -I Ast/include -I Bytecode/include \
+  -I Compiler/include -I Require/include -I Config/include \
+  main_luau.cpp $SRC -o $T/bin/luau -pthread
+# luau-compile 同法（main 只做 compile + luau_load 校验，输出字节码到
+# stdout；不用 require，可只编前 6 个库）
 ```
 
 **两个环境级语义（语料与用户程序必须遵守，2026-08-25 实测）**：
@@ -137,35 +164,68 @@ g++ -O2 -std=c++17 -DLUA_USE_LONGJMP=1 '-DLUA_API=extern "C"' \
   必须可调用（裸 table 运行时 call-a-table 错误 = 正确行为）。
 
 
-## 5. 仓库文件地图
+## 5. 仓库文件地图（2026-08-25 实际树）
 
 ```
 luraph/
 ├── HANDOFF.md                  # ← 本文件（新 AI 先读这个）
-├── PROGRESS.md                 # 项目进度（已完成/未开始/目录结构，每次重要节点更新）
-├── README.md                   # 仅标题（待混淆器完成后重写为产品文档）
+├── PROGRESS.md                 # 项目进度（每个里程碑一节，M4 续期在 §M4 续期）
+├── README.md                   # 仅标题（待 M6 产品化时重写为产品文档）
+├── .tools/                     # ★ 工具链（gitignored，708M；重建步骤见 §4）
+│   └── bin/{rustc,cargo,lua51,luac51,luau,luau-compile}
 ├── docs/
-│   ├── obfuscation-research.md # ★ 核心笔记：分层混淆体系 L1–L7、VM 设计草案、
-│   │                           #   双方言语义实测表、优先级表、坑清单、Rust 模块规划、
-│   │                           #   测试语料清单（第 6 节）、验收标准
-│   └── luraph15-analysis.md    # ★ Luraph v15.0 样本逆向分析（架构/别名表/位置索引/
-│                               #   脱壳评估/对本项目的设计采纳决策 §8）
-├── samples/
-│   └── luraph15.txt            # 用户提供的 Luraph v15.0 混淆样本（171KB，minified）
-└── lph/                        # 早期过渡参考代码（Lua 写的，仅参考，不复用）
-    ├── rng.lua                 #   Park-Miller PRNG（Rust 版照抄算法即可）
-    ├── lexer.lua               #   5.1+Luau 词法（转义/长串/反引号插值细节都在这）
-    └── parser.lua              #   5.1+Luau 递归下降 + Pratt 优先级（未测试过，
-                                #   但语法边界是按 5.1 lparser.c 和 Luau Parser.cpp 核对的）
+│   ├── obfuscation-research.md # ★ 分层混淆体系 L1–L7、VM 设计草案、双方言
+│   │                           #   语义实测表、优先级表、坑清单、语料清单、验收
+│   ├── implementation-plan.md  # ★ 实施清单（§1 状态列）+ 进度表（§2）+
+│   │                           #   里程碑（§3）+ 更新日志（§4，倒序）
+│   ├── luraph15-analysis.md    # ★ Luraph v15.0 样本逆向分析（架构/脱壳/采纳决策 §8）
+│   └── vm-l6-implementation.md # ★★ VM 实现笔记：架构/多值协议/upvalue 单 cell
+│                               #   模型（§8.1）/9 类 bug（§8.2）/环境语义（§8.3）/
+│                               #   M5 清单（§7）/调试工具箱（§6）—— 动 VM 前必读
+├── samples/                    # v15 动态分析工件（仅参考）
+│   ├── luraph15.txt            #   用户提供的 Luraph v15.0 混淆样本（171KB minified）
+│   ├── luraph15.lua / _trace.lua  #   带 Roblox 环境 stub 的可跑版本 + 插桩版
+│   └── make_trace.py / run_*.lua / t1*.lua / mod1,2 / polyfill  # 脱壳探针脚本
+├── lph/                        # 早期过渡参考代码（Lua 写的，仅参考，不复用）
+│   ├── rng.lua                 #   Park-Miller PRNG（Rust 版照抄算法）
+│   ├── lexer.lua               #   5.1+Luau 词法（转义/长串/反引号插值细节）
+│   └── parser.lua              #   递归下降 + Pratt（语法边界按 lparser.c 核对过）
+└── luraph-rs/                  # ★ Rust 混淆器本体（std-only，edition 2021）
+    ├── src/
+    │   ├── main.rs             #   CLI（--dialect/--seed/--vm/--no-* 开关）+ 管线装配
+    │   ├── lexer.rs / parser.rs / ast.rs / symtab.rs / printer.rs   # M0 地基
+    │   │                       #   （printer 的 Ctx::Suffix = 后缀位置括号规则）
+    │   ├── rng.rs / rng_check.rs                                # 种子 PRNG
+    │   ├── minify.rs / mangle.rs / strings.rs                   # L1 / L1 / L2
+    │   ├── flatten.rs / junk.rs                                 # L3（flatten 内含
+    │   │                       #   循环降级 make_loop —— ForGen 单迭代器语义在这）
+    │   ├── numbers.rs / body.rs / antidbg.rs                    # L4 / L5 / L7
+    │   ├── desugar.rs        # ⚠️ 孤儿文件（main.rs 未声明 mod，死代码，勿改勿依赖）
+    │   └── vmgen/            # ★ L6 VM
+    │       ├── isa.rs        #   41 条 Op + 每构建置换表 OpMap + 变长 varint 编码
+    │       ├── compiler.rs   #   AST→字节码（CellKind 单 cell 模型 + 方言分支）
+    │       ├── template.rs   #   解释器模板（makefn/决策树/r16/元表透传）
+    │       └── mod.rs
+    ├── tests/
+    │   ├── run_tests.sh        # ★ 官方矩阵（非 VM + VM 两阶段；.tools 路径回退）
+    │   ├── multiseed.sh        # ★ 多种子回归（VM 改动必跑；seeds 可传参，
+    │   │                       #   默认 1 7 4242 31337 999999）
+    │   ├── gen_examples.sh     #   示例再生成（seed 42，VM 子集 3 个）
+    │   └── cases/*.lua         # ★ 29 个语料（20 共享 + 9 luau_*；8 个 stress_*）
+    └── tools/
+        └── luau-cli-mains/     # ★ 重建 .tools 的 luau/luau-compile 自写 main
+                                #   （/tmp 会被重置抹掉，唯一权威副本在这里）
+    └── examples/               # 混淆示例（<case>.5.1.lua / .luau.lua / .vm.5.1.lua）
 ```
 
-**写新代码的位置**：Rust 项目建议建在 `luraph-rs/`（模块结构见
-`docs/obfuscation-research.md` §5）。测试语料放 `luraph-rs/tests/cases/*.lua`，
-测试驱动放 `luraph-rs/tests/run_tests.lua` 或 Rust 集成测试。
+**改代码的入口**：新混淆 pass → `src/` 加模块并在 `main.rs` 挂管线；VM 相关
+→ `src/vmgen/`（改模板前必读 `docs/vm-l6-implementation.md` §8，upvalue
+描述符三形态的改动极易回归）；语料 → `tests/cases/`（共享语料的双方言红线
+见 §8 第 15 条）。
 
 ## 6. 核心知识速览（细节去读 docs/）
 
-### 6.1 双方言关键差异（全部实测过，2026-08-23）
+### 6.1 双方言关键差异（全部实测过，2026-08-23 初测 + 2026-08-25 补 for-in/沙箱两行）
 
 | 特性 | Lua 5.1 | Luau 0.735 |
 |---|---|---|
@@ -181,6 +241,10 @@ luraph/
 | 类型注解/`type X=` | 无 | 有（解析期剥离） |
 | int/float 区分 | 无 | 有（AST 数字节点要带 isfloat 标志，
   输出时 float 字面量必须保留小数点） |
+| for-in 裸 table | **非法**（迭代器必须可调用，`for k,v in t` 运行时
+  call-a-table 报错） | **合法**（隐式 `next, t`，语言级扩展；parser 在 Luau
+  档归一化，5.1 档原样透传） |
+| 顶层新建全局 | 合法 | **报错**（CLI 的 `luaL_sandbox` 全局只读） |
 
 ### 6.2 运算符优先级（与 5.1 lparser.c / Luau Parser.cpp 核对过）
 
@@ -199,15 +263,31 @@ L1 名称混淆 → L2 字符串加密（5.1 无位运算 → add8 算术密码�
 → **L6 自定义 VM（核心护城河）** → L7 反篡改（校验和/时间陷阱）。
 **商业级预设 = L1+L2+L3+L5+L6+L7 全开。**
 
-### 6.4 VM 设计要点（L6，详见 research §2.6 + v15 报告）
+### 6.4 VM 设计要点（L6，详见 `docs/vm-l6-implementation.md`）
 
-- 寄存器 VM（~40 条指令），SoA 存储（opcode/操作数分存不同数组）
-- 输出 = 运行时加载器（解密）+ 自定义解释器（Lua 源码，经 L1/L2 混淆）
-  + 加密字节码 + 入口
-- **每构建随机化（VMC）**：opcode 置换表、随机派发树（2~4 层，v15 同款）、
-  7-bit 分块操作数编码（可选档）、死指令、随机命名
+- 寄存器 VM（41 条指令，`vmgen/isa.rs`），变长 varint 编码（1/2-byte
+  基础档已上；SoA 平行数组 + 7-bit 完整档 = M5 剩余）
+- 输出 = 运行时加载器（解密）+ 自定义解释器（Lua 源码，**再过全套混淆
+  管线**）+ 加密字节码 + 入口
+- **每构建随机化（VMC，已落地部分）**：opcode 置换表 ✅、随机决策树
+  分派（2~4 层）✅、Nop 死指令填充 ✅、7-bit 基础档 ✅、slot_perm 操作数
+  槽随机 ✅；剩余：SoA/完整 7-bit/枢纽 ID/入场解包（§3 M5 清单）
 - 密钥流：状态机化 LCG PRNG（mod 2²⁸/2³¹-1，常数每构建随机）
 - 元表/协程/pcall：透传宿主 VM（不模拟，正确性优先）
+- **upvalue 单 cell 模型（2026-08-25 换代，动 upvalue 前必读 §8.1）**：
+  5.1 语义 = 每个 local 全程序只有一个 cell，所有闭包引用同一 cell。
+  描述符三形态（`upsrc` 表里的 u16）：
+  - `slot`（< 32768）：普通 = `{ v = V, i = slot }`（创建帧活槽位）
+  - `0x8000 | slot`：循环体局部/循环变量被闭包捕获 → 每迭代在 `V[slot]`
+    建 cell 表 `{1=value}`，makefn 绑 `{ v = V[slot], i = 1 }`
+    （同迭代闭包 + 循环体共享；fresh per iteration）
+  - `0xC000 | upidx`：创建帧自己 materialize 了该符号 → 闭包**直接别名
+    父帧的 cell 对象**（`c[i] = upsf[upidx]`；makefn 需显式传入父帧
+    cell 数组——词法作用域看不到 run 的局部）。materialize 是纯作用域
+    别名，**不发射任何指令**（旧模型是 GetUp 值副本 + 写回转发，已废）
+- 多方言分支点：构造器存储序（5.1 位置字段最后落表 / Luau 源码序，
+  `compiler.rs` 按 `lua51` 标志）、for-in 隐式 next（parser Luau 档
+  归一化）、`_G` 只读（VM 用 `getfenv(0)`）、`#` 元方法运行期探测
 - 我方差异化（v15 没有的）：**纯 Lua 数据层保 5.1+Luau 双目标** + 校验和 + 时间陷阱
 
 ### 6.5 Luraph v15 样本结论（一句话版）
@@ -217,25 +297,45 @@ Roblox buffer 数据层 + base-N token 转义 + 每帧 Lua 闭包 + 超级指令
 弱点：无时间陷阱/显式校验和，动态 hook 仍可行。→ 全部细节在
 `docs/luraph15-analysis.md`。
 
-## 7. 开工顺序（等用户说「开始」后）
+## 7. 开工顺序（M0–M4 已完成，从 M5 继续）
 
-1. `cargo new luraph-rs`（零依赖；Rust edition 2021；
-   注意 cargo 要带 `CARGO_NET_OFFLINE=true`；工具链见 §4，仓库内
-   `/home/user/luraph/.tools/bin`，确认 rustc sysroot 内有 x86_64 std）
-2. `rng.rs`（照 `lph/rng.lua` 的 Park-Miller）→ `lexer.rs`（照 `lph/lexer.lua`，
-   注意反引号插值/长字符串/转义全部细节）
-3. `parser.rs`（Pratt 表见 §6.2；类型注解剥离；复合赋值/`//`/插值去糖）
-   → `ast.rs` → `symtab.rs`（作用域/sym/全局名收集）→ `printer.rs`
-4. **里程碑 A**：round-trip（输入 → AST → 输出，语义等价）+ 全部测试语料
-   过双解释器 → 给用户看
-5. 逐个 pass（**实际流水线顺序**，M0–M2 已完成）：
-   `junk` → `mangle`(L1) → `flatten`(L3) → `strings`(L2) →（M3 起）
-   `numbers`(L4) → `body`(L5) → `antidbg`(L7)
-   —— **每加一个 pass 都执行 §2.2 强制工作流**（矩阵全绿 + examples 重新生成）
-6. **VM（L6）**：`vmgen/isa.rs`（指令集+编码+随机置换）→
-   `vmgen/compiler.rs`（AST→字节码）→ `vmgen/template.rs`（解释器模板生成）
-   —— 先做最小可用 ISA（先支持测试语料的子集），扩指令时同步扩语料
-7. CLI 预设（low/medium/high/vm）+ README 产品文档
+**接手第一步**（环境自检，1 分钟）：
+
+```bash
+cd /home/user/luraph
+# 1) 工具链在不在（沙箱重置若抹掉 .tools/，按 §4 重建步骤恢复）
+ls .tools/bin/   # 应有 rustc/cargo/lua51/luac51/luau/luau-compile
+# 2) 构建 + 矩阵（预期 PASS 204 / FAIL 0 / ALL GREEN）
+#    ⚠️ 必须先 export PATH（cargo 靠 PATH 找 rustc，全路径 cargo 也不行）
+export PATH=/home/user/luraph/.tools/bin:$PATH
+cd luraph-rs && CARGO_NET_OFFLINE=true cargo build --release
+bash tests/run_tests.sh
+# 3) 多种子回归（tests/multiseed.sh，仓库内；改 vmgen/ 必跑）
+bash tests/multiseed.sh
+```
+
+**M5 剩余项**（建议顺序，每项完成后走 §2.2 强制工作流）：
+
+1. **SoA 平行数组容器**：`vmgen/isa.rs` 编码从「op+4 变长操作数」交错改
+   为 opcode 数组 / 操作数数组分存（luraph14/15 同款，破 AoS 特征）——
+   编码器 + `template.rs` 解码器同步改，**改完必跑多种子回归**
+2. **7-bit 完整档**：7/14/21-bit 变长 + 128 进制重建 + 2³² 归一化
+   （research §2.6 有 v15 同款算法笔记）
+3. **解码枢纽/状态元组位置每构建随机**：模板里 `PF`/`OC`/fetch 位置
+   随机化（当前仅名称过 mangle）
+4. **base-N 编码 + token 转义**：字节码串载体（v15 同款，字符类
+   ASCII 32..126 + 10 特殊字符 → 5 字符 token）
+5. **帧运行器入场原语解包随机化**：数字槽→局部变量解包，槽号/局部名
+   每构建随机
+6. **收尾验收**：`luac51 -l` / 手工反编译抽查（用户结构不可读）+
+   同 seed 逐字节一致 / 异 seed 编码完全不同 复验
+
+**M6 产品化**：CLI 预设（low/medium/high/vm/max）+ README 产品文档 +
+性能数据（research §5 验收 5 条）。
+
+**通用规则**：改 VM 三件套（isa/compiler/template）任何一处 → 先读
+`docs/vm-l6-implementation.md`（尤其 §8 的 9 类坑），改完 = 矩阵 204 +
+多种子回归 + 4 个 md 同步 + commit/push，缺一不可。
 
 ## 8. 规矩与坑（前人踩过的）
 
@@ -248,7 +348,10 @@ Roblox buffer 数据层 + base-N token 转义 + 每帧 Lua 闭包 + 超级指令
 5. 浮点输出用 `%.17g`，Luau 下 float 字面量补 `.0`；整数 |v|<1e15 用 `%d`
 6. `return f(...)` 尾调用语义必须原样保留（扁平化不能拆）
 7. `local function f() return f() end`：f 在自身体内**不可见**（测试必覆盖）
-8. 多值语义：`a,b=f()` / `local a,b=f()` / `return a,b` / `{f()}` 尾部展开
+8. 多值语义：`a,b=f()` / `local a,b=f()` / `return a,b` / `{f()}` 尾部
+   展开；**变长也要全展开**：`return ...` / `a,b = ...` / `a,b = f(...)`
+   （M4 续期修过：原实现只取第一个 vararg）；多余值「求值即弃」（副作用
+   保留，如 `local a = 1, print("x"), f()` 的 print 必须执行）
 9. 字符串 `\0` 合法，输出用转义字面量；长字符串归一化为带转义短串
 10. 所有随机性走种子 PRNG（`--seed` 可复现；同 seed 输出逐字节一致，
     不同 seed 编码完全不同——这是验收标准之一）
@@ -263,12 +366,47 @@ Roblox buffer 数据层 + base-N token 转义 + 每帧 Lua 闭包 + 超级指令
     —— 只改代码不更新 md / 不推 GitHub = 该 pass 未完成
 12. 工作分支是 `arena/01a02d14-luraph`（本会话）；新会话的分支以当时的
     环境说明为准，别动 main
-13. Rust 构建：`cd luraph-rs && CARGO_NET_OFFLINE=true /home/user/luraph/.tools/bin/cargo build`（`--release` 跑矩阵；`export PATH=/home/user/luraph/.tools/bin:$PATH` 后也可直接 `cargo`）
+13. Rust 构建：`export PATH=/home/user/luraph/.tools/bin:$PATH && cd luraph-rs && CARGO_NET_OFFLINE=true cargo build --release`（PATH 必须先导出——cargo 靠 PATH 定位 rustc，光用全路径 cargo 会报 `could not execute process rustc -vV`）
+14. **luau CLI 沙箱**（2026-08-25 实测）：官方 luau CLI（0.600+）全局表
+    只读（`luaL_sandbox`）→ 顶层**新建**全局赋值 = `attempt to modify a
+    readonly table`。**共享语料（非 luau_* 前缀）不得含顶层新建全局赋值**
+    （会挂 cross 检查：5.1 能建、Luau 不能建，原始程序双方言输出就不同）
+15. **双方言红线（共享语料必须两侧行为一致，否则 cross 必挂）**：
+    ① 重复键表构造器（`{10, [1]=11}` 类）——5.1 位置字段必胜（SETLIST
+    最后落表）、Luau 源码序最后写入胜；② 顶层新建全局赋值（见第 14 条）；
+    ③ 未捕获错误的裸报错行（两边行号/格式不同）——用 pcall 包住只打
+    type/结果；④ 大数/特殊浮点的 tostring 格式差异。luau_* 前缀语料无
+    cross 检查，可放 Luau 专属语义
+16. **VM 改动后的回归面**：矩阵（`tests/run_tests.sh`，204 项）只固定
+    seed 42——opcode 置换/槽位排列是每构建随机的，**必须加多种子回归**
+    （权威脚本 = `tests/multiseed.sh`，seeds 可传参，默认
+    1 7 4242 31337 999999）。逻辑参考（新会话没有脚本时按此内联）：
+    ```bash
+    for seed in 1 7 4242; do for case in luraph-rs/tests/cases/*.lua; do
+      base=$(basename $case .lua); d=5.1; [ "${base#luau_}" != "$base" ] && d=luau
+      I=$L/lua51; [ $d = luau ] && I=$L/luau   # L=.tools/bin
+      o1=$(timeout 60 $I $case 2>&1); c1=$?
+      $TOOL --vm --dialect $d --seed $seed $case /tmp/o.lua
+      o2=$(timeout 60 $I /tmp/o.lua 2>&1); c2=$?
+      [ "$c1" != "$c2" ] || [ "$o1" != "$o2" ] && echo "FAIL $base $d $seed"
+    done; done
+    ```
+17. **调试 VM 的三板斧**（`docs/vm-l6-implementation.md` §6 有完整工具箱）：
+    ① `LURAPH_VM_RAW=1` 出未混淆解释器（行号可读、可直接插 print）；
+    ② 在生成文件的 `makefn`/分派分支里插 `io.write` 追踪（oc/寄存器值）
+    ——**插桩脚本自己出过错：跨行拼接要按整行替换，别用 index 硬拼**；
+    ③ 二分 pass（`--no-flatten/--no-strings/...` 逐个关）定位管线交互
+    bug。字节码反汇编：`cargo test dbg -- --nocapture`（读
+    `/tmp/mv1.lua`，要改路径的话在 `vmgen/compiler.rs` 末尾测试里）
+18. **shell 变量坑**（本轮实际踩过）：`/tmp/t_$s_$d.lua` 里 `$s_` 会被
+    解析成名为 `s_` 的变量（空）——拼接时加花括号 `${s}_${d}`
 
 ## 9. 验收标准（「商业级」的落地定义）
 
 1. 全部测试语料 × 双解释器 × 全预设：stdout + 退出码 100% 一致
+   （当前矩阵 204 项 = 非 VM 102 + VM 102，含 5.1→luau 交叉）
 2. 输出经 `lua51 loadstring` / `luau-compile` 语法校验 0 错误
-3. 同 `--seed` 两次构建逐字节一致；不同 seed 字节码编码完全不同
+3. 同 `--seed` 两次构建逐字节一致；不同 seed 字节码编码完全不同；
+   **多种子回归**（≥5 个 seed × 全语料 × 双方言 × 双阶段）0 失败
 4. VM 预设输出：标准反编译器/格式化器无法恢复源码结构（人工抽查）
 5. 反篡改生效：篡改任一密文段 → 触发陷阱
