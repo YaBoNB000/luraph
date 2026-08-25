@@ -190,9 +190,9 @@ fn main() -> ExitCode {
 		// the bytecode passed as string literals to its entry call
 		let vm_raw = std::env::var("LURAPH_VM_RAW").is_ok();
 		let (mut block, mut table) = if opts.do_vm {
-			let program = vmgen::compile(&block, &table, &mut rng);
+			let program = vmgen::compile(&block, &table, &mut rng, !luau);
 			let n = program.fns.len();
-			let tsrc = vmgen::template::generate(&program.opmap, &mut rng, n);
+			let tsrc = vmgen::template::generate(&program.opmap, &program.slot_perm, &mut rng, n);
 			if std::env::var("LURAPH_VM_TSRC").is_ok() {
 				std::fs::write("/tmp/vm_tsrc.lua", &tsrc).unwrap();
 			}
@@ -220,37 +220,60 @@ fn main() -> ExitCode {
 		// pipeline: junk -> mangle -> flatten -> strings
 		if opts.do_vm && vm_raw {
 			// debug: emit the raw (unobfuscated) VM container
-			let out = printer::print_chunk(&table, &block);
+		let out = printer::print_chunk(&table, &block);
 			return Ok(out);
 		}
+		let tim = std::env::var("LURAPH_TIMING").is_ok();
+		let mut tmark = std::time::Instant::now();
+		let mut tlog = |name: &str| {
+			if tim {
+				eprintln!("[time] {} = {:?}", name, tmark.elapsed());
+				tmark = std::time::Instant::now();
+			}
+		};
 		if opts.do_junk {
 			junk::inject(&mut block, &mut table, &mut rng, 2);
+			tlog("junk");
 		}
 		if opts.do_mangle {
 			mangle::mangle(&mut table, &mut rng);
+			tlog("mangle");
 		}
 		let mut reserved = mangle::reserved_set(
 			&table.globals.iter().cloned().collect::<std::collections::HashSet<_>>(),
 		);
 		reserved.extend(table.syms.iter().map(|s| s.name.clone()));
-		if opts.do_flatten {
+		// L3 flatten bloats the VM template's big dispatch if/elseif tree
+		// into a state machine that exceeds Lua 5.1's 200-local-variable
+		// limit, so skip it when the VM is enabled (the VM template is
+		// still obfuscated by mangle/strings/numbers/body/antidbg).
+		if opts.do_flatten && !opts.do_vm {
 			flatten::flatten_block(&mut block, &mut table, &mut rng, &mut reserved);
+			tlog("flatten");
 		}
 		if opts.do_strings {
 			strings::apply_strings(&mut block, &mut table, &mut rng, &reserved);
+			tlog("strings");
 		}
 		if opts.do_numbers {
 			numbers::apply_numbers(&mut block, &mut rng);
+			tlog("numbers");
 		}
 		if opts.do_body {
 			body::apply_body(&mut block, &mut table, &mut rng, &mut reserved, luau);
+			tlog("body");
 		}
 		if opts.do_antidbg {
 			antidbg::apply_antidbg(&mut block, &mut table, &mut rng, &mut reserved);
+			tlog("antidbg");
 		}
+		tlog("pre-print");
 		let out = printer::print_chunk(&table, &block);
+		tlog("print");
 		if opts.do_minify {
-			minify::minify(&out, luau).map_err(|e| format!("minify: {}", e))
+			let m = minify::minify(&out, luau).map_err(|e| format!("minify: {}", e))?;
+			tlog("minify");
+			Ok(m)
 		} else {
 			Ok(out)
 		}

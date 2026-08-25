@@ -48,7 +48,7 @@
 | M1（L1 名称混淆 + **L1 minify 单行压缩** + L2 字符串加密） | ✅ 完成 |
 | **M2（L3 控制流：CFG 扁平化状态机 + 循环嵌套子状态机 + junk）** | ✅ **完成（矩阵 68/68 全绿）** |
 | **M3（L4 数值 + L5 整体加密 + L7 反篡改）** | ✅ 完成（矩阵 68/68） |
-| **M4（L6 VM 最小可用：私有字节码 + 生成混淆解释器，`--vm`）** | ✅ **完成（矩阵 136/136 全绿，含 VM 双解释器交叉；实现笔记 `docs/vm-l6-implementation.md`）** |
+| **M4（L6 VM：私有字节码 + 生成混淆解释器，`--vm`）** | ✅ **完成 + 续期加固（2026-08-25）：矩阵 204/204 全绿（语料 21→29，新增 8 个 stress_*）+ 多种子回归（5 seeds）0 失败；upvalue 单 cell 别名模型 / 循环变量 per-iteration 共享 cell / 5.1 构造器存储序 / 全变长展开等 9 类语义修复；实现笔记 `docs/vm-l6-implementation.md` §8** |
 
 **继续开发时**按 `docs/implementation-plan.md` §3 的里程碑顺序（M5 VM 完整
 随机面 → M6 产品化）。每个 pass 完成后执行 §2.2 强制工作流（矩阵全绿 +
@@ -57,20 +57,20 @@ examples 重新生成）。
 ## 4. 环境（全部已就绪，路径如下）
 
 ```bash
-# 解释器（源码编译，已验证可用）
-/home/user/tools/bin/lua51          # Lua 5.1.5
-/home/user/tools/bin/luac51         # luac 5.1.5
-/home/user/tools/bin/luau           # Luau 0.735（注意：不支持 -e，用临时文件跑）
-/home/user/tools/bin/luau-compile   # Luau 语法/字节码编译校验
-/home/user/tools/bin/luau-analyze   # Luau 静态分析
+# ⚠️ 2026-08-25 起工具链在**仓库内**（沙箱重置会抹掉 /home/user/tools，
+# 仓库内副本持久化；run_tests.sh 自动回退到仓库内路径）
+/home/user/luraph/.tools/bin/lua51          # Lua 5.1.5
+/home/user/luraph/.tools/bin/luac51         # luac 5.1.5
+/home/user/luraph/.tools/bin/luau           # Luau 0.735（注意：不支持 -e，用临时文件跑）
+/home/user/luraph/.tools/bin/luau-compile   # Luau 语法/字节码编译校验
 
-# Rust（注意：PATH 里可能没有，用全路径或 export PATH=/home/user/tools/bin:$PATH）
-/home/user/tools/bin/rustc          # 1.88.0 stable
-/home/user/tools/bin/cargo          # 1.88.0
+# Rust（注意：PATH 里可能没有，用全路径或 export PATH=/home/user/luraph/.tools/bin:$PATH）
+/home/user/luraph/.tools/bin/rustc          # 1.88.0 stable
+/home/user/luraph/.tools/bin/cargo          # 1.88.0
 ```
 
-验证环境：`/home/user/tools/bin/lua51 -v && /home/user/tools/bin/luau -v 2>&1 | head -1
-&& /home/user/tools/bin/rustc --version`
+验证环境：`/home/user/luraph/.tools/bin/lua51 -v && /home/user/luraph/.tools/bin/luau -v
+2>&1 | head -1 && /home/user/luraph/.tools/bin/rustc --version`
 
 ### ⚠️ 沙箱网络限制（踩过的坑，别重踩）
 
@@ -82,46 +82,60 @@ examples 重新生成）。
 - **直接后果**：
   - **Rust 项目必须 std-only**（拿不到任何第三方 crate）。这是设计约束，不是缺点
   - 需要新工具时：先想 npm 包 / GitHub codeload tarball / PyPI 三条路
-  - Rust 工具链就是靠 npm 上的 `@rustbin/*` 包装的（`/home/user/tools/rust-1.88/`）
+  - Rust 工具链就是靠 npm 上的 `@rustbin/*` 包装的（仓库内 `/home/user/luraph/.tools/lib/`）
 
-### ⚠️ 沙箱重置后的工具链重建（2026-08-24 实战过一遍）
+### ⚠️ 沙箱重置后的工具链重建（2026-08-25 实战过一遍，全部进仓库）
 
 `/home/user/tools/` 在沙箱重置后会丢（只有 `/home/user/luraph/` 仓库持久）。
-重建步骤（全部实测可行）：
+**现行工具链已整体建在仓库内** `/home/user/luraph/.tools/`（2026-08-25
+重建，重置后若被抹掉再按下面重建；`run_tests.sh` 优先
+`/home/user/tools/bin`、自动回退仓库内路径）：
 
 ```bash
-# 1) Rust 1.88（npm @rustbin 版本锁定包名）
-mkdir -p /home/user/tools/rust-1.88 && cd /home/user/tools/rust-1.88
-npm i @rustbin/rustc-1.88.0-x86_64-unknown-linux-gnu \
-      @rustbin/cargo-1.88.0-x86_64-unknown-linux-gnu \
-      @rustbin/rust-std-1.88.0-x86_64-unknown-linux-gnu
-cp -r node_modules/@rustbin/rustc-1.88.0-x86_64-unknown-linux-gnu/rustc .
-cp -r node_modules/@rustbin/cargo-1.88.0-x86_64-unknown-linux-gnu/cargo .
-mkdir -p rustc/lib/rustlib
-cp -r node_modules/@rustbin/rust-std-1.88.0-x86_64-unknown-linux-gnu/rust-std-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu rustc/lib/rustlib/
-ln -sfn rust-1.88/rustc /home/user/tools/rustc        # cargo 的 sibling 查找
-mkdir -p /home/user/tools/bin
-ln -sf ../rust-1.88/rustc/bin/rustc /home/user/tools/bin/rustc
-# /home/user/tools/bin/cargo 用 wrapper 脚本（sibling 查找不稳）：
-printf '#!/bin/sh\nexport RUSTC="${RUSTC:-/home/user/tools/rust-1.88/rustc/bin/rustc}"\nexec /home/user/tools/rust-1.88/cargo/bin/cargo "$@"\n' > /home/user/tools/bin/cargo
-chmod +x /home/user/tools/bin/cargo
+T=/home/user/luraph/.tools && mkdir -p $T/bin $T/lib
+cd /tmp
 
-# 2) Lua 5.1.5（lua.org 不可达，用 GitHub 镜像源码编译）
-mkdir -p /home/user/tools/src && cd /home/user/tools/src
+# 1) Rust 1.88（npm @rustbin 版本锁定包名；每个 tgz 解到独立目录，
+#    解同一目录会互相覆盖！）
+for p in rustc cargo rust-std; do
+  npm pack @rustbin/$p-1.88.0-x86_64-unknown-linux-gnu >/dev/null 2>&1 || true
+  mkdir -p x_$p && tar xzf rustbin-$p-*.tgz -C x_$p
+  mkdir -p $T/lib/$p && cp -r x_$p/package/. $T/lib/$p/
+done
+# rust-std 合入 rustc 的 sysroot（cargo 需要）
+cp -rn $T/lib/rust-std/rust-std-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/. \
+       $T/lib/rustc/rustc/lib/rustlib/x86_64-unknown-linux-gnu/
+ln -sf ../lib/rustc/rustc/bin/rustc $T/bin/rustc
+ln -sf ../lib/cargo/cargo/bin/cargo $T/bin/cargo
+
+# 2) Lua 5.1.5（lua.org 不可达，用 GitHub 镜像源码编译；
+#    无 readline 头文件 → make generic，别用 linux 目标）
 curl -sL -o l.tar.gz https://codeload.github.com/zgpxgame/lua-5.1.5/tar.gz/refs/heads/master
-tar xzf l.tar.gz && cd lua-5.1.5-master/src && make posix -j4
-cp lua /home/user/tools/bin/lua51 && cp luac /home/user/tools/bin/luac51
+tar xzf l.tar.gz && cd lua-5.1.5-master/src && make generic MYLDFLAGS="-ldl -lm" -j4
+cp lua $T/bin/lua51 && cp luac $T/bin/luac51
 
-# 3) Luau 0.735（需要 cmake：pip3 install --break-system-packages cmake）
-cd /home/user/tools/src
+# 3) Luau 0.735（无 cmake 时的 g++ 直编路线：只编 6 个库 + 自写最小
+#    main；自写 main 必须复刻官方 CLI 运行环境，否则语料假通过/假失败：
+#    luaL_openlibs + 自定义 loadstring/collectgarbage 全局 + require 文件
+#    rehook（is_require_allowed/reset/to_parent/to_child/is_module_present/
+#    get_chunkname/get_loadname/get_cache_key/get_config_status/get_alias/
+#    load 全指针）+ luaL_sandbox。源码树见 /tmp/luau-0.735 或 codeload 重拉）
 curl -sL -o luau.tar.gz https://codeload.github.com/luau-lang/luau/tar.gz/refs/tags/0.735
 tar xzf luau.tar.gz && cd luau-0.735
-cmake -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_POLICY_VERSION_MINIMUM=3.10 -DLUAU_BUILD_TESTS=OFF
-cmake --build build --target Luau.Repl.CLI Luau.Compile.CLI Luau.Analyze.CLI -j2
-cp build/luau /home/user/tools/bin/luau
-cp build/luau-compile /home/user/tools/bin/luau-compile
-cp build/luau-analyze /home/user/tools/bin/luau-analyze
+g++ -O2 -std=c++17 -DLUA_USE_LONGJMP=1 '-DLUA_API=extern "C"' \
+  -I VM/include -I Common/include -I Ast/include -I Bytecode/include -I Compiler/include \
+  main_luau.cpp $(ls VM/src/*.cpp Common/src/*.cpp Ast/src/*.cpp Bytecode/src/*.cpp Compiler/src/*.cpp) \
+  -o $T/bin/luau -pthread
+# luau-compile 同法（main 只做 compile + luau_load 校验，输出字节码到 stdout）
 ```
+
+**两个环境级语义（语料与用户程序必须遵守，2026-08-25 实测）**：
+- 官方 luau CLI **沙箱化全局表**（`luaL_sandbox`，0.600+ 均如此）：顶层
+  `newkey = v` 报 `attempt to modify a readonly table`。共享语料不得含
+  顶层新建全局赋值。
+- **for-in 方言差异**：Luau 支持 `for k,v in t`（隐式 next）；5.1 迭代器
+  必须可调用（裸 table 运行时 call-a-table 错误 = 正确行为）。
+
 
 ## 5. 仓库文件地图
 
@@ -206,8 +220,8 @@ Roblox buffer 数据层 + base-N token 转义 + 每帧 Lua 闭包 + 超级指令
 ## 7. 开工顺序（等用户说「开始」后）
 
 1. `cargo new luraph-rs`（零依赖；Rust edition 2021；
-   注意 cargo 要带 `CARGO_NET_OFFLINE=true`，且确认 sysroot 的 std 在
-   `/home/user/tools/rust-1.88/rustc/lib/rustlib/x86_64-unknown-linux-gnu/`）
+   注意 cargo 要带 `CARGO_NET_OFFLINE=true`；工具链见 §4，仓库内
+   `/home/user/luraph/.tools/bin`，确认 rustc sysroot 内有 x86_64 std）
 2. `rng.rs`（照 `lph/rng.lua` 的 Park-Miller）→ `lexer.rs`（照 `lph/lexer.lua`，
    注意反引号插值/长字符串/转义全部细节）
 3. `parser.rs`（Pratt 表见 §6.2；类型注解剥离；复合赋值/`//`/插值去糖）
@@ -249,7 +263,7 @@ Roblox buffer 数据层 + base-N token 转义 + 每帧 Lua 闭包 + 超级指令
     —— 只改代码不更新 md / 不推 GitHub = 该 pass 未完成
 12. 工作分支是 `arena/01a02d14-luraph`（本会话）；新会话的分支以当时的
     环境说明为准，别动 main
-13. Rust 构建：`cd luraph-rs && CARGO_NET_OFFLINE=true /home/user/tools/bin/cargo build`
+13. Rust 构建：`cd luraph-rs && CARGO_NET_OFFLINE=true /home/user/luraph/.tools/bin/cargo build`（`--release` 跑矩阵；`export PATH=/home/user/luraph/.tools/bin:$PATH` 后也可直接 `cargo`）
 
 ## 9. 验收标准（「商业级」的落地定义）
 

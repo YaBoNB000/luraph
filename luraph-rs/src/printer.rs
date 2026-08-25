@@ -30,6 +30,11 @@ enum Ctx {
 	/// base of a method call or function call — literals and non-atomic
 	/// expressions need parens (`"x":m()`, `("a" .. "b"):len()`)
 	Base,
+	/// base of a `.name` / `:name` / `[idx]` suffix. Only prefix-exps that
+	/// are atomics may stay bare: a NUMBER literal followed by `.` merges
+	/// into the number token (`5.nope` = malformed number in both
+	/// dialects), and tables/functions/varargs can't be suffixed at all.
+	Suffix,
 }
 
 impl<'a> Printer<'a> {
@@ -94,12 +99,12 @@ impl<'a> Printer<'a> {
 				self.out.push_str("end");
 			}
 			Stmt::FuncDecl { obj, name, ismethod, func } => {
-				self.out.push_str(&self.ind());
-				self.out.push_str("function ");
-				if let Some(o) = obj {
-					self.print_expr(o, Ctx::Base);
-					self.out.push(if *ismethod { ':' } else { '.' });
-				}
+			self.out.push_str(&self.ind());
+			self.out.push_str("function ");
+			if let Some(o) = obj {
+				self.print_expr(o, Ctx::Suffix);
+				self.out.push(if *ismethod { ':' } else { '.' });
+			}
 				self.out.push_str(name);
 				self.print_func_signature(func);
 				self.indent += 1;
@@ -326,12 +331,12 @@ impl<'a> Printer<'a> {
 				None => self.out.push_str(name),
 			},
 			Expr::Dot { obj, name } => {
-				self.print_expr(obj, ctx);
+				self.print_expr(obj, Ctx::Suffix);
 				self.out.push('.');
 				self.out.push_str(name);
 			}
 			Expr::Index { obj, idx } => {
-				self.print_expr(obj, ctx);
+				self.print_expr(obj, Ctx::Suffix);
 				self.out.push('[');
 				self.print_expr(idx, Ctx::Top);
 				self.out.push(']');
@@ -341,7 +346,7 @@ impl<'a> Printer<'a> {
 				self.print_args(args);
 			}
 			Expr::Method { obj, name, args } => {
-				self.print_expr(obj, Ctx::Base);
+				self.print_expr(obj, Ctx::Suffix);
 				self.out.push(':');
 				self.out.push_str(name);
 				self.print_args(args);
@@ -558,7 +563,7 @@ pub fn print_string_bytes(bytes: &[u8], is_binary: bool) -> String {
 
 /// Parenthesis decision. Returns true when `e` must be wrapped in parens
 /// inside `ctx`.
-fn needs_parens(e: &Expr, ctx: Ctx) -> bool {
+	fn needs_parens(e: &Expr, ctx: Ctx) -> bool {
 	// base of a call: anything that is not an atomic prefixexp needs parens
 	if let Ctx::Base = ctx {
 		match e {
@@ -568,6 +573,14 @@ fn needs_parens(e: &Expr, ctx: Ctx) -> bool {
 			| Expr::Call { .. }
 			| Expr::Method { .. }
 			| Expr::Table { .. } => return false,
+			_ => return true,
+		}
+	}
+	// suffix base: only bare prefix-exps (no literals, no tables)
+	if let Ctx::Suffix = ctx {
+		match e {
+			Expr::Ident { .. } | Expr::Dot { .. } | Expr::Index { .. } | Expr::Call { .. }
+			| Expr::Method { .. } => return false,
 			_ => return true,
 		}
 	}

@@ -61,11 +61,11 @@ fn branch_code(name: &str) -> String {
 		"Ne" => "local x = V[b + 1]; local y = V[c + 1]; local tx = type(x); local ty = type(y); local eqv; if tx == ty and (tx == 'number' or tx == 'string' or tx == 'boolean' or tx == 'nil') then eqv = x == y else local f = mget(x, '__eq') or mget(y, '__eq'); if f then eqv = f(x, y) else eqv = x == y end end; V[a + 1] = not eqv".to_string(),
 		"Idiv" => "V[a + 1] = FLOOR(V[b + 1] / V[c + 1])".to_string(),
 		"NewTab" => "V[a + 1] = {}".to_string(),
-"GetTab" => "local t = V[b + 1]; local k = V[c + 1]; local r; if type(t) == 'table' then r = rawget(t, k); if r == nil then local f = mget(t, '__index'); if type(f) == 'function' then r = f(t, k) elseif f ~= nil then r = rawget(f, k) end end else local mt = getmetatable(t); if mt then local f = mt['__index']; if type(f) == 'function' then r = f(t, k) elseif f ~= nil then r = f[k] else r = mt[k] end end end; V[a + 1] = r".to_string(),
+"GetTab" => "local t = V[b + 1]; local k = V[c + 1]; local r; if type(t) == 'table' then r = rawget(t, k); if r == nil then local f = mget(t, '__index'); if type(f) == 'function' then r = f(t, k) elseif f ~= nil then r = f[k] end end else local mt = getmetatable(t); if mt and mt['__index'] ~= nil then local f = mt['__index']; if type(f) == 'function' then r = f(t, k) else r = f[k] end else error('attempt to index a ' .. type(t) .. ' value', 0) end end; V[a + 1] = r".to_string(),
 "SetTab" => "local t = V[a + 1]; local k = V[b + 1]; local v = V[c + 1]; if type(t) ~= 'table' then local mt = getmetatable(t); local f = mt and mt['__newindex']; if type(f) == 'function' then f(t, k, v) elseif f ~= nil then rawset(f, k, v) else error('attempt to index a ' .. type(t) .. ' value', 0) end else if rawget(t, k) == nil then local f = mget(t, '__newindex'); if type(f) == 'function' then f(t, k, v) elseif f ~= nil then rawset(f, k, v) else rawset(t, k, v) end else rawset(t, k, v) end end".to_string(),
 		"TabN" => "local t = V[a + 1]; local n = V[b + 1]; t[n + 1] = V[c + 1]; V[b + 1] = n + 1".to_string(),
-		"CallT" => "local f = V[a + 1]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nfixed = math.floor(d / 2); local tail = d % 2 == 1; local ntail = tail and V[a + nfixed + 2] or 0; local nargs = nfixed + off + ntail; local args = {}; if off == 1 then args[1] = f end; for i = 1, nfixed + ntail do if tail and i > nfixed then args[off + i] = V[a + i + 2] else args[off + i] = V[a + i + 1] end end; local t = V[b + 1]; local n = V[c + 1]; local out, nout = callcap(fn, args, nargs); for i = 1, nout do t[n + i] = out[i]; n = n + 1 end; V[c + 1] = n".to_string(),
-		"Closure" => "V[a + 1] = makefn(b + 1, V)".to_string(),
+		"CallT" => "local f = V[a + 1]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nfixed = math.floor(d / 2); local tail = d % 2 == 1; local ntail = tail and V[a + nfixed + 2] or 0; local nargs = nfixed + off + ntail; local args = {}; if off == 1 then args[1] = f end; for i = 1, nfixed + ntail do if tail and i > nfixed then args[off + i] = V[a + i + 2] else args[off + i] = V[a + i + 1] end end; local t = V[b + 1]; local n = V[c + 1]; local out, nout = callcap(fn, args, nargs); for i = 1, nout do t[n + i] = out[i] end; V[c + 1] = n + nout".to_string(),
+		"Closure" => "V[a + 1] = makefn(b + 1, V, ups)".to_string(),
 		"Call" => "local base = a + 1; local f = V[base]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nargs = b + off; local args = {}; if off == 1 then args[1] = f end; for i = 1, b do args[off + i] = V[base + i] end; if d == 1 then for i = 1, vargc do args[nargs + i] = vargs[i] end; nargs = nargs + vargc end; local out, nout = callcap(fn, args, nargs); local nres = c; lastbase = a + 1; lastn = nout; local wn = nout; if nres ~= 255 and nres > wn then wn = nres end; for i = 1, wn do V[base + i] = out[i] end".to_string(),
 		"CallE" => "local base = a + 1; local f = V[base]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nfixed = b; local varg = d % 2 == 1; local tail = d >= 2; local nargs = nfixed + off; if tail then nargs = nargs + V[base + nfixed + 1] end; local args = {}; if off == 1 then args[1] = f end; for i = 1, (tail and (nfixed + V[base + nfixed + 1]) or nfixed) do if tail and i > nfixed then args[off + i] = V[base + i + 1] else args[off + i] = V[base + i] end end; if varg then for i = 1, vargc do args[nargs + i] = vargs[i] end; nargs = nargs + vargc end; local out, nout = callcap(fn, args, nargs); for i = 1, nout do V[base + i] = out[i] end; V[base] = nout".to_string(),
 		"CallM" => "local base = a + 1; local f = V[base]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nfixed = b; local ntail = V[base + nfixed + 1]; local nargs = nfixed + ntail + off; local args = {}; if off == 1 then args[1] = f end; for i = 1, nfixed + ntail do if i <= nfixed then args[off + i] = V[base + i] else args[off + i] = V[base + i + 1] end end; if d == 1 then for i = 1, vargc do args[nargs + i] = vargs[i] end; nargs = nargs + vargc end; local out, nout = callcap(fn, args, nargs); local nres = c; lastbase = a + 1; lastn = nout; local wn = nout; if nres ~= 255 and nres > wn then wn = nres end; for i = 1, wn do V[base + i] = out[i] end".to_string(),
@@ -74,9 +74,9 @@ fn branch_code(name: &str) -> String {
 		"VarArgTabN" => "local t = V[a + 1]; local n = V[b + 1]; for i = 1, vargc do t[n + i] = vargs[i] end; V[b + 1] = n + vargc".to_string(),
 		"GetGlobal" => "V[a + 1] = G[C[b + 1]]".to_string(),
 		"SetGlobal" => "G[C[b + 1]] = V[a + 1]".to_string(),
-		"GetUp" => "local u = ups[b + 1]; V[a + 1] = u.snap and u.val or u.v[u.i]".to_string(),
-		"SetUp" => "local u = ups[a + 1]; if u.snap then u.val = V[b + 1] else u.v[u.i] = V[b + 1] end".to_string(),
-		"Return" => "local out = {}; local n = b; local total; if n == 255 then local pre = d; for i = 1, pre do out[i] = V[a + i] end; for i = 1, lastn do out[pre + i] = V[lastbase + i] end; total = pre + lastn else for i = 1, n do out[i] = V[a + i] end; total = n end; return out, total".to_string(),
+		"GetUp" => "local u = ups[b + 1]; V[a + 1] = u.v[u.i]".to_string(),
+		"SetUp" => "local u = ups[a + 1]; u.v[u.i] = V[b + 1]".to_string(),
+		"Return" => "local out = {}; local n = b; local total; if n == 255 then local pre = d; for i = 1, pre do out[i] = V[a + i] end; if c == 1 then for i = 1, vargc do out[pre + i] = vargs[i] end; total = pre + vargc else for i = 1, lastn do out[pre + i] = V[lastbase + i] end; total = pre + lastn end else for i = 1, n do out[i] = V[a + i] end; total = n end; return out, total".to_string(),
 		"Nop" => "".to_string(),
 		_ => panic!("unknown opcode name {name}"),
 	}
@@ -99,7 +99,91 @@ fn cmp_code(native: &str, mm: &str, swapped: bool) -> String {
 /// parameters (functions). The final entry call arguments are left as
 /// a placeholder list of the parameter names (the caller appends the
 /// bytecode literals as the actual call).
-pub fn generate(map: &OpMap, rng: &mut Rng, n_fns: usize) -> String {
+/// Random dead-instruction (Nop) body: harmless arithmetic on the
+/// always-numeric operands, no side effects (picked per build).
+fn nop_body(rng: &mut Rng) -> String {
+	match rng.int(0, 2) {
+		0 => "local _ = a + b".to_string(),
+		1 => "local _ = c * d".to_string(),
+		_ => "local _ = a * c + b".to_string(),
+	}
+}
+
+/// M5 random decision-tree dispatch. Threshold splits on the wire codes
+/// with a random pivot + random comparison form; leaves are equality
+/// tests; at the depth cap a flat if/elseif bottom is emitted, so the
+/// visible nesting stays in the 2~4 layer band. Per-build shape.
+fn gen_dispatch_tree(
+	items: &[(usize, u8)],
+	body_of: &dyn Fn(&str) -> String,
+	rng: &mut Rng,
+	depth: u32,
+) -> String {
+	let n = items.len();
+	if n == 1 {
+		let name = OP_NAMES[items[0].0];
+		return format!("if oc == OC.{} then\n{}\nend", name, body_of(name));
+	}
+	if depth >= 3 {
+		let mut v: Vec<(usize, u8)> = items.to_vec();
+		rng.shuffle(&mut v);
+		let mut s = String::new();
+		for (i, (idx, _)) in v.iter().enumerate() {
+			let name = OP_NAMES[*idx];
+			if i == 0 {
+				s.push_str(&format!("if oc == OC.{} then\n{}\n", name, body_of(name)));
+			} else {
+				s.push_str(&format!(
+					"elseif oc == OC.{} then\n{}\n",
+					name,
+					body_of(name)
+				));
+			}
+		}
+		s.push_str("end");
+		return s;
+	}
+	let mut sc: Vec<u8> = items.iter().map(|&(_, c)| c).collect();
+	sc.sort_unstable();
+	let mut gaps: Vec<(u8, u8)> = Vec::new();
+	for w in 1..sc.len() {
+		if sc[w] > sc[w - 1] + 1 {
+			gaps.push((sc[w - 1], sc[w]));
+		}
+	}
+	if !gaps.is_empty() {
+		let (lo, hi) = gaps[rng.int(0, (gaps.len() - 1) as i64) as usize];
+		let p: u8 = if hi as i64 - lo as i64 == 2 {
+			lo + 1
+		} else {
+			rng.int(lo as i64 + 1, hi as i64 - 1) as u8
+		};
+		let (left, right): (Vec<(usize, u8)>, Vec<(usize, u8)>) =
+			items.iter().cloned().partition(|&(_, c)| c < p);
+		let left_s = gen_dispatch_tree(&left, body_of, rng, depth + 1);
+		let right_s = gen_dispatch_tree(&right, body_of, rng, depth + 1);
+		if rng.int(0, 1) == 0 {
+			format!("if oc < {} then\n{}\nelse\n{}\nend", p, left_s, right_s)
+		} else {
+			format!("if oc > {} then\n{}\nelse\n{}\nend", p - 1, right_s, left_s)
+		}
+	} else {
+		// all wire codes adjacent: rank-split with a <= threshold
+		let k = rng.int(1, (sc.len() - 1) as i64) as usize;
+		let p = sc[k - 1];
+		let (left, right): (Vec<(usize, u8)>, Vec<(usize, u8)>) =
+			items.iter().cloned().partition(|&(_, c)| c <= p);
+		let left_s = gen_dispatch_tree(&left, body_of, rng, depth + 1);
+		let right_s = gen_dispatch_tree(&right, body_of, rng, depth + 1);
+		if rng.int(0, 1) == 0 {
+			format!("if oc <= {} then\n{}\nelse\n{}\nend", p, left_s, right_s)
+		} else {
+			format!("if oc < {} then\n{}\nelse\n{}\nend", p + 1, left_s, right_s)
+		}
+	}
+}
+
+pub fn generate(map: &OpMap, slot_perm: &[u8; 4], rng: &mut Rng, n_fns: usize) -> String {
 	// opcode table with per-build random codes
 	let mut oc_items = Vec::new();
 	for (i, name) in OP_NAMES.iter().enumerate() {
@@ -107,24 +191,33 @@ pub fn generate(map: &OpMap, rng: &mut Rng, n_fns: usize) -> String {
 	}
 	let oc_table = format!("local OC = {{{}}}", oc_items.join(", "));
 
-	// shuffled dispatch branches (Nop dropped — it is never emitted)
-	let mut order: Vec<usize> = (0..N_OPS)
-		.filter(|&i| OP_NAMES[i] != "Nop")
-		.collect();
-	rng.shuffle(&mut order);
-	let mut branches = String::new();
-	for (k, &i) in order.iter().enumerate() {
-		let body = branch_code(OP_NAMES[i]);
-		if k == 0 {
-			branches.push_str(&format!("if oc == OC.{} then\n        {}\n      ", OP_NAMES[i], body));
+	// M5: per-build Nop (dead instruction) body
+	let nop = nop_body(rng);
+	let body_of = |name: &str| -> String {
+		if name == "Nop" {
+			nop.clone()
 		} else {
-			branches.push_str(&format!(
-				"elseif oc == OC.{} then\n        {}\n      ",
-				OP_NAMES[i], body
-			));
+			branch_code(name)
 		}
+	};
+	// randomized decision-tree dispatch over ALL opcodes (Nop included —
+	// it carries the dead-instruction padding)
+	let items: Vec<(usize, u8)> = (0..N_OPS).map(|i| (i, map.to_wire[i])).collect();
+	let branches = gen_dispatch_tree(&items, &body_of, rng, 0);
+
+	// M5 hub randomization: map stream operand slots back to a/b/c/d
+	// (slot_perm[sl] = operand index in stream slot sl)
+	if std::env::var("LURAPH_VM_DBG").is_ok() {
+		eprintln!("[gen] slot_perm={:?}", slot_perm);
 	}
-	branches.push_str("end");
+	let mut pos_of = [1u8; 4];
+	for (sl, &op_idx) in slot_perm.iter().enumerate() {
+		pos_of[op_idx as usize] = sl as u8 + 1;
+	}
+	let fetch = format!(
+		"local t1, p2 = r16(B, pc); pc = p2\n      local t2, p3 = r16(B, pc); pc = p3\n      local t3, p4 = r16(B, pc); pc = p4\n      local t4, p5 = r16(B, pc); pc = p5\n      local a = t{}; local b = t{}; local c = t{}; local d = t{}",
+		pos_of[0], pos_of[1], pos_of[2], pos_of[3]
+	);
 
 	// parameter list F1..Fn
 	let mut params = Vec::new();
@@ -140,6 +233,15 @@ pub fn generate(map: &OpMap, rng: &mut Rng, n_fns: usize) -> String {
   local PF = {{}}
   local function u16(B, p)
     return string.byte(B, p) + string.byte(B, p + 1) * 256
+  end
+  -- 7-bit-chunk varint (M5): b1 < 128 -> 1 byte; else 2 bytes
+  -- (b1-128) + b2*128. No bitops (5.1 template constraint).
+  local function r16(B, p)
+    local b1 = string.byte(B, p)
+    if b1 < 128 then
+      return b1, p + 1
+    end
+    return (b1 - 128) + string.byte(B, p + 1) * 128, p + 2
   end
   local function parse(s)
     local p = 1
@@ -207,17 +309,27 @@ pub fn generate(map: &OpMap, rng: &mut Rng, n_fns: usize) -> String {
     return w(f(U(args, 1, nargs)))
   end
   local run
-  local function makefn(idx, V)
+  local function makefn(idx, V, upsf)
     local pf = PF[idx]
-    local ups = {{}}
+    -- named `c` on purpose: the CREATING frame's cell array arrives as
+    -- `upsf` (run()'s local) — needed for upvalue-alias binding
+    local c = {{}}
     for i = 1, #pf.upsrc do
       local src = pf.upsrc[i]
-      if src >= 32768 then
-        -- snapshot cell: for-loop variable, bind the value created this
-        -- iteration (5.1 fresh-variable-per-iteration capture)
-        ups[i] = {{ snap = true, val = V[src - 32768] }}
+      if src >= 49152 then
+        -- upvalue alias: this frame itself materializes the symbol as
+        -- upvalue src - 49152 — alias its CANONICAL cell object so all
+        -- nesting levels share one cell (5.1 single-cell semantics)
+        c[i] = upsf[src - 49152]
+      elseif src >= 32768 then
+        -- per-iteration shared cell: V[src - 32768] holds the CURRENT
+        -- iteration's cell table [1] = value; every closure created
+        -- in the same iteration binds the SAME table, and the loop
+        -- body's own reads/writes go through it as well (fresh per
+        -- iteration, shared within one iteration — 5.1 + Luau)
+        c[i] = {{ v = V[src - 32768], i = 1 }}
       else
-        ups[i] = {{ v = V, i = src }}
+        c[i] = {{ v = V, i = src }}
       end
     end
     return function(...)
@@ -228,7 +340,7 @@ pub fn generate(map: &OpMap, rng: &mut Rng, n_fns: usize) -> String {
       for i = 1, vargc do vargs[i] = all[pf.nparams + i] end
       local V2 = {{}}
       for i = 1, pf.nparams do V2[i] = all[i] end
-      local out, n = run(pf, V2, ups, vargs, vargc)
+      local out, n = run(pf, V2, c, vargs, vargc)
       return U(out, 1, n)
     end
   end
@@ -240,7 +352,7 @@ pub fn generate(map: &OpMap, rng: &mut Rng, n_fns: usize) -> String {
     local lastbase = 0
     while true do
       local oc = string.byte(B, pc); pc = pc + 1
-      local a = u16(B, pc); local b = u16(B, pc + 2); local c = u16(B, pc + 4); local d = u16(B, pc + 6); pc = pc + 8
+      {fetch}
       {branches}
     end
   end
@@ -253,5 +365,6 @@ end
 		params = params,
 		oc_table = oc_table,
 		branches = branches,
+		fetch = fetch,
 	)
 }

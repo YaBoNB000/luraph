@@ -10,9 +10,16 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TOOL="$ROOT/target/release/luraph-rs"
-LUA51=/home/user/tools/bin/lua51
-LUAU=/home/user/tools/bin/luau
-LUAUC=/home/user/tools/bin/luau-compile
+# toolchain: prefer /home/user/tools/bin; fall back to the in-repo
+# .tools/bin (survives sandbox resets that wipe /home/user/tools)
+TOOLS_BIN=/home/user/tools/bin
+if [ ! -x "$TOOLS_BIN/lua51" ] || [ ! -x "$TOOLS_BIN/luau-compile" ]; then
+	# repo-root .tools (survives sandbox resets that wipe /home/user/tools)
+	TOOLS_BIN="$(cd "$(dirname "$0")/../../.tools/bin" && pwd)"
+fi
+LUA51="$TOOLS_BIN/lua51"
+LUAU="$TOOLS_BIN/luau"
+LUAUC="$TOOLS_BIN/luau-compile"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

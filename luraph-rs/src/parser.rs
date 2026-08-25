@@ -463,7 +463,23 @@ impl Parser {
 			vars.push(n.text);
 		}
 		self.expect_kw("in")?;
-		let iters = self.explist()?;
+		let mut iters = self.explist()?;
+		// Luau extension: `for ... in <expr>` with a single non-call
+		// expression is implicitly iterated with the global `next`
+		// (5.1 has no such form — the iterator must be callable, so it
+		// is left as-is there and errors at runtime like the host)
+		if self.luau
+			&& iters.len() == 1
+			&& !matches!(iters[0], Expr::Call { .. } | Expr::Method { .. })
+		{
+			iters = vec![
+				Expr::Ident {
+					name: "next".to_string(),
+					sym: None,
+				},
+				iters[0].clone(),
+			];
+		}
 		self.expect_kw("do")?;
 		self.loops += 1;
 		let body = self.block()?;
@@ -641,6 +657,19 @@ impl Parser {
 				let mut targets = vec![e];
 				while self.eat(TokKind::Punct, Some(",")) {
 					targets.push(self.prefixexp()?);
+				}
+				self.next(); // '='
+				let values = self.explist()?;
+				return Ok(Stmt::Assign { targets, values });
+			}
+			if t.text == "," {
+				// multi-target assignment: a, b = ...
+				let mut targets = vec![e];
+				while self.eat(TokKind::Punct, Some(",")) {
+					targets.push(self.prefixexp()?);
+				}
+				if !self.is(TokKind::Punct, Some("=")) {
+					return Err(self.errf("expected assignment or a function call".to_string()));
 				}
 				self.next(); // '='
 				let values = self.explist()?;

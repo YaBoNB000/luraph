@@ -1,4 +1,6 @@
-# prebuilt interpreter binaries (real copies live in /home/user/tools/bin)
+# prebuilt toolchain + interpreter binaries
+# (rebuilt in-repo 2026-08-25: see HANDOFF.md §4 rebuild steps)
 tools/
+.tools/
 # build artifacts
 luraph-rs/target/

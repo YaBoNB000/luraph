@@ -361,6 +361,11 @@ fn make_loop(
 			let (s_it, _) = new_rand_sym(table, rng, reserved);
 			let (s_stt, _) = new_rand_sym(table, rng, reserved);
 			let (s_ctl, _) = new_rand_sym(table, rng, reserved);
+			// it, stt, ctl = <iterator expression list> — a single
+			// non-call expression is the iterator value itself (in
+			// 5.1 a bare table errors at the call, like the host; the
+			// Luau `for ... in t` form is normalized to `next, t` at
+			// parse time)
 			let init = Stmt::Local {
 				names: vec![
 					table.name_of(s_it).to_string(),

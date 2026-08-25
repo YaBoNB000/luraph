@@ -31,12 +31,23 @@ pub fn apply_body(
 	luau: bool,
 ) {
 	// 1. serialize the current program (compact form for the payload)
+	let tim = std::env::var("LURAPH_TIMING").is_ok();
+	let mut tmark = std::time::Instant::now();
+	let mut tlog = |name: &str| {
+		if tim {
+			eprintln!("[time] body/{} = {:?}", name, tmark.elapsed());
+			tmark = std::time::Instant::now();
+		}
+	};
 	let text = crate::printer::print_chunk(table, block);
+	tlog("print_chunk");
 	let compact = crate::minify::minify(&text, luau).unwrap_or(text);
+	tlog("minify");
 
 	// 2. encrypt the whole text with a fresh key
 	let key: Vec<u8> = (0..KEY_LEN).map(|_| rng.int(0, 255) as u8).collect();
 	let ct = encrypt(compact.as_bytes(), &key);
+	tlog("encrypt");
 
 	// 3. split the ciphertext into a few chunk literals
 	let n_chunks = (rng.int(3, 5) as usize).min(ct.len().max(1));
@@ -50,6 +61,7 @@ pub fn apply_body(
 	// the container must never shadow the global loader
 	rsv.insert("loadstring".to_string());
 	let (loader, dec_sym, dec_name) = build_loader(table, rng, &mut rsv, &key);
+	tlog("build_loader");
 
 	// 5. ciphertext chunk locals: local C1 = "<...>" ...
 	let mut chunk_syms: Vec<SymId> = Vec::new();

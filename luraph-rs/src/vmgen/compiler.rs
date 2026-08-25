@@ -4,27 +4,38 @@
 //! assigned post-order (a nested function is fully compiled before its
 //! CLOSURE instruction is emitted in the parent). Registers are naive
 //! (no liveness analysis in M4): every subexpression gets a fresh
-//! register; loop variables get a FRESH slot per iteration to keep
-//! Lua's per-iteration capture semantics.
+//! register; loop variables use a per-iteration shared cell when
+//! captured by a closure (Lua's fresh-variable-per-iteration capture
+//! semantics) and a plain fixed register otherwise (no per-iteration
+//! register growth).
 //!
 //! Multi-value rules:
 //! - `local a, b = f()` / `a, b = f()`: the trailing call fills the
 //!   remaining targets — the count is known at compile time, so the
-//!   call uses a fixed nres into scratch regs, then stores.
-//! - `return e1, ..., f()`: truly variable — the CALL records
-//!   (lastbase, lastn); RETURN(base, 255, 0, pre) merges
-//!   V[base+1..base+pre] + V[lastbase+1..lastbase+lastn].
+//!   call uses a fixed nres into scratch regs, then stores. A trailing
+//!   VARARG (`a, b = ...`) expands the same way through VarArgTab.
+//! - `return e1, f()` / `return e1, ...`: truly variable — the CALL
+//!   records (lastbase, lastn); RETURN(base, 255, c, pre) merges
+//!   V[base+1..base+pre] + (c=0: V[lastbase+1..lastbase+lastn] |
+//!   c=1: the varargs).
 //! - table trailing call: CALLT stores results from the counter and
 //!   advances it (variable, runtime).
 //!
-//! Upvalues (shared-cell model, Lua 5.1 style):
-//! - a cell = { v = <creating frame's V array>, i = <slot> }
+//! Upvalues (single-cell model, exact Lua 5.1 semantics):
+//! - a cell = { v = <V array>, i = <slot> } — every closure that
+//!   captures a symbol binds a (possibly aliased) reference to ONE
+//!   cell, so reads/writes from any nesting level see one value
+//! - plain descriptor (slot in the creating frame): cell =
+//!   { v = V, i = slot }
+//! - Slot descriptor (0x8000 | slot): per-iteration shared cell —
+//!   V[slot] holds the current iteration's cell table `{ 1 = value }`;
+//!   the interpreter binds `{ v = V[slot], i = 1 }`
+//! - Up alias descriptor (0xC000 | upvalue index): the creating frame
+//!   itself materializes the symbol as an upvalue — the closure
+//!   aliases that frame's cell object directly (no intermediate value
+//!   copies anywhere: materialization is a scope alias, not a copy)
 //! - a function's upvalue list = symbols referenced by its own code or
 //!   by any nested function that are declared in an enclosing function
-//! - materialization invariant: if a nested function references a
-//!   symbol declared higher up, every intermediate function
-//!   materializes it (GETUP into a fresh register at function entry)
-//! - upvalue descriptor = the creating frame's V slot (1-based)
 
 use crate::ast::*;
 use crate::rng::Rng;
@@ -32,8 +43,30 @@ use crate::symtab::SymTable;
 use crate::vmgen::isa::{self, Const, Instr, Op, OpMap};
 use std::collections::{HashMap, HashSet};
 
+/// How a symbol's value lives in the current frame.
+/// - Plain(r): value is in register r (V[r]).
+/// - Slot(sr): per-iteration shared cell — V[sr] holds a small table
+///   `{ 1 = value }` recreated each loop iteration; every closure
+///   created in the same iteration shares it, and body reads/writes go
+///   through the same cell (Lua 5.1/Luau per-iteration local semantics).
+/// - Up(u): a MATERIALIZED upvalue — the symbol's value lives in the
+///   canonical cell of upvalue u (aliased, never copied): reads/writes
+///   go straight through the shared cell, so every closure at every
+///   nesting level sees one single cell (exact 5.1 semantics).
+#[derive(Debug, Clone, Copy)]
+enum CellKind {
+	Plain(u16),
+	Slot(u16),
+	Up(u16),
+}
+
 pub struct VmProgram {
 	pub opmap: OpMap,
+	/// M5 hub randomization: operand stream-slot order.
+	/// slot_perm[i] = which operand (0=a 1=b 2=c 3=d) occupies stream
+	/// slot i. Encoder writes in this order; the template maps the
+	/// stream positions back to a/b/c/d.
+	pub slot_perm: [u8; 4],
 	pub fns: Vec<Vec<u8>>,
 }
 
@@ -44,10 +77,13 @@ struct Ctx<'a> {
 	program: &'a mut VmProgram,
 	rng: &'a mut Rng,
 	symtab: &'a crate::symtab::SymTable,
+	/// target dialect: true = Lua 5.1 (table-constructor store order:
+	/// array part stores LAST), false = Luau (source order)
+	lua51: bool,
 	/// next nested-function slot (global DFS order over the chunk)
 	next_fn_slot: usize,
-	/// scope chain of declared syms -> reg (outermost first)
-	scopes: Vec<HashMap<SymId, u16>>,
+	/// scope chain of declared syms -> cell kind (outermost first)
+	scopes: Vec<HashMap<SymId, CellKind>>,
 	/// upvalues of the current function: sym -> up idx
 	upvals: HashMap<SymId, u16>,
 	/// upvalue descriptors (creating frame's V slot, 1-based), up-idx order
@@ -63,13 +99,13 @@ struct Ctx<'a> {
 	labels: HashMap<u32, (Option<usize>, Vec<usize>)>,
 	/// loop stack: (break_label, continue_label)
 	loops: Vec<(Label, Label)>,
-	/// syms whose declaration executes PER LOOP ITERATION (declared in
-	/// a loop body while compiling): their captures get SNAPSHOT
-	/// upvalue cells (5.1 creates fresh locals each iteration, so each
-	/// closure must bind the value at its own creation)
-	iter_syms: HashSet<SymId>,
-	/// number of loop-body scopes currently being compiled
-	loop_body_scopes: u32,
+	/// active loop stack: for each enclosing loop being compiled, the
+	/// set of loop-body-declared syms captured by a closure inside that
+	/// loop body. A local declared in the body of the INNERMOST active
+	/// loop gets a per-iteration shared cell (CellKind::Slot) iff it is
+	/// in that set; otherwise a plain fixed register (reused each
+	/// iteration — no per-iteration growth).
+	cell_loops: Vec<HashSet<SymId>>,
 }
 
 /// Collision-free constant key: (tag, payload).
@@ -94,11 +130,13 @@ impl<'a> Ctx<'a> {
 		program: &'a mut VmProgram,
 		rng: &'a mut Rng,
 		symtab: &'a crate::symtab::SymTable,
+		lua51: bool,
 	) -> Ctx<'a> {
 		Ctx {
 			program,
 			rng,
 			symtab,
+			lua51,
 			next_fn_slot: 0,
 			scopes: vec![HashMap::new()],
 			upvals: HashMap::new(),
@@ -111,8 +149,7 @@ impl<'a> Ctx<'a> {
 			code: Vec::new(),
 			labels: HashMap::new(),
 			loops: Vec::new(),
-			iter_syms: HashSet::new(),
-			loop_body_scopes: 0,
+			cell_loops: Vec::new(),
 		}
 	}
 
@@ -165,35 +202,25 @@ impl<'a> Ctx<'a> {
 			.push(pos + 1);
 	}
 
-	fn resolve_labels(&mut self) {
-		let labels = std::mem::take(&mut self.labels);
-		for (_, (pos, jumps)) in labels {
-			if let Some(base) = pos {
-				// pc is a 1-based BYTE offset into the bytecode stream;
-				// each instruction is 9 bytes (1 opcode + 4 x u16)
-				let target = base as u16 * 9 + 1;
-				for p in jumps {
-					self.code[p - 1].b = target;
-				}
-			}
-		}
-	}
 
 
-	fn lookup(&self, s: SymId) -> Option<u16> {
+	fn lookup(&self, s: SymId) -> Option<CellKind> {
 		for sc in self.scopes.iter().rev() {
-			if let Some(&r) = sc.get(&s) {
-				return Some(r);
+			if let Some(&k) = sc.get(&s) {
+				return Some(k);
 			}
 		}
 		None
 	}
 
-	fn declare(&mut self, s: SymId, r: u16) {
-		if self.loop_body_scopes > 0 {
-			self.iter_syms.insert(s);
-		}
-		self.scopes.last_mut().unwrap().insert(s, r);
+	fn declare(&mut self, s: SymId, k: CellKind) {
+		self.scopes.last_mut().unwrap().insert(s, k);
+	}
+
+	/// The innermost active loop's capture set (a local declared now
+	/// lives in the body of the innermost active loop, if any).
+	fn cur_loop_captures(&self) -> Option<&HashSet<SymId>> {
+		self.cell_loops.last()
 	}
 
 	fn push_scope(&mut self) {
@@ -215,9 +242,70 @@ impl<'a> Ctx<'a> {
 		if needs_return {
 			self.emit(Instr::abcd(Op::Return, 0, 0, 0, 0));
 		}
-		self.resolve_labels();
+		// M5 dead-instruction padding: Nops at seed-derived positions
+		// (harmless in the dispatch; shifts label bookkeeping)
+		let nops = if self.code.is_empty() {
+			0
+		} else {
+			(self.code.len() / 10).max(1)
+		};
+		for _ in 0..nops {
+			let pos = self.rng.int(0, self.code.len() as i64) as usize;
+			self.code.insert(pos, Instr::op(Op::Nop));
+			// label positions are instruction indexes; jump slots are
+			// (instruction index + 1). An entry shifts iff its
+			// instruction index >= pos, i.e. slot >= pos + 1.
+			for (_, (at, jumps)) in self.labels.iter_mut() {
+				if let Some(a) = at {
+					if *a >= pos {
+						*a += 1;
+					}
+				}
+				for j in jumps.iter_mut() {
+					if *j >= pos + 1 {
+						*j += 1;
+					}
+				}
+			}
+		}
+		// M5 7-bit tier: variable-length operands, so jump targets are
+		// 1-based BYTE offsets from per-instruction encoded lengths. A
+		// jump's own target-operand varint size depends on the target
+		// value, so iterate to a fixpoint (converges in <= 2 passes).
 		let map = &self.program.opmap;
-		let mut out = Vec::with_capacity(self.code.len() * 13 + 64);
+		let perm = &self.program.slot_perm;
+		for _ in 0..4 {
+			let mut prefix = vec![0u32; self.code.len() + 1];
+			let mut tmp: Vec<u8> = Vec::with_capacity(9);
+			for (i, ins) in self.code.iter().enumerate() {
+				tmp.clear();
+				ins.encode(map, perm, &mut tmp);
+				prefix[i + 1] = prefix[i] + tmp.len() as u32;
+			}
+			let mut changed = false;
+			for (_, (pos, jumps)) in &self.labels {
+				if let Some(base) = pos {
+					let target = (1 + prefix[*base]) as u16;
+					for &p in jumps {
+						if self.code[p - 1].b != target {
+							self.code[p - 1].b = target;
+							changed = true;
+						}
+					}
+				}
+			}
+			if !changed {
+				break;
+			}
+		}
+		let mut prefix = vec![0u32; self.code.len() + 1];
+		let mut tmp: Vec<u8> = Vec::with_capacity(9);
+		for (i, ins) in self.code.iter().enumerate() {
+			tmp.clear();
+			ins.encode(map, perm, &mut tmp);
+			prefix[i + 1] = prefix[i] + tmp.len() as u32;
+		}
+		let mut out = Vec::with_capacity(prefix[self.code.len()] as usize + 64);
 		isa::push_u16(&mut out, nregs);
 		isa::push_u16(&mut out, self.nparams);
 		out.push(self.vararg as u8);
@@ -230,7 +318,7 @@ impl<'a> Ctx<'a> {
 			c.encode(&mut out);
 		}
 		for ins in &self.code {
-			ins.encode(map, &mut out);
+			ins.encode(map, perm, &mut out);
 		}
 		out
 	}
@@ -478,6 +566,46 @@ fn collect_declared_expr(e: &Expr, out: &mut Vec<SymId>) {
 	}
 }
 
+/// All syms declared in a block subtree (loop variable of the block
+/// itself included when the block is a loop body — callers add it).
+fn declared_set_of(block: &Block) -> HashSet<SymId> {
+	let mut v = Vec::new();
+	collect_declared_all(block, &mut v);
+	v.into_iter().collect()
+}
+
+/// For one loop body: the set of body-declared syms captured by ANY
+/// closure created inside the body (transitively — nested functions'
+/// upvalue sets included). A captured body local must live in a
+/// per-iteration shared cell; an uncaptured one may reuse a fixed
+/// register across iterations.
+fn loop_capture_set(
+	body: &Block,
+	cond: Option<&Expr>,
+	declared: &HashSet<SymId>,
+) -> HashSet<SymId> {
+	let mut bodies: Vec<(&Block, &[SymId])> = Vec::new();
+	collect_bodies(body, &mut bodies);
+	if let Some(c) = cond {
+		expr_bodies(c, &mut bodies);
+	}
+	let mut cap = HashSet::new();
+	for (b, p) in &bodies {
+		let a = analyze(b, p);
+		for &s in &a.direct_up {
+			if declared.contains(&s) {
+				cap.insert(s);
+			}
+		}
+		for &s in &a.nested_up {
+			if declared.contains(&s) {
+				cap.insert(s);
+			}
+		}
+	}
+	cap
+}
+
 /// References at the top level of a block (excluding nested function
 /// bodies). For LocalFunc/FuncDecl the body IS the function's own code —
 /// its references belong to the nested function's analysis, not this
@@ -502,56 +630,56 @@ fn collect_block_refs_own(block: &Block, out: &mut HashSet<SymId>) {
 				}
 			}
 			Stmt::Assign { targets, values } => {
-				for t in targets {
-					expr_refs(t, out);
-				}
-				for v in values {
-					expr_refs(v, out);
-				}
+			for t in targets {
+				expr_refs(t, out);
 			}
-			Stmt::ExprStmt(e) => expr_refs(e, out),
-			Stmt::If { cond, thenb, elsifs, elseb } => {
-				expr_refs(cond, out);
-				refs_in_sub(thenb, out);
-				for (c, b) in elsifs {
-					expr_refs(c, out);
-					refs_in_sub(b, out);
-				}
-				if let Some(b) = elseb {
-					refs_in_sub(b, out);
-				}
+			for v in values {
+				expr_refs(v, out);
 			}
-			Stmt::While { cond, body } => {
-				expr_refs(cond, out);
-				refs_in_sub(body, out);
+		}
+		Stmt::ExprStmt(e) => expr_refs(e, out),
+		Stmt::If { cond, thenb, elsifs, elseb } => {
+			expr_refs(cond, out);
+			refs_in_sub(thenb, out);
+			for (c, b) in elsifs {
+				expr_refs(c, out);
+				refs_in_sub(b, out);
 			}
-			Stmt::Repeat { body, cond } => {
-				refs_in_sub(body, out);
-				expr_refs(cond, out);
+			if let Some(b) = elseb {
+				refs_in_sub(b, out);
 			}
-			Stmt::ForNum {
-				start, limit, step, body, ..
-			} => {
-				expr_refs(start, out);
-				expr_refs(limit, out);
-				if let Some(st) = step {
-					expr_refs(st, out);
-				}
-				refs_in_sub(body, out);
+		}
+		Stmt::While { cond, body } => {
+			expr_refs(cond, out);
+			refs_in_sub(body, out);
+		}
+		Stmt::Repeat { body, cond } => {
+			refs_in_sub(body, out);
+			expr_refs(cond, out);
+		}
+		Stmt::ForNum {
+			start, limit, step, body, ..
+		} => {
+			expr_refs(start, out);
+			expr_refs(limit, out);
+			if let Some(st) = step {
+				expr_refs(st, out);
 			}
-			Stmt::ForGen { iters, body, .. } => {
-				for i in iters {
-					expr_refs(i, out);
-				}
-				refs_in_sub(body, out);
+			refs_in_sub(body, out);
+		}
+		Stmt::ForGen { iters, body, .. } => {
+			for i in iters {
+				expr_refs(i, out);
 			}
-			Stmt::Do(b) => refs_in_sub(b, out),
-			Stmt::Return(es) => {
-				for e in es {
-					expr_refs(e, out);
-				}
+			refs_in_sub(body, out);
+		}
+		Stmt::Do(b) => refs_in_sub(b, out),
+		Stmt::Return(es) => {
+			for e in es {
+				expr_refs(e, out);
 			}
-			_ => {}
+		}
+		_ => {}
 		}
 	}
 }
@@ -615,17 +743,27 @@ fn analyze(block: &Block, params: &[SymId]) -> FnAnalysis {
 // code generation
 // ---------------------------------------------------------------------------
 
-fn compile_chunk(block: &Block, table: &SymTable, rng: &mut Rng) -> VmProgram {
+fn compile_chunk(
+	block: &Block,
+	table: &SymTable,
+	rng: &mut Rng,
+	lua51: bool,
+) -> VmProgram {
 	let total = count_fns_count(block);
+	// M5: per-build random operand slot permutation (hub randomization)
+	let mut perm: Vec<u8> = vec![0, 1, 2, 3];
+	rng.shuffle(&mut perm);
+	let slot_perm: [u8; 4] = perm.try_into().unwrap();
 	let mut program = VmProgram {
 		opmap: OpMap::new(rng),
+		slot_perm,
 		// slots 0..total-1 = nested functions (DFS order); the main chunk
 		// is compiled last and becomes slot `total` (PF[#FN] in the
 		// template)
 		fns: vec![Vec::new(); total],
 	};
 	{
-		let mut ctx = Ctx::new_main(&mut program, rng, table);
+		let mut ctx = Ctx::new_main(&mut program, rng, table, lua51);
 		ctx.compile_block(block);
 		let nregs = ctx.next_reg;
 		let bytes = ctx.finish(nregs);
@@ -788,7 +926,7 @@ impl<'a> Ctx<'a> {
 				let r = self.tmp();
 				// the function name is a local of the CURRENT scope
 				// (visible to the rest of the enclosing block)
-				self.declare(*sym, r);
+				self.declare(*sym, CellKind::Plain(r));
 				self.compile_function(r, &func.body, &func.params, &func.param_syms, false);
 			}
 			Stmt::FuncDecl { obj, name, func, .. } => {
@@ -824,67 +962,144 @@ impl<'a> Ctx<'a> {
 		}
 	}
 
-	/// `names = values` with the Lua multi-value rule: the LAST value may
-	/// be a call that fills all remaining targets (count is known at
-	/// compile time).
 	fn compile_local(&mut self, syms: &[SymId], values: &[Option<Expr>]) {
 		let n = syms.len();
-		let mut locals = vec![0u16; n];
-		let last_is_call = values
-			.last()
-			.and_then(|v| v.as_ref())
-			.map(is_call)
-			.unwrap_or(false);
-		if last_is_call && n > 0 {
-			// preceding values = values.len() - 1 (the last is the call)
-			let npre = (values.len() - 1).min(n - 1);
-			let nres = (n - npre) as u16;
-			for i in 0..npre {
-				let r = self.tmp();
-				locals[i] = r;
-				self.declare(syms[i], r);
-				match values.get(i) {
-					Some(Some(e)) => {
-						self.compile_expr(e, r)
-					}
-					_ => {
-						let _ = self.emit(Instr::ab(Op::LoadNil, r, 1));
-					}
+		let nv = values.len();
+		let last_is_call = nv > 0
+			&& values
+				.last()
+				.and_then(|v| v.as_ref())
+				.map(is_call)
+				.unwrap_or(false);
+		let last_is_vararg =
+			matches!(values.last(), Some(Some(e)) if matches!(e, Expr::Vararg));
+		// npre = leading values assigned to targets before the final
+		// (possibly multi-value) value
+		let npre = if nv > 0 && (last_is_call || last_is_vararg) {
+			(nv - 1).min(n)
+		} else {
+			nv
+		};
+		let mut plain: Vec<u16> = Vec::with_capacity(n);
+		let mut valreg: Vec<u16> = Vec::with_capacity(n);
+		for _ in 0..n {
+			plain.push(self.tmp());
+		}
+		// leading values, source order (bounded by target count)
+		let nlead = npre.min(n);
+		for i in 0..nlead {
+			let r = plain[i];
+			match values.get(i) {
+				Some(Some(e)) => {
+					self.compile_expr(e, r)
+				}
+				_ => {
+					let _ = self.emit(Instr::ab(Op::LoadNil, r, 1));
 				}
 			}
-			// target slots FIRST (before the call scratch — the result
-			// writes land at freg+1.. which must not clobber them)
-			let mut call_locals = Vec::new();
-			for i in 0..nres as usize {
-				let r = self.tmp();
-				let idx = npre + i;
-				locals[idx] = r;
-				self.declare(syms[idx], r);
-				call_locals.push(r);
-			}
-			// the trailing call -> scratch, then move into the targets
-			let call = values[npre].as_ref().unwrap();
-			let (nargs, has_vararg) = call_arg_info(call);
-			let freg = self.reserve(1 + nargs.max(1));
-			self.compile_call_into(call, freg, nres, has_vararg);
-			for i in 0..nres as usize {
-				self.emit(Instr::ab(Op::Move, call_locals[i], freg + 1 + i as u16));
-			}
-		} else {
-			for i in 0..n {
-				let r = self.tmp();
-				locals[i] = r;
-				self.declare(syms[i], r);
-				match values.get(i) {
-					Some(Some(e)) => {
-						self.compile_expr(e, r)
-					}
-					_ => {
-						let _ = self.emit(Instr::ab(Op::LoadNil, r, 1));
-					}
+			valreg.push(r);
+		}
+		// extra values before the final one: evaluate (side effects) and
+		// discard
+		for i in nlead..nv.saturating_sub(1) {
+			let r = self.tmp();
+			match values.get(i) {
+				Some(Some(e)) => {
+					self.compile_expr(e, r)
+				}
+				_ => {
+					let _ = self.emit(Instr::ab(Op::LoadNil, r, 1));
 				}
 			}
 		}
+		if nv > 0 && (last_is_call || last_is_vararg) && npre < n {
+			// final value expands into targets npre..n
+			let nres = n - npre;
+			if last_is_call {
+				let call = values[nv - 1].as_ref().unwrap();
+				let (nargs, has_vararg) = call_arg_info(call);
+				let freg = self.reserve(1 + nargs.max(1));
+				self.compile_call_into(call, freg, nres as u16, has_vararg);
+				for i in 0..nres {
+					let r = plain[npre + i];
+					self.emit(Instr::ab(Op::Move, r, freg + 1 + i as u16));
+					valreg.push(r);
+				}
+			} else {
+				// varargs as a table, then fetch the needed prefix
+				let vt = self.tmp();
+				self.emit(Instr::ab(Op::VarArgTab, vt, 0));
+				for i in 0..nres {
+					let kreg = self.tmp();
+					let k = self.kidx(Const::Num((i + 1) as f64));
+					self.emit(Instr::ab(Op::LoadK, kreg, k));
+					let r = plain[npre + i];
+					self.emit(Instr::abc(Op::GetTab, r, vt, kreg));
+					valreg.push(r);
+				}
+			}
+		} else if nv > 0 && npre < nv {
+			// final value lies beyond the targets (extra values): evaluate
+			// for side effects and discard
+			let i = nv - 1;
+			let r = self.tmp();
+			match values.get(i) {
+				Some(Some(e)) => {
+					self.compile_expr(e, r)
+				}
+				_ => {
+					let _ = self.emit(Instr::ab(Op::LoadNil, r, 1));
+				}
+			}
+		}
+		// fewer values than targets: remaining targets get nil
+		while valreg.len() < n {
+			let r = self.tmp();
+			let knil = self.kidx(Const::Nil);
+			self.emit(Instr::ab(Op::LoadK, r, knil));
+			valreg.push(r);
+		}
+		// declare after values resolved; captured loop-body locals get a
+		// per-iteration shared cell, others a plain fixed register
+		for (i, s) in syms.iter().enumerate() {
+			let kind = self.finalize_local(*s, plain[i], valreg[i]);
+			self.declare(*s, kind);
+		}
+	}
+
+	/// Create the per-iteration shared cell for a value in `valreg`:
+	/// `ct = {}; ct[1] = valreg; sr = ct` and return Slot(sr). Every
+	/// closure created this iteration whose descriptor points at `sr`
+	/// gets the SAME cell (the interpreter binds `ups[i] = { v = V[sr],
+	/// i = 1 }`), and body reads/writes go through `ct[1]` as well.
+	fn cell_from_value(&mut self, valreg: u16) -> CellKind {
+		let sr = self.tmp();
+		let ct = self.tmp();
+		let k1 = self.kidx(Const::Num(1.0));
+		let kreg = self.tmp();
+		self.emit(Instr::ab(Op::LoadK, kreg, k1));
+		self.emit(Instr::ab(Op::NewTab, ct, 0));
+		self.emit(Instr::abc(Op::SetTab, ct, kreg, valreg));
+		self.emit(Instr::ab(Op::Move, sr, ct));
+		CellKind::Slot(sr)
+	}
+
+	/// Store a just-evaluated local's value (in `valreg`) and return the
+	/// cell kind to declare: a captured loop-body local gets a fresh
+	/// per-iteration shared cell; otherwise a plain register (reused
+	/// each iteration — no per-iteration growth).
+	fn finalize_local(&mut self, s: SymId, plain_reg: u16, valreg: u16) -> CellKind {
+		if self
+			.cur_loop_captures()
+			.map(|c| c.contains(&s))
+			.unwrap_or(false)
+		{
+			return self.cell_from_value(valreg);
+		}
+		if valreg != plain_reg {
+			self.emit(Instr::ab(Op::Move, plain_reg, valreg));
+		}
+		CellKind::Plain(plain_reg)
 	}
 
 	fn compile_stmt_rest(&mut self, s: &Stmt) {
@@ -896,39 +1111,74 @@ impl<'a> Ctx<'a> {
 					tinfos.push(self.eval_target(t));
 				}
 				let n = targets.len();
-				let last_is_call = values.last().map(is_call).unwrap_or(false);
-				if last_is_call && n > 0 {
-					let npre = (values.len() - 1).min(n - 1);
-					let nres = (n - npre) as u16;
-					for i in 0..npre {
-						let r = self.tmp();
-						self.compile_expr(&values[i], r);
-						self.store_target(&tinfos[i], r);
-					}
-					let call = values[npre].clone();
-					let (nargs, has_vararg) = call_arg_info(&call);
-					let freg = self.reserve(1 + nargs.max(1));
-					self.compile_call_into(&call, freg, nres, has_vararg);
-					for i in 0..nres as usize {
-						let idx = npre + i;
-						let r = freg + 1 + i as u16;
-						if idx < n {
-							self.store_target(&tinfos[idx], r);
-						}
-					}
+				let nv = values.len();
+				let last_is_call = nv > 0 && values.last().map(is_call).unwrap_or(false);
+				let last_is_vararg =
+					nv > 0 && matches!(values.last(), Some(&Expr::Vararg));
+				// npre = leading values assigned to targets before the
+				// final (possibly multi-value) value
+				let npre = if nv > 0 && (last_is_call || last_is_vararg) {
+					(nv - 1).min(n)
 				} else {
-					// pad missing values with nil (a, b = x -> b = nil)
-					let knil = self.kidx(Const::Nil);
-					for (i, v) in values.iter().enumerate() {
-						let r = self.tmp();
-						self.compile_expr(v, r);
-						self.store_target(&tinfos[i], r);
-					}
-						for i in values.len()..n {
-							let r = self.tmp();
-							let _ = self.emit(Instr::ab(Op::LoadK, r, knil));
-							self.store_target(&tinfos[i], r);
+					nv
+				};
+				// leading values, source order (bounded by target count)
+				let nlead = npre.min(n);
+				for i in 0..nlead {
+					let r = self.tmp();
+					self.compile_expr(&values[i], r);
+					self.store_target(&tinfos[i], r);
+				}
+				// extra values before the final one: evaluate (side
+				// effects) and discard
+				for i in nlead..nv.saturating_sub(1) {
+					let r = self.tmp();
+					self.compile_expr(&values[i], r);
+				}
+				if nv > 0 && (last_is_call || last_is_vararg) && npre < n {
+					// final value expands into targets npre..n
+					let nres = (n - npre) as u16;
+					if last_is_call {
+						let call = values[nv - 1].clone();
+						let (nargs, has_vararg) = call_arg_info(&call);
+						let freg = self.reserve(1 + nargs.max(1));
+						self.compile_call_into(&call, freg, nres, has_vararg);
+						for i in 0..nres as usize {
+							self.store_target(&tinfos[npre + i], freg + 1 + i as u16);
 						}
+					} else {
+						// varargs as a table, then fetch the needed prefix
+						let vt = self.tmp();
+						self.emit(Instr::ab(Op::VarArgTab, vt, 0));
+						for i in 0..nres as usize {
+							let kreg = self.tmp();
+							let k = self.kidx(Const::Num((i + 1) as f64));
+							self.emit(Instr::ab(Op::LoadK, kreg, k));
+							let r = self.tmp();
+							self.emit(Instr::abc(Op::GetTab, r, vt, kreg));
+							self.store_target(&tinfos[npre + i], r);
+						}
+					}
+				} else if nv > 0 && npre < nv {
+					// final value lies beyond the targets: evaluate for
+					// side effects and discard
+					let i = nv - 1;
+					let r = self.tmp();
+					self.compile_expr(&values[i], r);
+				}
+				// fewer values than targets: remaining targets get nil
+				let knil = self.kidx(Const::Nil);
+				// when the final value expands (npre < n) the leading
+				// values plus the expansion cover ALL targets
+				let assigned = if nv > 0 && (last_is_call || last_is_vararg) && npre < n {
+					n
+				} else {
+					npre.min(n)
+				};
+				for i in assigned..n {
+					let r = self.tmp();
+					let _ = self.emit(Instr::ab(Op::LoadK, r, knil));
+					self.store_target(&tinfos[i], r);
 				}
 			}
 			Stmt::ExprStmt(e) => {
@@ -959,6 +1209,8 @@ impl<'a> Ctx<'a> {
 				self.here(&l_end);
 			}
 			Stmt::While { cond, body } => {
+				let cap = loop_capture_set(body, None, &declared_set_of(body));
+				self.cell_loops.push(cap);
 				let l_top = self.new_label();
 				let l_end = self.new_label();
 				self.here(&l_top);
@@ -967,15 +1219,18 @@ impl<'a> Ctx<'a> {
 				self.jmp(Op::Jf, t, &l_end);
 				self.loops.push((l_end.clone(), l_top.clone()));
 				self.push_scope();
-				self.loop_body_scopes += 1;
 				self.compile_block(body);
-				self.loop_body_scopes -= 1;
 				self.pop_scope();
 				self.loops.pop();
 				self.jmp(Op::Jmp, 0, &l_top);
 				self.here(&l_end);
+				self.cell_loops.pop();
 			}
 			Stmt::Repeat { body, cond } => {
+				// the until condition shares the body scope: closures in
+				// it can capture body locals
+				let cap = loop_capture_set(body, Some(cond), &declared_set_of(body));
+				self.cell_loops.push(cap);
 				let l_top = self.new_label();
 				let l_check = self.new_label();
 				let l_end = self.new_label();
@@ -986,7 +1241,6 @@ impl<'a> Ctx<'a> {
 				// (compile_stmt directly instead of compile_block, which
 				// would pop its own scope)
 				self.push_scope();
-				self.loop_body_scopes += 1;
 				for s in body.stmts.iter() {
 					self.compile_stmt(s);
 				}
@@ -995,9 +1249,9 @@ impl<'a> Ctx<'a> {
 				self.compile_expr(cond, t);
 				self.jmp(Op::Jf, t, &l_top);
 				self.here(&l_end);
-				self.loop_body_scopes -= 1;
 				self.pop_scope();
 				self.loops.pop();
+				self.cell_loops.pop();
 			}
 			Stmt::ForNum {
 				var,
@@ -1020,6 +1274,11 @@ impl<'a> Ctx<'a> {
 						self.emit(Instr::ab(Op::LoadK, rs, k));
 					}
 				}
+				let mut declared = declared_set_of(body);
+				declared.insert(*var_sym);
+				let cap = loop_capture_set(body, None, &declared);
+				let var_captured = cap.contains(var_sym);
+				self.cell_loops.push(cap);
 				let l_top = self.new_label();
 				let l_end = self.new_label();
 				let l_inc = self.new_label();
@@ -1043,18 +1302,24 @@ impl<'a> Ctx<'a> {
 				let t7 = self.tmp();
 				self.emit_or(t7, t3, t6);
 				self.jmp(Op::Jt, t7, &l_end);
-				// FRESH loop variable slot per iteration (5.1 capture
-				// semantics: each iteration's closures bind distinct cells)
+				// loop variable: per-iteration SHARED cell when captured
+				// by a closure (each iteration's closures — and the body
+				// itself — see one cell; fresh per iteration); plain
+				// fixed register otherwise (reused each iteration)
 				self.loops.push((l_end.clone(), l_inc.clone()));
 				self.push_scope();
-				let rv = self.tmp();
-				self.loop_body_scopes += 1;
-				self.emit(Instr::ab(Op::Move, rv, rc));
-				self.declare(*var_sym, rv);
+				if var_captured {
+					let kind = self.cell_from_value(rc);
+					self.declare(*var_sym, kind);
+				} else {
+					let rv = self.tmp();
+					self.emit(Instr::ab(Op::Move, rv, rc));
+					self.declare(*var_sym, CellKind::Plain(rv));
+				}
 				self.compile_block(body);
-				self.loop_body_scopes -= 1;
 				self.pop_scope();
 				self.loops.pop();
+				self.cell_loops.pop();
 				self.here(&l_inc);
 				self.emit(Instr::abc(Op::Add, rc, rc, rs));
 				self.jmp(Op::Jmp, 0, &l_top);
@@ -1062,29 +1327,41 @@ impl<'a> Ctx<'a> {
 			}
 			Stmt::ForGen { vars, syms, iters, body } => {
 				let _ = vars;
+				let mut declared = declared_set_of(body);
+				for s in syms {
+					declared.insert(*s);
+				}
+				let cap = loop_capture_set(body, None, &declared);
+				let sym_captured: Vec<bool> = syms.iter().map(|s| cap.contains(s)).collect();
+				self.cell_loops.push(cap);
 				let rit = self.tmp();
 				let rstt = self.tmp();
 				let rctl = self.tmp();
-				if iters.len() == 1 && is_call(&iters[0]) {
-					let call = iters[0].clone();
-					let (nargs, has_vararg) = call_arg_info(&call);
-					// it, stt, ctl = f(...)  (nres = 3, known)
-					let freg = self.reserve(1 + nargs.max(1));
-					self.compile_call_into(&call, freg, 3, has_vararg);
-					self.emit(Instr::ab(Op::Move, rit, freg + 1));
-					self.emit(Instr::ab(Op::Move, rstt, freg + 2));
-					self.emit(Instr::ab(Op::Move, rctl, freg + 3));
-				} else {
-					if iters.len() > 0 {
-						self.compile_expr(&iters[0], rit);
-					}
-					if iters.len() > 1 {
-						self.compile_expr(&iters[1], rstt);
-					}
-					if iters.len() > 2 {
-						self.compile_expr(&iters[2], rctl);
-					}
+			if iters.len() == 1 && is_call(&iters[0]) {
+				let call = iters[0].clone();
+				let (nargs, has_vararg) = call_arg_info(&call);
+				// it, stt, ctl = f(...)  (nres = 3, known)
+				let freg = self.reserve(1 + nargs.max(1));
+				self.compile_call_into(&call, freg, 3, has_vararg);
+				self.emit(Instr::ab(Op::Move, rit, freg + 1));
+				self.emit(Instr::ab(Op::Move, rstt, freg + 2));
+				self.emit(Instr::ab(Op::Move, rctl, freg + 3));
+			} else {
+				// it, stt, ctl = <iterator expression list> — a single
+				// non-call expression is the iterator value itself (a
+				// bare table errors at the call, mirroring 5.1; the
+				// Luau `for ... in t` form is normalized to
+				// `next, t` at parse time)
+				if iters.len() > 0 {
+					self.compile_expr(&iters[0], rit);
 				}
+				if iters.len() > 1 {
+					self.compile_expr(&iters[1], rstt);
+				}
+				if iters.len() > 2 {
+					self.compile_expr(&iters[2], rctl);
+				}
+			}
 				// loop: v1..vn = it(stt, ctl); v1 == nil? break; ctl = v1; body
 				let l_top = self.new_label();
 				let l_end = self.new_label();
@@ -1107,16 +1384,20 @@ impl<'a> Ctx<'a> {
 				self.jmp(Op::Jt, teq, &l_end);
 				self.emit(Instr::ab(Op::Move, rctl, freg + 1));
 				self.push_scope();
-				self.loop_body_scopes += 1;
 				for (i, s) in syms.iter().enumerate() {
-					let r = self.tmp();
-					self.emit(Instr::ab(Op::Move, r, freg + 1 + i as u16));
-					self.declare(*s, r);
+					if sym_captured[i] {
+						let kind = self.cell_from_value(freg + 1 + i as u16);
+						self.declare(*s, kind);
+					} else {
+						let r = self.tmp();
+						self.emit(Instr::ab(Op::Move, r, freg + 1 + i as u16));
+						self.declare(*s, CellKind::Plain(r));
+					}
 				}
 				self.compile_block(body);
-				self.loop_body_scopes -= 1;
 				self.pop_scope();
 				self.loops.pop();
+				self.cell_loops.pop();
 				self.jmp(Op::Jmp, 0, &l_top);
 				self.here(&l_end);
 			}
@@ -1128,32 +1409,42 @@ impl<'a> Ctx<'a> {
 				let (_, l_cont) = *self.loops.last().expect("continue outside loop");
 				self.jmp(Op::Jmp, 0, &l_cont);
 			}
-			Stmt::Return(es) => {
-				if es.is_empty() {
-					self.emit(Instr::ab(Op::Return, 0, 0));
-				} else if is_call(es.last().unwrap()) {
-					let pre = es.len() - 1;
-					// preceding values at base+1..base+pre
-					let base = self.reserve(pre as u16);
-					for (i, e) in es.iter().take(pre).enumerate() {
-						self.compile_expr(e, base + i as u16);
+				Stmt::Return(es) => {
+					if es.is_empty() {
+						self.emit(Instr::ab(Op::Return, 0, 0));
+					} else if is_call(es.last().unwrap()) {
+						let pre = es.len() - 1;
+						// preceding values at base+1..base+pre
+						let base = self.reserve(pre as u16);
+						for (i, e) in es.iter().take(pre).enumerate() {
+							self.compile_expr(e, base + i as u16);
+						}
+						// trailing multi-value call
+						let call = es.last().unwrap().clone();
+						let (nargs, has_vararg) = call_arg_info(&call);
+						let freg = self.reserve(1 + nargs.max(1));
+						self.compile_call_into(&call, freg, 255, has_vararg);
+						// RETURN: merge base+1..base+pre with lastbase+1..lastn
+						self.emit(Instr::abcd(Op::Return, base, 255, 0, pre as u16));
+					} else if matches!(es.last().unwrap(), Expr::Vararg) {
+						// `return ..., e?` — vararg is LAST: full expansion
+						let pre = es.len() - 1;
+						let base = self.reserve(pre as u16);
+						for (i, e) in es.iter().take(pre).enumerate() {
+							self.compile_expr(e, base + i as u16);
+						}
+						// RETURN: merge base+1..base+pre with the varargs
+						// (c = 1 selects the vararg source in the template)
+						self.emit(Instr::abcd(Op::Return, base, 255, 1, pre as u16));
+					} else {
+						let n = es.len() as u16;
+						let base = self.reserve(n);
+						for (i, e) in es.iter().enumerate() {
+							self.compile_expr(e, base + i as u16);
+						}
+						self.emit(Instr::abcd(Op::Return, base, n, 0, 0));
 					}
-					// trailing multi-value call
-					let call = es.last().unwrap().clone();
-					let (nargs, has_vararg) = call_arg_info(&call);
-					let freg = self.reserve(1 + nargs.max(1));
-					self.compile_call_into(&call, freg, 255, has_vararg);
-					// RETURN: merge base+1..base+pre with lastbase+1..lastn
-					self.emit(Instr::abcd(Op::Return, base, 255, 0, pre as u16));
-				} else {
-					let n = es.len() as u16;
-					let base = self.reserve(n);
-					for (i, e) in es.iter().enumerate() {
-						self.compile_expr(e, base + i as u16);
-					}
-					self.emit(Instr::abcd(Op::Return, base, n, 0, 0));
 				}
-			}
 			Stmt::Do(b) => self.compile_block(b),
 			_ => {}
 		}
@@ -1204,8 +1495,21 @@ impl<'a> Ctx<'a> {
 				}
 			Expr::Ident { name, sym } => match sym {
 				Some(s) => {
-					if let Some(r) = self.lookup(*s) {
-						self.emit(Instr::ab(Op::Move, dst, r));
+					if let Some(k) = self.lookup(*s) {
+						match k {
+							CellKind::Plain(r) => {
+								self.emit(Instr::ab(Op::Move, dst, r));
+							}
+							CellKind::Slot(sr) => {
+								let k1 = self.kidx(Const::Num(1.0));
+								let kreg = self.tmp();
+								self.emit(Instr::ab(Op::LoadK, kreg, k1));
+								self.emit(Instr::abc(Op::GetTab, dst, sr, kreg));
+							}
+							CellKind::Up(u) => {
+								self.emit(Instr::ab(Op::GetUp, dst, u));
+							}
+						}
 					} else if let Some(u) = self.upvals.get(s).copied() {
 						self.emit(Instr::ab(Op::GetUp, dst, u));
 					} else {
@@ -1321,30 +1625,81 @@ impl<'a> Ctx<'a> {
 				let k0 = self.kidx(Const::Num(0.0));
 				self.emit(Instr::ab(Op::LoadK, cnt, k0));
 				let last = fields.len().saturating_sub(1);
-				for (i, f) in fields.iter().enumerate() {
-					match f {
-						TableField::Array(e) => {
-							if i == last && is_call(e) {
-						// trailing call: CALLT (multi-value into the
-						// table, counter advances)
-						let (nargs, has_vararg) = call_arg_info(e);
-						let _ = has_vararg; // table context: no vararg
-						let freg = self.reserve(1 + nargs.max(1));
-						self.compile_call_t(e, freg, dst, cnt);
-							} else if i == last && matches!(e, Expr::Vararg) {
-								self.emit(Instr::ab(Op::VarArgTabN, dst, cnt));
-							} else {
-								let v = self.tmp();
-								self.compile_expr(e, v);
-								self.emit(Instr::abc(Op::TabN, dst, cnt, v));
+				if self.lua51 {
+					// 5.1 store order (verified against luac -l): field
+					// VALUES evaluate in source order, Key stores
+					// (SETTABLE) execute in source order, and the array
+					// part (SETLIST) is flushed LAST — so positional
+					// fields win over duplicate [i] keys regardless of
+					// source order.
+					let mut pending: Vec<u16> = Vec::new();
+					let mut tail_call: Option<Expr> = None;
+					let mut tail_vararg = false;
+					for (i, f) in fields.iter().enumerate() {
+						match f {
+							TableField::Key { key, value } => {
+								let kv = self.tmp();
+								let vv = self.tmp();
+								self.compile_expr(key, kv);
+								self.compile_expr(value, vv);
+								self.emit(Instr::abc(Op::SetTab, dst, kv, vv));
+							}
+							TableField::Array(e) => {
+								if i == last && is_call(e) {
+									// trailing call: its expanded store is
+									// necessarily last — defer emission
+									tail_call = Some(e.clone());
+								} else if i == last && matches!(e, Expr::Vararg) {
+									tail_vararg = true;
+								} else {
+									// truncated to the first value
+									let v = self.tmp();
+									self.compile_expr(e, v);
+									pending.push(v);
+								}
 							}
 						}
-						TableField::Key { key, value } => {
-							let kv = self.tmp();
-							let vv = self.tmp();
-							self.compile_expr(key, kv);
-							self.compile_expr(value, vv);
-							self.emit(Instr::abc(Op::SetTab, dst, kv, vv));
+					}
+					for v in pending {
+						self.emit(Instr::abc(Op::TabN, dst, cnt, v));
+					}
+					if tail_vararg {
+						self.emit(Instr::ab(Op::VarArgTabN, dst, cnt));
+					}
+					if let Some(e) = tail_call {
+						let (nargs, has_vararg) = call_arg_info(&e);
+						let _ = has_vararg; // table context: no vararg
+						let freg = self.reserve(1 + nargs.max(1));
+						self.compile_call_t(&e, freg, dst, cnt);
+					}
+				} else {
+					// Luau: stores in source order (last write wins for
+					// duplicate keys)
+					for (i, f) in fields.iter().enumerate() {
+						match f {
+							TableField::Array(e) => {
+								if i == last && is_call(e) {
+									// trailing call: CALLT (multi-value
+									// into the table, counter advances)
+									let (nargs, has_vararg) = call_arg_info(e);
+									let _ = has_vararg; // no vararg here
+									let freg = self.reserve(1 + nargs.max(1));
+									self.compile_call_t(e, freg, dst, cnt);
+								} else if i == last && matches!(e, Expr::Vararg) {
+									self.emit(Instr::ab(Op::VarArgTabN, dst, cnt));
+								} else {
+									let v = self.tmp();
+									self.compile_expr(e, v);
+									self.emit(Instr::abc(Op::TabN, dst, cnt, v));
+								}
+							}
+							TableField::Key { key, value } => {
+								let kv = self.tmp();
+								let vv = self.tmp();
+								self.compile_expr(key, kv);
+								self.compile_expr(value, vv);
+								self.emit(Instr::abc(Op::SetTab, dst, kv, vv));
+							}
 						}
 					}
 				}
@@ -1532,7 +1887,7 @@ impl<'a> Ctx<'a> {
 				.map(|sc| {
 					let e: Vec<String> = sc
 						.iter()
-						.map(|(s, r)| format!("{}({})@{}", self.symtab.name_of(*s), s, r))
+						.map(|(s, r)| format!("{}({})@{:?}", self.symtab.name_of(*s), s, r))
 						.collect();
 					e.join("|")
 				})
@@ -1546,25 +1901,25 @@ impl<'a> Ctx<'a> {
 			eprintln!("[fn] scopes={:?}", scopes_dbg);
 		}
 
-		// descriptors = the innermost enclosing scope holding the sym
+		// descriptors = the innermost enclosing scope holding the sym:
+		// Plain -> slot number; Slot (per-iteration cell) -> 0x8000 +
+		// slot — the interpreter binds it to the CURRENT iteration's
+		// cell table at closure creation; Up (materialized upvalue) ->
+		// 0xC000 + upvalue index — the interpreter aliases the CREATING
+		// frame's own cell object (one canonical cell at all levels)
 		let mut descriptors: Vec<u16> = Vec::new();
 		for s in &ups {
 			let mut found = None;
 			for sc in self.scopes.iter().rev() {
-				if let Some(&r) = sc.get(s) {
-					found = Some(r + 1);
+				if let Some(&k) = sc.get(s) {
+					found = Some(k);
 					break;
 				}
 			}
 			match found {
-				Some(slot) => {
-					// snapshot cell for per-iteration locals
-					descriptors.push(if self.iter_syms.contains(s) {
-						slot | 0x8000
-					} else {
-						slot
-					});
-				}
+				Some(CellKind::Plain(r)) => descriptors.push(r + 1),
+				Some(CellKind::Slot(sr)) => descriptors.push(sr + 1 | 0x8000),
+				Some(CellKind::Up(u)) => descriptors.push(u + 1 | 0xC000),
 				None => panic!(
 					"upvalue descriptor miss: sym {} not in any enclosing scope (ups mis-analyzed?)",
 					s
@@ -1579,6 +1934,7 @@ impl<'a> Ctx<'a> {
 			program: self.program,
 			rng: self.rng,
 			symtab: self.symtab,
+			lua51: self.lua51,
 			next_fn_slot: self.next_fn_slot,
 			scopes: vec![HashMap::new()],
 			upvals: HashMap::new(),
@@ -1592,8 +1948,7 @@ impl<'a> Ctx<'a> {
 			code: Vec::new(),
 			labels: HashMap::new(),
 			loops: Vec::new(),
-			iter_syms: HashSet::new(),
-			loop_body_scopes: 0,
+			cell_loops: Vec::new(),
 		};
 		for (i, s) in ups.iter().enumerate() {
 			child.upvals.insert(*s, i as u16);
@@ -1601,20 +1956,20 @@ impl<'a> Ctx<'a> {
 		// params occupy regs 0..nparams-1
 		child.push_scope();
 		for (i, s) in param_syms.iter().enumerate() {
-			child.declare(*s, i as u16);
+			child.declare(*s, CellKind::Plain(i as u16));
 		}
-		// materialize ALL upvalues (direct + nested) into fresh regs so
-		// that (a) the child's own direct refs can use a register and
-		// (b) GRANDCHILD descriptor lookups find the symbol in this
-		// function's scope (a grandchild may upvalue a symbol this
-		// function only DIRECTLY references — it must be materialized
-		// here or the grandchild's descriptor lookup misses it)
+		// materialize ALL upvalues (direct + nested) by ALIAS: the child
+		// scope maps the symbol straight to its upvalue cell (no value
+		// copy — 5.1 keeps ONE cell per local for every closure, and an
+		// intermediate copy would desync reads/writes across nesting
+		// levels). GRANDCHILD descriptor lookups still find the symbol
+		// in this function's scope (a grandchild may upvalue a symbol
+		// this function only DIRECTLY references — it must be
+		// materialized here or the grandchild's descriptor lookup misses
+		// it), and its descriptor becomes an upvalue-alias.
 		for s in &ups {
 			let u = child.upvals[s];
-			let r = child.next_reg;
-			child.next_reg += 1;
-			child.emit(Instr::ab(Op::GetUp, r, u));
-			child.declare(*s, r);
+			child.declare(*s, CellKind::Up(u));
 		}
 		child.compile_block(body);
 		child.pop_scope();
@@ -1657,13 +2012,28 @@ impl<'a> Ctx<'a> {
 	fn store_target(&mut self, t: &Target, vreg: u16) {
 		match t {
 			Target::Local(s) => {
-				if let Some(r) = self.lookup(*s) {
-					self.emit(Instr::ab(Op::Move, r, vreg));
-					// a materialized upvalue is a LOCAL register here, but
-					// the value lives in a shared cell: forward the write so
-					// sibling closures and the creating frame observe it
-					if let Some(u) = self.upvals.get(&s).copied() {
-						self.emit(Instr::ab(Op::SetUp, u, r));
+				if let Some(k) = self.lookup(*s) {
+					match k {
+						CellKind::Plain(r) => {
+							self.emit(Instr::ab(Op::Move, r, vreg));
+							// a materialized upvalue is a LOCAL register
+							// here, but the value lives in a shared cell:
+							// forward the write so sibling closures and the
+							// creating frame observe it
+							if let Some(u) = self.upvals.get(&s).copied() {
+								self.emit(Instr::ab(Op::SetUp, u, r));
+							}
+						}
+						CellKind::Slot(sr) => {
+							let k1 = self.kidx(Const::Num(1.0));
+							let kreg = self.tmp();
+							self.emit(Instr::ab(Op::LoadK, kreg, k1));
+							self.emit(Instr::abc(Op::SetTab, sr, kreg, vreg));
+						}
+						CellKind::Up(u) => {
+							// write straight through the canonical cell
+							self.emit(Instr::ab(Op::SetUp, u, vreg));
+						}
 					}
 				} else if let Some(u) = self.upvals.get(s).copied() {
 					self.emit(Instr::ab(Op::SetUp, u, vreg));
@@ -1713,8 +2083,8 @@ fn call_arg_info(e: &Expr) -> (u16, bool) {
 // entry point
 // ---------------------------------------------------------------------------
 
-pub fn compile(block: &Block, table: &SymTable, rng: &mut Rng) -> VmProgram {
-	compile_chunk(block, table, rng)
+pub fn compile(block: &Block, table: &SymTable, rng: &mut Rng, lua51: bool) -> VmProgram {
+	compile_chunk(block, table, rng, lua51)
 }
 
 #[cfg(test)]
@@ -1725,7 +2095,7 @@ mod dbg {
 
 	#[test]
 	fn dbg_header() {
-		let src = std::fs::read_to_string("/tmp/mv1.lua").unwrap();
+		let src = std::fs::read_to_string("/tmp/nt5.lua").unwrap();
 		let mut block = parser::parse(&src, false).unwrap();
 		let mut table = symtab::resolve(&mut block);
 		eprintln!("count_fns={}", count_fns_count(&block));
@@ -1756,7 +2126,7 @@ mod dbg {
 			}
 		}
 		let mut rng = crate::rng::Rng::new(42);
-		let prog = compile_chunk(&block, &table, &mut rng);
+		let prog = compile_chunk(&block, &table, &mut rng, true);
 		eprintln!("fns={}", prog.fns.len());
 		let names = ["Jmp","Jf","Jt","LoadNil","LoadK","Move","Add","Sub","Mul","Div","Mod","Pow","Concat","Unm","Not","Len","Lt","Le","Gt","Ge","Eq","Ne","Idiv","NewTab","GetTab","SetTab","TabN","CallT","Closure","Call","VarArgTab","VarArgC","VarArgTabN","GetGlobal","SetGlobal","GetUp","SetUp","Return","Nop","CallE","CallM"];
 		let mut wire2name: Vec<Option<&str>> = vec![None; 256];
@@ -1788,15 +2158,29 @@ mod dbg {
 					}
 				}
 			}
-			for (i, chunk) in b[p..].chunks(9).enumerate() {
-				if chunk.len() == 9 {
-					let nm = wire2name[chunk[0] as usize].unwrap_or("??");
-					let a = (chunk[1] as u16) | ((chunk[2] as u16) << 8);
-					let bb = (chunk[3] as u16) | ((chunk[4] as u16) << 8);
-					let cc = (chunk[5] as u16) | ((chunk[6] as u16) << 8);
-					let dd = (chunk[7] as u16) | ((chunk[8] as u16) << 8);
-					eprintln!("  [{i}] {nm} a={a} b={bb} c={cc} d={dd}");
+			// variable-length (7-bit varint) decode, slot_perm order
+			let perm = &prog.slot_perm;
+			let mut q = p;
+			let mut i = 0usize;
+			while q < b.len() {
+				let nm = wire2name[b[q] as usize].unwrap_or("??");
+				q += 1;
+				let mut vals = [0u16; 4];
+				for s in 0..4usize {
+					let b1 = b[q] as u16;
+					if b1 < 128 {
+						vals[perm[s] as usize] = b1;
+						q += 1;
+					} else {
+						vals[perm[s] as usize] = (b1 - 128) + (b[q + 1] as u16) * 128;
+						q += 2;
+					}
 				}
+				eprintln!(
+					"  [{i}] {nm} a={} b={} c={} d={}",
+					vals[0], vals[1], vals[2], vals[3]
+				);
+				i += 1;
 			}
 		}
 	}

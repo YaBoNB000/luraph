@@ -67,14 +67,14 @@
 | 方法 | 说明 | Rust 模块 | 优先级 | 状态 |
 |---|---|---|---|---|
 | ISA 设计（~40 条寄存器指令） | 加载/取值/赋值/算术/比较/跳转/调用/表/闭包 | `vmgen/isa.rs` | P0 | ✅ M4（41 条，含 CallE/CallM 多尾展开） |
-| SoA 字节码容器 | opcode/操作数分存平行数组（luraph14/15 同款，破坏 AoS 特征） | `vmgen/isa.rs` | P0 | 🟡 M5（现为 9B 定长 AoS，功能正确，特征待 M5 破） |
-| opcode 随机置换（每构建） | 随机置换表 + 死指令填充 | `vmgen/isa.rs` | P0 | 🟡 M4 置换表 ✅ / 死指令待 M5 |
-| AST → 字节码编译器 | 原型树/upvalue/常量池/多值协议(nresults 0/-1)/尾调用 | `vmgen/compiler.rs` | P0 | ✅ M4（upvalue 活引用+写回转发+快照捕获语义） |
-| 解释器模板生成（Lua 源码） | fetch-decode-execute + 随机二分决策树（2~4 层） | `vmgen/template.rs` | P0 | 🟡 M4 平铺分派+分支序 shuffle / 决策树待 M5 |
+| SoA 字节码容器 | opcode/操作数分存平行数组（luraph14/15 同款，破坏 AoS 特征） | `vmgen/isa.rs` | P0 | 🟡 M5（现为变长交错（7-bit 档），功能正确，SoA 平行数组待 M5） |
+| opcode 随机置换（每构建） | 随机置换表 + 死指令填充 | `vmgen/isa.rs` | P0 | ✅（置换表 + Nop 死指令填充，M4 续期） |
+| AST → 字节码编译器 | 原型树/upvalue/常量池/多值协议(nresults 0/-1)/尾调用 | `vmgen/compiler.rs` | P0 | ✅ M4+续期（upvalue 单 cell 别名模型 + 循环变量 per-iteration 共享 cell + 5.1 构造器存储序 + 全变长展开） |
+| 解释器模板生成（Lua 源码） | fetch-decode-execute + 随机二分决策树（2~4 层） | `vmgen/template.rs` | P0 | ✅（随机决策树 2~4 层 + 分支序 shuffle，M4 续期） |
 | continue 扁平分派风格（Luau 档） | 叶 = `状态=handler(); continue`（luraph15 同款，5.1 用嵌套树） | `vmgen/template.rs` | P1 | 📐 |
 | 帧运行器入场原语解包 | 数字槽→局部变量一次性解包，槽号/局部名每构建随机 | `vmgen/template.rs` | P0 | 📐 |
 | 普通/协程双帧运行器 + UL 跨 yield 传表 | 协程帧走 coroutine.wrap + setfenv；大结构跨 yield 成对传送 | `vmgen/template.rs` | P0 | 📐 |
-| 7-bit 分块操作数编码 | 7/14/21-bit 变长 + 128 进制重建 + 2³² 归一化（VM 档可选开） | `vmgen/compiler.rs`+`template.rs` | P1 | 📐 |
+| 7-bit 分块操作数编码 | 7/14/21-bit 变长 + 128 进制重建 + 2³² 归一化（VM 档可选开） | `vmgen/compiler.rs`+`template.rs` | P1 | ✅ 基础档（2-byte 变长 r16，M4 续期）/ 完整 7/14/21 档待 M5 |
 | 状态元组位置传参（混函数引用） | 状态含原语指针，每构建顺序随机 | `vmgen/template.rs` | P0 | 📐 |
 | 解码枢纽状态 + 私有解码辅助 | 解码主循环枢纽 ID 每构建随机；辅助函数运行器内私有 | `vmgen/template.rs` | P0 | 📐 |
 | base-N 编码 + token 转义 | 字符类 ASCII 32..126 + 10 特殊字符→5 字符 token（pC 同款） | `vmgen/isa.rs` | P0 | 📐 |
@@ -96,26 +96,26 @@
 
 | 方法 | 说明 | Rust 模块 | 优先级 | 状态 |
 |---|---|---|---|---|
-| 双方言模式 | `--dialect 5.1\|luau`（解析/去糖/输出已通；VM 载体待 M4） | 全模块 | P0 | ✅ M0（解析/输出链），VM 部分待 M4 |
+| 双方言模式 | `--dialect 5.1\|luau`（解析/去糖/输出/VM 全链通） | 全模块 | P0 | ✅（含 for-in 方言差异：Luau 隐式 next 归一化） |
 | 种子确定性 | `--seed`（同 seed 逐字节一致，不同 seed 编码完全不同；默认时间种子） | `rng.rs` | P0 | ✅ M1 |
 | 预设 | low(L1+L2) / medium(+L3) / high(+L4+L5+L7) / vm(全开) / max(v2 特性) | `main.rs` | P0 | 🟡 单开关已有（--no-mangle/--no-strings/--no-flatten/--no-junk，M1+M2），预设命名待 M6 |
-| 强制测试工作流 | 每 pass 完成 → 混淆样本 → lua51+luau 语法+运行对比（语料 21 个文件） | `run_tests.sh`+`gen_examples.sh` | P0 | ✅ M0 起执行中（当前 68 项检查全绿） |
+| 强制测试工作流 | 每 pass 完成 → 混淆样本 → lua51+luau 语法+运行对比（语料 29 个文件 + 多种子回归） | `run_tests.sh`+`gen_examples.sh` | P0 | ✅ M0 起执行中（当前 204 项检查全绿 + 5 种子回归 0 失败） |
 
 ---
 
-## 2. 目前到哪了（2026-08-23）
+## 2. 目前到哪了（2026-08-25）
 
 | 阶段 | 进度 | 说明 |
 |---|---|---|
-| 环境（Rust 1.88 / lua51 5.1.5 / luau 0.735） | ✅ 100% | 路径见 HANDOFF.md §4 |
+| 环境（Rust 1.88 / lua51 5.1.5 / luau 0.735） | ✅ 100% | 工具链已**重建进仓库** `luraph/.tools/bin`（沙箱重置会抹掉 `/home/user/tools`，仓库内副本可持久化；重建方法见 HANDOFF §4） |
 | 调研 + 双方言语义实测 | ✅ 100% | `docs/obfuscation-research.md` |
 | Luraph v15 分析（含动态分析共三轮） | ✅ 100% | `docs/luraph15-analysis.md`（§11 25 项功能对比：采纳 20 / 延后 2 / 拒绝 2 / 我方独有 1） |
 | 全部混淆方法设计（L1–L7 + VM） | ✅ 100% | 本文件 §1 + research §2.6 + v15 报告 §8/§10 |
-| **Rust 混淆器代码** | ✅ **M0+M1+M2+M3+M4（5/7 里程碑）** | …M3 数值/整体加密/反篡改 + M4 L6 VM（私有字节码 + 生成混淆解释器，`--vm`） |
-| 测试语料 + 矩阵 | ✅ 100% | 21 个语料文件（13 个共享 + 8 个 Luau 专属，含 loops/luau_loops）；非 VM 68 项 + VM 68 项 = **136 项全绿**（含 VM 双解释器交叉） |
-| 混淆示例 | ✅ M1+M2 产出 | `luraph-rs/examples/`（21 个文件，`tests/gen_examples.sh` 再生成） |
+| **Rust 混淆器代码** | ✅ **M0+M1+M2+M3+M4 完成，M5 大半已落地** | M4 L6 VM（私有字节码 + 生成混淆解释器，`--vm`）；M5 已含：随机决策树分派（2~4 层）/ 死指令 Nop / 7-bit 变长操作数 / 操作数槽位随机（slot_perm）；M5 剩：SoA 容器 / base-N+token 转义 / 枢纽 ID / 入场解包随机化 |
+| 测试语料 + 矩阵 | ✅ 100% | **29 个语料文件**（20 共享 + 9 Luau 专属；M4 续期新增 8 个 stress_*：upvalues/coroutines/metamethods/multival/errors/bigtable/control/luau_vm）；非 VM 102 项 + VM 102 项 = **204 项全绿**（含 VM 双解释器交叉）；**多种子回归**（seeds 1/7/4242/31337/999999 × 全语料 × 双方言 × 双阶段）0 失败 |
+| 混淆示例 | ✅ M1+M2 产出 | `luraph-rs/examples/`（`tests/gen_examples.sh` 再生成） |
 
-**一句话：设计 100%，代码 M0+M1+M2+M3+M4 完成（5/7 里程碑，矩阵 136/136 全绿），下一步 M5 VM 完整随机面。**
+**一句话：设计 100%，代码 M0–M4 完成且 M4 经应力语料加固（矩阵 204/204 全绿 + 多种子回归 0 失败），M5 随机面已完成约 60%，下一步 M5 收尾（SoA/base-N/枢纽 ID/入场解包）。**
 
 ---
 
@@ -128,15 +128,65 @@
 | **M2 控制流** ✅ 2026-08-23 | flatten + junk(L3)（desugar 取消：flatten 原生处理 for/repeat/while/continue/break） | 同上；人工抽查输出为状态机形态、无原结构残留 —— 通过（矩阵 68/68；循环闭包捕获/continue/空区间 for/nested break 均有语料覆盖） |
 | **M3 数值+整体+反篡改** | numbers(L4) + body(L5) + antidbg(L7) | 同上；篡改密文段→触发陷阱 |
 | **M4 VM 最小可用** ✅ 2026-08-24 | vmgen: isa + compiler + template（41 指令覆盖全语料） | `--vm` 输出双方言运行一致（136/136 全绿，含 luau 交叉 + luau-compile 语法校验）；同 seed 逐字节一致 / 异 seed 编码完全不同（已验证）；无原生字节码可读结构（VM 容器 = 混淆解释器 + 加密字节码串） |
-| **M5 VM 完整** | 全指令 + VMC 随机面（置换/树形/命名/枢纽 ID）+ 7-bit 档 | 同 seed 逐字节一致；异 seed 编码完全不同；反编译器人工抽查失效 |
+| **M4 续期（VM 语义加固）** ✅ 2026-08-25 | 应力语料（8 个 stress_*）暴露并修复 9 类 VM/管线语义 bug：upvalue 单 cell 别名模型（消灭中间副本）/ 循环变量 per-iteration 共享 cell / CallT 表存储 off-by-one / GetTab 索引错误 / 尾部多值展开（return .../a,b=.../a,b=f()）/ 5.1 构造器存储序 / 打印机后缀括号 / 多目标赋值解析 / Luau for-in 隐式 next；语料 21→29，矩阵 136→**204 全绿** + 多种子回归（5 seeds）0 失败 | 见 §4 更新日志 2026-08-25 条目 |
+| **M5 VM 完整**（~60% 已落地） | 已落地：随机决策树分派 / Nop 死指令 / 7-bit 变长档（基础）/ slot_perm 操作数槽随机。剩：SoA 平行数组容器 / base-N+token 转义 / 枢纽 ID 随机 / 入场解包随机化 / 反编译人工抽查 | 同 seed 逐字节一致；异 seed 编码完全不同；反编译器人工抽查失效 |
 | **M6 产品化** | CLI 预设打磨 + README 产品文档 + 性能数据 | 全预设 × 全语料 × 双解释器 100% 通过（research §5 验收 5 条） |
 
-**M4 已完成（2026-08-24），当前待启动项：M5 VM 完整随机面。**
+**M4 已完成并加固（2026-08-25），当前进行项：M5 VM 随机面收尾（SoA/base-N/枢纽 ID/入场解包）。**
 
 ---
 
 ## 4. 更新日志
 
+- **2026-08-25（M4 续期：VM 语义加固 + 工具链重建 + 语料扩容）**
+  **背景**：沙箱重置抹掉 `/home/user/tools` 与部分 /tmp 工件 → 工具链整体
+  **重建进仓库** `luraph/.tools/bin`（持久化）：Rust 1.88（npm @rustbin）、
+  lua51/luac51 5.1.5（GitHub codeload 镜像源码编译）、Luau 0.735（g++
+  直编，无 cmake；自写最小 main 复刻官方 CLI 运行环境：loadstring/
+  collectgarbage/require 文件 rehook/**luaL_sandbox**）。
+  **新发现（双方言/解释器环境）**：
+  1. **官方 luau CLI 沙箱化全局表**（0.600+ 均如此）：`luaL_sandbox` 使
+     `_G` 只读 → 任何顶层**新建**全局赋值 = `attempt to modify a readonly
+     table`。语料清理：loops.lua 的 `shadowtest` 全局测试改为「local 遮蔽
+     已有全局 `math`」的等价测试。
+  2. **for-in 方言差异**：Luau 支持 `for k,v in t`（隐式 `next`，语言级
+     扩展）；5.1 迭代器必须是可调用（裸 table → 运行时 call-a-table 错误，
+     属正确行为）。处理：parser 在 Luau 档把单非调用迭代器归一化为
+     `next, t`；5.1 档原样透传（VM 与宿主同错）。
+  **语料扩容 21→29**（新增 8 个 stress_*：upvalues/coroutines/metamethods/
+  multival/errors/bigtable/control + luau_vm），直接暴露 **9 类真 bug**
+  （全部修复并回归）：
+  1. **upvalue 单 cell 别名模型**（最重要）：旧模型 materialize = GetUp
+     值副本 + 写回转发，跨嵌套层写/读失同步（`g()` 的写不回传 main 的
+     cell、孙层读陈旧值）→ 改为**描述符 0xC000|upidx 别名**：materialize
+     只是作用域别名，闭包直接引用父帧的 cell 对象，全层共享同一规范
+     cell（精确 5.1 单 cell 语义，无中间副本）。
+  2. **循环变量/循环体局部 = per-iteration 共享 cell**：V[slot] 存
+     `{1=value}` cell 表（描述符 0x8000|slot），同一迭代创建的所有闭包
+     绑定同一 cell + 循环体自身读写同 cell（fresh per iteration）；
+     未被捕获的循环局部复用固定寄存器（无 per-iteration 寄存器增长）。
+  3. **CallT 表存储 off-by-one**：`t[n+i]` 的 n 在循环内自增 → 尾调用
+     进表产生空洞（`{9, f()}` → `{9,1,nil,2}`）→ 固定 n + `V[c+1]=n+nout`。
+  4. **GetTab 索引错误缺失**：非 table 且无 metatable 时静默 nil → 改
+     `error('attempt to index a ... value', 0)`（5.1 语义；有 mt 无
+     __index → nil，同样对齐）。
+  5. **尾部多值展开边界**：Assign 的 nil 填充公式在尾调用/尾变长展开后
+     仍对已覆盖目标补 `= nil`（真实语料 `k = next(t, k)` 必中）→
+     展开时 assigned = 全部目标。
+  6. **`return ...` / `a, b = ...` / `a, b = f()` 全变长展开**：原实现
+     只取第一个 vararg；现 Return(base,255,c=1,pre) 走 varargs、Local/
+     Assign 走 VarArgTab 取前缀；多余值「求值即弃」（保副作用）。
+  7. **5.1 表构造器存储序**（luac -l 实测）：位置字段（SETLIST）在**所有
+     具名字段之后**落表 → 重复键时位置字段必胜；Luau 为源码序最后写入
+     胜。VM 编译器按方言分支（5.1 延迟数组存储）。
+  8. **打印机后缀括号**：`(5).nope` 打出 `5.nope`（双方言皆非法 token）
+     → 新增 Ctx::Suffix（仅 Ident/Dot/Index/Call/Method 可裸写后缀）。
+  9. **parser 多目标赋值** `a, b = ...` 原本不支持（首个目标后只认 `=`）。
+  **验收**：官方矩阵 **204/204 全绿**（非 VM 102 + VM 102，含交叉）；
+  **多种子回归** seeds {1, 7, 4242, 31337, 999999} × 29 语料 × 双方言 ×
+  （非 VM + VM + 5.1→luau 交叉）= **0 失败**；最小用例集（upvalue 链/
+  循环捕获/next 遍历/多值/构造器重复键）逐项 diff 通过。
+  **待办**：GitHub token 失效 → push 挂起，重连后补推。
 - **2026-08-24（M4 L6 VM 最小可用 → M4 收官）** `vmgen/{isa,compiler,template}.rs`：
   L6 私有字节码 VM 落地。41 条寄存器指令（9B 定长编码）+ 每构建 opcode
   随机置换；AST→字节码编译器（寄存器分配/常量池/upvalue 活引用+写回

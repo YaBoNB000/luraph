@@ -7,7 +7,8 @@
 
 **对照方法**：`tests/cases/X.lua` 是原始代码，`X.5.1.lua` 是混淆结果——
 两者在对应解释器上运行输出完全一致（`tests/run_tests.sh` 矩阵验证，
-非 VM 68 项 + VM 68 项 = 136 项全绿；minify 默认开，示例文件为单行紧凑形态）。
+29 个语料：非 VM 102 项 + VM 102 项 = **204 项全绿**，另有多种子回归
+0 失败；minify 默认开，示例文件为单行紧凑形态）。
 
 **VM 示例（M4/L6）**：`basics.vm.5.1.lua` / `functions.vm.5.1.lua` /
 `game_loop.vm.5.1.lua` 是 `--vm` 输出（私有字节码 + 生成的混淆解释器，
@@ -23,7 +24,7 @@
 
 ```bash
 cd luraph-rs
-/home/user/tools/bin/cargo build --release
+CARGO_NET_OFFLINE=true /home/user/luraph/.tools/bin/cargo build --release
 tests/gen_examples.sh
 ```
 

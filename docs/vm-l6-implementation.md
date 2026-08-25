@@ -65,6 +65,10 @@ end
 
 ## 2. upvalue 模型（两个正交机制，缺一不可）
 
+> ⚠️ 本节描述 M4 初版模型（活引用+写回转发+快照）。2026-08-25 已换代为
+> **单 cell 别名模型**（见 §8.1）：materialize 不再产生值副本。本节保留
+> 仅作演进记录；现行代码以 §8.1 为准。
+
 ### 2.1 活引用（live cell）+ 写回转发
 
 - 闭包创建时 `ups[i] = { v = 创建帧V, i = 槽 }`（活引用，调用期解引用）。
@@ -177,12 +181,91 @@ VM 模板的分派是巨型 `if/elseif` 链，**每个分支声明同名局部**
 
 ## 7. M5 剩余（VM 完整随机面）
 
-- [ ] 随机二分决策树（2~4 层）替代平铺 if/elseif 分派（当前仅分支
-      顺序 shuffle）
-- [ ] 死指令填充（随机 Nop/无害指令注入指令流 + 模板侧空 handler）
-- [ ] 7-bit 分块操作数编码档（research §2.6 / v15 同款，VM 档可选开）
+已落地（M4 续期，2026-08-25 前）：
+- [x] 随机决策树分派（2~4 层阈值分裂 + 平铺底部，`gen_dispatch_tree`）
+- [x] 死指令填充（Nop 按 `code.len()/10` 注入随机位置，模板侧无害
+      handler：`a+b` / `c*d` / `a*c+b` 三选一）
+- [x] 7-bit 分块操作数编码（基础档：1/2-byte r16，破坏定长步长特征）
+- [x] 操作数槽位随机（slot_perm：a/b/c/d 在 4 个流槽的每构建随机排列，
+      编码器/解码器/模板共享）
+
+剩余：
+- [ ] SoA 平行数组容器（luraph14/15 同款）
+- [ ] 7-bit 完整档（7/14/21-bit + 128 进制重建 + 2³² 归一化）
 - [ ] 解码枢纽/状态元组位置每构建随机（当前模板结构固定，仅名称过
       mangle）
 - [ ] base-N 编码 + token 转义（字节码串载体）
 - [ ] 帧运行器入场原语解包随机化
 - [ ] 反编译人工抽查（luac51 -l 输出应无用户结构可读）
+
+## 8. M4 续期（2026-08-25）：单 cell 模型 + 应力测试踩坑
+
+### 8.1 upvalue 模型换代：值副本 → 单 cell 别名
+
+旧模型（§2）= 活引用 + 写回转发 + 快照。应力语料（stress_upvalues 的
+`nested` 用例）暴露根本缺陷：**materialize = GetUp 值副本**，写回转发只
+走一层 —— 孙层闭包的写不回传到规范 cell、跨层读拿陈旧值。5.1 的语义是
+**每个 local 全程序只有一个 cell**，所有闭包引用同一 cell。
+
+新模型（现行）：
+- **Plain 描述符**（`slot`）：cell = `{ v = V, i = slot }`（创建帧的活
+  槽位引用）。
+- **Slot 描述符**（`0x8000 | slot`）：循环体局部/循环变量被闭包捕获时，
+  每迭代在 `V[slot]` 建 cell 表 `{1 = value}`，makefn 绑定
+  `{ v = V[slot], i = 1 }` —— 同一迭代的所有闭包 + 循环体自身读写同一
+  cell（fresh per iteration，迭代间互不可见）。
+- **Up 描述符**（`0xC000 | upidx`）：创建帧自己 materialize 了该符号时，
+  闭包**直接别名父帧的 cell 对象**（`c[i] = upsf[upidx]`，upsf = 父帧
+  cell 数组，需显式传入——makefn 词法作用域看不到 run 的局部）。
+  materialize 从「GetUp 进新寄存器」变成**纯作用域别名**（不发射任何
+  指令），全层共享规范 cell，读写天然同步。
+
+模板 makefn 绑定序（先判 0xC000 再判 0x8000，互斥）：
+```lua
+if src >= 49152 then c[i] = upsf[src - 49152]
+elseif src >= 32768 then c[i] = { v = V[src - 32768], i = 1 }
+else c[i] = { v = V, i = src } end
+```
+
+### 8.2 应力语料暴露的其余 bug（一行一个）
+
+- **CallT 表存储 off-by-one**：`for i=1,nout do t[n+i]=out[i]; n=n+1 end`
+  的 n 在循环内自增 → 第 2 个结果落到 n+3。修：固定 n，结尾
+  `V[c+1] = n + nout`。（`{9, m3(1,2,3)}` 原本 → `{9,1,nil,2}`）
+- **GetTab 缺索引错误**：非 table 且无 metatable 静默 nil。修：
+  `error('attempt to index a '..type(t)..' value', 0)`；有 mt 无 __index
+  → nil（与 5.1 一致：5.1 非 table 本就不能设 metatable，该分支防御性
+  保留）。
+- **__index 表链**：`r = rawget(f, k)` 不跟随 f 自己的 __index 链
+  （`leaf→mid→root` 双层 __index 表断链）→ 改原生 `f[k]`。
+- **Assign 尾部展开后的 nil 填充**：`a, b = ..., x` 类边界公式错误时
+  对已覆盖目标再写 nil（`k = next(t, k)` 必中：Call 正常返回 1 之后被
+  `k = nil` 覆盖）。规则：尾值展开（npre < n）时 assigned = 全部目标。
+- **`return ...` 只返回第一个 vararg** → Return 加 c=1 源选择（varargs）；
+  **`local a,b = ...` / `a,b = ...`** 走 VarArgTab 取前缀（越界=nil）。
+- **多余值必须「求值即弃」**：`local a = 1, 2, f()` 的 `2`/`f()` 仍要
+  执行（副作用），只是不落目标。
+- **5.1 构造器存储序**：luac -l 实测 SETLIST 在所有 SETTABLE 之后
+  （`{10,20,name=..., [1]=11}` → 5.1 得 10，Luau 得 11）→ 编译器按
+  `lua51` 标志延迟数组存储；Luau 源码序。重复键用例因此**不能进共享
+  语料**（原始程序双方言输出本就不同，cross 必挂）——语料里已移除。
+- **打印机后缀括号**：`Expr::Dot/Method/Index` 的 obj 必须用
+  `Ctx::Suffix`（仅 Ident/Dot/Index/Call/Method 可裸写）——`(5).nope`
+  此前打出 `5.nope`（双方言皆 malformed number）。
+- **parser 多目标赋值**：`a, b = ...` 首目标后是逗号，原解析只认 `=`。
+- **flatten 的 ForGen init**：单非调用迭代器**原样透传**（it = 该值）
+  —— 5.1 裸 table 迭代器在运行时 call 报错（与宿主一致）；**不要**
+  私自补 `next`（那是 Luau 专属，归一化在 parser 做）。
+- **Luau `for k,v in t` 隐式 next**：语言级扩展（5.1 无）→ parser 在
+  Luau 档把 `iters=[t]` 改写为 `iters=[next, t]`（全局 next，sym None）。
+
+### 8.3 官方 luau CLI 沙箱（环境级，影响语料与用户程序）
+
+`luaL_sandbox`（0.600+ 的 CLI 均调用）：全局表只读 + safeenv → 顶层
+`newkey = v` = `attempt to modify a readonly table`。影响：
+- 语料不得含顶层新建全局赋值（loops.lua 的 shadowtest 已改写）。
+- VM 的 SetGlobal 天然同错（G = getfenv(0) 同一张只读表）→ 语义镜像
+  正确，无需特殊处理。
+- 重建 Luau 工具链时**必须**在自写 main 里复刻：luaL_openlibs +
+  loadstring/collectgarbage 自定义全局 + require 文件 rehook +
+  luaL_sandbox（漏掉 sandbox 会让语料出现假通过/假失败）。

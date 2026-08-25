@@ -161,12 +161,23 @@ fn desugar_stmt(stmt: Stmt, table: &mut SymTable, tmps: &mut Vec<String>) -> Vec
 			//     body
 			//   end
 			// end
-			// `local iter, state, control = <the for-in expression list as-is>`
-			let local_iter = Stmt::Local {
-				names: vec![n_iter.clone(), n_state.clone(), n_ctrl.clone()],
-				syms: vec![s_iter, s_state, s_ctrl],
-				values: iters.iter().map(|e| Some(e.clone())).collect(),
-			};
+		// `local iter, state, control = <the for-in expression list>` —
+		// a single non-call expression is the default-iterator form
+		// (`for ... in t` ≡ `for ... in next, t, nil`)
+		let values: Vec<Option<Expr>> = if iters.len() == 1 && !is_call_expr(&iters[0]) {
+			vec![
+				Some(ident("next", None)),
+				Some(iters[0].clone()),
+				Some(Expr::Nil),
+			]
+		} else {
+			iters.iter().map(|e| Some(e.clone())).collect()
+		};
+		let local_iter = Stmt::Local {
+			names: vec![n_iter.clone(), n_state.clone(), n_ctrl.clone()],
+			syms: vec![s_iter, s_state, s_ctrl],
+			values,
+		};
 			let call = Expr::Call {
 				func: Box::new(ident(&n_iter, Some(s_iter))),
 				args: vec![
@@ -263,6 +274,10 @@ fn mk_local(table: &mut SymTable, prefix: &str) -> (String, SymId) {
 	let name = format!("_{}_{}", prefix, table.syms.len());
 	let id = new_sym(table, &name);
 	(name, id)
+}
+
+fn is_call_expr(e: &Expr) -> bool {
+	matches!(e, Expr::Call { .. } | Expr::Method { .. })
 }
 
 fn ident(name: &str, sym: Option<SymId>) -> Expr {

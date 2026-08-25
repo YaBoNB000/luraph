@@ -11,15 +11,29 @@
 //!     [type u8]  0=nil | 1=bool(1 byte) | 2=number(text) | 3=string
 //!     number: [len u16][ASCII digits]  (tonumber round-trips exactly)
 //!     string: [len u16][raw bytes]
-//!   code: [op u8][a u16][b u16][c u16][d u16] per instruction (13 bytes)
+//!   code: [op u8][4 x u16-7-bit-varint] per instruction (M5 7-bit tier)
 //!
-//! Jump targets are absolute instruction indexes (1-based).
+//! u16-7-bit-varint (v15-style 7-bit chunking): values < 128 encode in
+//! 1 byte; otherwise 2 bytes = (low7 | 0x80) then high9. Variable
+//! length destroys the fixed-stride (old 9-byte AoS) signature; the
+//! decoder needs only +,-,* (no bitops — 5.1 template constraint):
+//!   b1 < 128 -> v = b1        else v = (b1 - 128) + b2 * 128
+//!
+//! M5 hub randomization: the four operand STREAM SLOTS hold a,b,c,d in
+//! a per-build random permutation (VmProgram.slot_perm); the template
+//! maps stream positions back to a/b/c/d.
+//!
+//! Jump targets are 1-based BYTE offsets into the code stream (computed
+//! from per-instruction encoded lengths at resolve time).
 //! Operands are 0-based register/const/function indexes; the runtime
 //! adds 1 for Lua arrays.
 //!
 //! Opcodes are randomly permuted per build (VMC, seed-derived): the
 //! compiler and the interpreter template share one mapping, so the
 //! emitted interpreter has no recognizable opcode layout.
+//!
+//! Dead-instruction padding (M5): Nop instructions are injected at
+//! seed-derived positions; the dispatch carries a harmless Nop handler.
 
 /// Base opcode table (pre-permutation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,18 +250,32 @@ impl Instr {
 	pub fn abcd(op: Op, a: u16, b: u16, c: u16, d: u16) -> Instr {
 		Instr { op, a, b, c, d }
 	}
-	pub fn encode(&self, map: &OpMap, out: &mut Vec<u8>) {
+	/// `slot_perm[i]` = which operand (0=a 1=b 2=c 3=d) sits in stream
+	/// slot i (M5 per-build hub randomization).
+	pub fn encode(&self, map: &OpMap, slot_perm: &[u8; 4], out: &mut Vec<u8>) {
 		out.push(map.code(self.op));
-		push_u16(out, self.a);
-		push_u16(out, self.b);
-		push_u16(out, self.c);
-		push_u16(out, self.d);
+		let ops = [self.a, self.b, self.c, self.d];
+		for &sl in slot_perm {
+			encode_u16var(out, ops[sl as usize]);
+		}
 	}
 }
 
 pub fn push_u16(out: &mut Vec<u8>, v: u16) {
 	out.push((v & 0xff) as u8);
 	out.push((v >> 8) as u8);
+}
+
+/// 7-bit-chunk varint for u16: 1 byte when < 128, else 2 bytes
+/// ((v & 0x7F) | 0x80, v >> 7). Bitop-free decoder (5.1-safe):
+/// b1 < 128 -> v = b1;  else v = (b1 - 128) + b2 * 128.
+pub fn encode_u16var(out: &mut Vec<u8>, v: u16) {
+	if v < 128 {
+		out.push(v as u8);
+	} else {
+		out.push(((v & 0x7f) | 0x80) as u8);
+		out.push((v >> 7) as u8);
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -61,16 +61,19 @@ repeat
 	local ok = r2 >= 10
 until ok
 print("repeatlocal:", r2)
--- global with the same name as a local (shadowing across the machine)
-shadowtest = 100
-local function getshadow()
-	return shadowtest
+-- a local shadows an existing global; a closure created before the
+-- local binds the global, one created after binds the local
+local function getmath()
+	return math
 end
-local shadowtest = 1
+local math = 42
 for i = 1, 2 do
-	shadowtest = shadowtest + i
+	math = math + i
 end
-print("shadow:", shadowtest, getshadow())
+local function getshadowed()
+	return math
+end
+print("shadow:", math, getmath().sqrt(16), getshadowed())
 -- closure in a later statement referencing earlier locals
 local base = 50
 local mult = 2

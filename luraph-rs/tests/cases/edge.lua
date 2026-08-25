@@ -79,4 +79,29 @@ reg.sub = function(a, b)
 	return a - b
 end
 print("regtable:", reg.add(10, 5), reg.sub(10, 5))
+-- VM tail-invariant edges: break as the function's LAST statement (loop
+-- end label must land on the implicit trailing return, never past EOB)
+local function tailbreak(limit)
+	local n = 0
+	while true do
+		n = n + 1
+		if n >= limit then
+			break
+		end
+	end
+	return n
+end
+print("tailbreak:", tailbreak(5), tailbreak(1))
+-- all-branches-return if as the function's last statement (label past
+-- the final return is only ever targeted by dead jumps)
+local function tailret(x)
+	if x > 0 then
+		return "pos"
+	elseif x < 0 then
+		return "neg"
+	else
+		return "zero"
+	end
+end
+print("tailret:", tailret(3), tailret(-2), tailret(0))
 print("edge done")

@@ -1,12 +1,14 @@
 # 项目进度（PROGRESS）
 
-> 最后更新：2026-08-24
+> 最后更新：2026-08-25
 > 当前状态：✅ 环境 ✅ 研究 ✅ v15 分析 ✅ M0 地基 ✅ M1 词法+字符串 ✅ M2 控制流
-> ✅ M3 数值+整体加密+反篡改 ✅ **M4 VM 最小可用完成**
+> ✅ M3 数值+整体加密+反篡改 ✅ **M4 VM 完成 + 续期加固（2026-08-25）**
 > （L6 私有字节码 VM：41 条寄存器指令 + 每构建 opcode 随机置换 + 生成的混淆解释器；
-> 全语料 × 双方言 ×（lua51 + luau 交叉）矩阵 **136 项全绿**；
-> 关键语义坑全部踩平并记录于 `docs/vm-l6-implementation.md`；
-> 下一步 M5 = VM 完整随机面（决策树/死指令/7-bit 编码/枢纽随机化））
+> 语料 21→29（新增 8 个 stress_*）× 双方言 ×（lua51 + luau 交叉）矩阵 **204 项全绿** +
+> **多种子回归**（seeds 1/7/4242/31337/999999）0 失败；upvalue 单 cell 别名模型 /
+> 循环变量 per-iteration 共享 cell / 5.1 构造器存储序 / 全变长展开等 9 类语义坑
+> 踩平并记录于 `docs/vm-l6-implementation.md` §8；工具链已重建进仓库
+> `luraph/.tools/bin` 抗沙箱重置；M5 随机面已落地约 60%，剩 SoA/base-N/枢纽 ID/入场解包）
 
 ## 0. 需求（用户确认）
 
@@ -36,13 +38,13 @@
 
 | 组件 | 版本 | 位置 | 用途 |
 |---|---|---|---|
-| Lua 5.1 解释器 | 5.1.5（源码编译） | `/home/user/tools/bin/lua51` | 验证 5.1 目标输出正确性 |
-| luac 5.1 | 5.1.5（源码编译） | `/home/user/tools/bin/luac51` | 5.1 字节码编译检查 |
-| Luau 解释器 | 0.735（源码编译） | `/home/user/tools/bin/luau` | 验证 Luau 目标输出正确性 |
-| Luau 编译器 | 0.735（源码编译） | `/home/user/tools/bin/luau-compile` | Luau 输出语法校验 |
-| Luau 分析器 | 0.735（源码编译） | `/home/user/tools/bin/luau-analyze` | Luau 静态检查 |
-| Rust 编译器 | 1.88.0 stable | `/home/user/tools/rust-1.88/`（`/home/user/tools/bin/rustc`） | 混淆器本体编译 |
-| Cargo | 1.88.0 | `/home/user/tools/rust-1.88/cargo`（`/home/user/tools/bin/cargo`） | Rust 构建 |
+| Lua 5.1 解释器 | 5.1.5（源码编译） | `/home/user/luraph/.tools/bin/lua51`（仓库内，抗重置） | 验证 5.1 目标输出正确性 |
+| luac 5.1 | 5.1.5（源码编译） | `/home/user/luraph/.tools/bin/luac51`（仓库内，抗重置） | 5.1 字节码编译检查 |
+| Luau 解释器 | 0.735（g++ 直编，仓库内） | `/home/user/luraph/.tools/bin/luau`（抗重置；自写 main 复刻 CLI 环境：loadstring/require/luaL_sandbox） | 验证 Luau 目标输出正确性 |
+| Luau 编译器 | 0.735（g++ 直编，仓库内） | `/home/user/luraph/.tools/bin/luau-compile`（抗重置） | Luau 输出语法校验 |
+| Luau 分析器 | —（0.735 重建未编 luau-analyze，矩阵不需要） | — | 可选 |
+| Rust 编译器 | 1.88.0 stable | `/home/user/luraph/.tools/lib/rustc/`（`/home/user/luraph/.tools/bin/rustc`，仓库内抗重置） | 混淆器本体编译 |
+| Cargo | 1.88.0 | `/home/user/luraph/.tools/lib/cargo/`（`/home/user/luraph/.tools/bin/cargo`，仓库内抗重置） | Rust 构建 |
 | gcc / g++ | Debian 12 (gcc 12) | 系统 | 编译了上述 C/C++ 解释器 |
 
 > ⚠️ Rust 工具链是通过 npm 上的 `@rustbin` 预编译包安装的（rust-lang.org / rustup / crates.io
@@ -217,21 +219,65 @@ makefn 闭包帧模型 + 分派循环 + `__call`/`__len`/元表处理 + Luau 冻
 `_G` 规避 + 双方言运行期探测）。CLI `--vm` 开关；输出 = 混淆解释器 +
 加密字节码。实现细节与全部语义坑：`docs/vm-l6-implementation.md`。
 
-矩阵扩展为 **非 VM 68 项 + VM 68 项 = 136 项全绿**（含 VM 输出在
-luau 下的交叉验证 + luau-compile 语法校验）。种子确定性已验证
+矩阵扩展为 **非 VM 102 项 + VM 102 项 = 204 项全绿**（语料 21→29：
+新增 8 个 stress_* 应力用例；含 VM 输出在 luau 下的交叉验证 +
+luau-compile 语法校验）。**多种子回归**（seeds 1/7/4242/31337/999999
+× 全语料 × 双方言 × 双阶段 + 交叉）0 失败。种子确定性已验证
 （同 seed 逐字节一致 / 异 seed 编码完全不同）。
 
 修复（2026-08-24 后续）：**输出纯度 bug**——示例/输出中出现随机
 繁体中文字符：密文串走打印器的 UTF-8 透传路径，随机高字节恰好构成
 合法 UTF-8 时原样输出。修复 = `Expr::Str.is_binary` 全转义 + minify
 字面量原样输出（细节见 `docs/vm-l6-implementation.md`）；全部 25 个
-示例现均为纯 ASCII，矩阵 136/136 保持全绿。
+示例现均为纯 ASCII。
+
+### ✅ M4 续期：VM 语义加固（2026-08-25）
+
+**背景**：沙箱重置抹掉 `/home/user/tools` → 工具链整体重建进仓库
+`luraph/.tools/bin`（Rust @rustbin / lua51 镜像源码 / Luau g++ 直编 +
+自写 main 复刻 CLI 环境——**必须含 luaL_sandbox**，官方 luau CLI 全局表
+只读，漏掉会让语料假通过）。
+
+**语料扩容 21→29**（8 个 stress_*：upvalues/coroutines/metamethods/
+multival/errors/bigtable/control/luau_vm），直接暴露并修复 **9 类真 bug**
+（细节 `docs/vm-l6-implementation.md` §8）：
+
+1. **upvalue 单 cell 别名模型**（换代）：materialize 从「GetUp 值副本 +
+   写回转发」改为**纯作用域别名**（描述符 `0xC000|upidx`，闭包直接引用
+   父帧 cell 对象）——精确 5.1 单 cell 语义，消灭跨层读写失同步
+2. **循环变量/循环体局部 per-iteration 共享 cell**（`0x8000|slot`，
+   V[slot] 存 `{1=value}` cell 表）：同迭代所有闭包 + 循环体共享，
+   迭代间 fresh；未捕获的循环局部复用固定寄存器（无寄存器增长）
+3. **CallT 表存储 off-by-one**（尾调用进表产生空洞）
+4. **GetTab 索引错误缺失**（非 table 无 mt 应报错）+ **__index 表链**
+   （rawget 断链 → 原生索引）
+5. **Assign 尾部展开后的 nil 填充越界补写**（`k = next(t, k)` 必中）
+6. **`return ...` / `a, b = ...` / `a, b = f()` 全变长展开** + 多余值
+   求值即弃（保副作用）
+7. **5.1 构造器存储序**（SETLIST 最后 → 重复键位置字段必胜；Luau
+   源码序）——重复键用例因此不能进共享语料（原始程序双方言输出本就
+   不同）
+8. **打印机后缀括号**（`(5).nope` → `5.nope` 双方言皆非法 → Ctx::Suffix）
+9. **parser 多目标赋值** `a, b = ...`；**Luau `for k,v in t` 隐式 next**
+   在 parser 归一化为 `next, t`（5.1 档原样透传，裸 table 与宿主同错）
+
+**验收**：矩阵 **204/204 全绿**；多种子回归（5 seeds × 29 语料 ×
+双方言 × 双阶段 + 5.1→luau 交叉）**0 失败**；最小用例集逐项 diff 通过。
+
+**环境级发现**（已写入 HANDOFF §4 + vm-l6 笔记 §8.3）：
+- 官方 luau CLI **luaL_sandbox** 全局只读（0.600+）：顶层新建全局赋值
+  = 报错。语料已清理（loops.lua shadowtest 改写）；VM SetGlobal 天然
+  同错（语义镜像正确）。
+- **for-in 方言差异**：Luau 隐式 next / 5.1 必须可调用。
 
 ### ⬜ 剩余（按 implementation-plan.md 里程碑推进）
 
-- [ ] **M5**：**VM 完整随机面**：随机二分决策树分派（2~4 层）、死指令
-      填充、7-bit 分块操作数编码档、解码枢纽/状态元组位置随机化、
-      base-N 编码 + token 转义（见 `docs/vm-l6-implementation.md` §7）
+- [ ] **M5**（~60% 已落地）：**VM 完整随机面**。已落地：随机决策树分派
+      （2~4 层）/ Nop 死指令填充 / 7-bit 变长基础档 / slot_perm 操作数
+      槽随机。剩：SoA 平行数组容器、7-bit 完整档（7/14/21-bit）、
+      解码枢纽/状态元组位置随机化、base-N 编码 + token 转义、
+      帧运行器入场原语解包随机化、反编译人工抽查
+      （见 `docs/vm-l6-implementation.md` §7）
 - [ ] **M6**：CLI 预设（low/medium/high/vm）+ README 产品文档
 - 每个 pass 完成后执行强制工作流（矩阵全绿 + examples 重新生成才算完成）
 
