@@ -180,6 +180,7 @@ luraph/
 │   ├── implementation-plan.md  # ★ 实施清单（§1 状态列）+ 进度表（§2）+
 │   │                           #   里程碑（§3）+ 更新日志（§4，倒序）
 │   ├── luraph15-analysis.md    # ★ Luraph v15.0 样本逆向分析（架构/脱壳/采纳决策 §8）
+│   ├── v15-structural-parity-plan.md # ★ 与样本「结构 100% 同族」的分阶段计划（2026-08-25）
 │   ├── performance.md          #   M6 预设性能快照
 │   └── vm-l6-implementation.md # ★★ VM 实现笔记：架构/多值协议/upvalue 单 cell
 │                               #   模型（§8.1）/9 类 bug（§8.2）/环境语义（§8.3）/
@@ -318,8 +319,9 @@ bash tests/run_tests.sh
 bash tests/multiseed.sh
 ```
 
-**M5 已完成。** M6 产品化：CLI 预设（low/medium/high/vm/max）+ README
-产品文档 + 性能数据（research §5 验收 5 条）。
+**M0–M6 已完成。** 若要输出在结构上与 `samples/luraph15.txt` 同族，
+读 `docs/v15-structural-parity-plan.md`（须先选路线 A=Roblox 克隆档
+或 B=双目标孪生；未拍板前不改 `vmgen/` 发射外壳）。
 
 **通用规则**：改 VM 三件套（isa/compiler/template）任何一处 → 先读
 `docs/vm-l6-implementation.md`（尤其 §8 的 9 类坑），改完 = 矩阵 204 +
@@ -392,12 +394,6 @@ bash tests/multiseed.sh
 
 1. 全部测试语料 × 双解释器 × 全预设：stdout + 退出码 100% 一致
    （当前矩阵 204 项 = 非 VM 102 + VM 102，含 5.1→luau 交叉）
-2. 输出经 `lua51 loadstring` / `luau-compile` 语法校验 0 错误
-3. 同 `--seed` 两次构建逐字节一致；不同 seed 字节码编码完全不同；
-   **多种子回归**（≥5 个 seed × 全语料 × 双方言 × 双阶段）0 失败
-4. VM 预设输出：标准反编译器/格式化器无法恢复源码结构（人工抽查）
-5. 反篡改生效：篡改任一密文段 → 触发陷阱
-�� = 非 VM 102 + VM 102，含 5.1→luau 交叉）
 2. 输出经 `lua51 loadstring` / `luau-compile` 语法校验 0 错误
 3. 同 `--seed` 两次构建逐字节一致；不同 seed 字节码编码完全不同；
    **多种子回归**（≥5 个 seed × 全语料 × 双方言 × 双阶段）0 失败
