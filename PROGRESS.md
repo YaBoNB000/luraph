@@ -281,19 +281,23 @@ multival/errors/bigtable/control/luau_vm），直接暴露并修复 **9 类真 b
 - [ ] **M6**：CLI 预设（low/medium/high/vm）+ README 产品文档
 - 每个 pass 完成后执行强制工作流（矩阵全绿 + examples 重新生成才算完成）
 
-## 4. 目录结构（当前）
+## 4. 目录结构（当前，2026-08-25）
 
 ```
 luraph/
 ├── HANDOFF.md                  # 零上下文交接文档（新会话先读）
 ├── PROGRESS.md                 # 本文件
-├── README.md
+├── README.md                   # 产品 README（2026-08-25 重写）
+├── .tools/                     # ★ 工具链（gitignored，708M；重建步骤 HANDOFF §4）
+│   └── bin/{rustc,cargo,lua51,luac51,luau,luau-compile}
 ├── docs/
 │   ├── obfuscation-research.md # 混淆技术学习记录（VM 设计草案 + 实现规划 + 语料清单）
 │   ├── luraph15-analysis.md    # Luraph v15 样本分析报告（含第二轮深挖 15 项新机制
 │   │                           #   + 25 项功能对比表 + 分析边界声明）
-│   └── implementation-plan.md  # ★ 实施计划：将实施哪些混淆方法（L1–L7 逐项）+ 目前进度
-│                               #   + 里程碑 M0–M6 验收标准（活文档）
+│   ├── implementation-plan.md  # ★ 实施计划：将实施哪些混淆方法（L1–L7 逐项）+ 目前进度
+│   │                           #   + 里程碑 M0–M6 验收标准（活文档）
+│   └── vm-l6-implementation.md # ★★ VM 实现笔记（架构/多值协议/upvalue 单 cell 模型
+│                               #   /9 类 bug/环境语义/M5 清单/调试工具箱）—— 动 VM 前必读
 ├── samples/
 │   ├── luraph15.txt            # 用户提供的 Luraph v15.0 混淆样本（171KB）
 │   ├── luraph15.lua            # 可执行工作副本（Vector2/3 内联替换）
@@ -301,34 +305,35 @@ luraph/
 │   ├── make_trace.py           # 探针注入生成器
 │   ├── run_trace.lua / run1.lua# 动态运行包装器
 │   └── polyfill.lua            # buffer/Vector3 polyfill（buffer 部分因 CLI 内建而未用上）
-├── luraph-rs/                  # ★ Rust 混淆器（M2 完成，矩阵 68/68 全绿）
+├── luraph-rs/                  # ★ Rust 混淆器（M4 完成 + 续期，矩阵 204/204 全绿）
 │   ├── Cargo.toml              #   std-only 零依赖
 │   ├── src/
-│   │   ├── main.rs             #   CLI（--dialect/-o/--seed/--no-mangle/
-│   │   │                       #     --no-strings/--no-flatten/--no-junk/
+│   │   ├── main.rs             #   CLI（--dialect/-o/--seed/--vm +
+│   │   │                       #     --no-mangle/--no-strings/--no-flatten/--no-junk/
 │   │   │                       #     --minify(默认)/--no-minify/--no-numbers/
-│   │   │                       #     --no-body/--no-antidbg)
-│   │   ├── ast.rs              #   AST 定义
-│   │   ├── lexer.rs            #   双方言词法（11 单测）
-│   │   ├── parser.rs           #   双方言语法（Pratt/注解剥离/去糖）
-│   │   ├── symtab.rs           #   作用域解析
-│   │   ├── printer.rs          #   打印器（优先级括号/字节精确字符串）
-│   │   ├── mangle.rs             #   L1 名称混淆（保留 self：方法固定参数名）
-│   │   ├── minify.rs             #   L1 token 感知单行压缩（默认开）
-│   │   ├── strings.rs            #   L2 字符串加密 + 运行时解密加载器
-│   │   ├── numbers.rs            #   L4 数字字面量拆分（默认开）
-│   │   ├── body.rs               #   L5 整体加密容器（默认开）
-│   │   ├── antidbg.rs            #   L7 反篡改容器层（金丝雀/校验和/错误重写/时间陷阱）
-│   │   ├── junk.rs               #   L3 垃圾代码 + 透明谓词
-│   │   ├── flatten.rs            #   ★ L3 CFG 扁平化状态机（循环=嵌套子状态机）
-│   │   ├── desugar.rs            #   （已退出流水线，存档）
-│   │   ├── rng.rs              #   Park-Miller PRNG
-│   └── tests/
-│       ├── cases/*.lua         #   21 个测试语料（含 loops/luau_loops）
-│       ├── run_tests.sh        #   测试矩阵（68 项检查）
-│       └── gen_examples.sh     #   生成混淆示例
+│   │   │                       #     --no-body/--no-antidbg）+ 管线装配
+│   │   ├── ast.rs / lexer.rs / parser.rs / symtab.rs / printer.rs   # M0 地基
+│   │   │                       #   （printer Ctx::Suffix = 后缀位置括号规则）
+│   │   ├── mangle.rs / minify.rs / strings.rs      # L1 名称 / L1 压缩 / L2 字符串
+│   │   ├── flatten.rs / junk.rs                    # L3（flatten 内含循环降级 make_loop）
+│   │   ├── numbers.rs / body.rs / antidbg.rs       # L4 数值 / L5 整体加密 / L7 反篡改
+│   │   ├── rng.rs / rng_check.rs                   # 种子 PRNG
+│   │   ├── desugar.rs            #   ⚠️ 孤儿文件（未挂 mod，死代码存档）
+│   │   └── vmgen/                # ★ L6 VM
+│   │       ├── isa.rs            #     41 条 Op + 每构建置换 + 变长 varint 编码
+│   │       ├── compiler.rs       #     AST→字节码（单 cell 模型 + 方言分支）
+│   │       ├── template.rs       #     解释器模板（决策树/makefn/元表透传）
+│   │       └── mod.rs
+│   ├── tests/
+│   │   ├── cases/*.lua         #   ★ 29 个测试语料（20 共享 + 9 luau_*；8 个 stress_*）
+│   │   ├── run_tests.sh        #   ★ 官方矩阵（204 项：非 VM 102 + VM 102，含交叉）
+│   │   ├── multiseed.sh        #   ★ 多种子回归（VM 改动必跑，seeds 可传参）
+│   │   └── gen_examples.sh     #   生成混淆示例
+│   └── tools/
+│       └── luau-cli-mains/     #   重建 .tools 的 luau/luau-compile 自写 main（权威副本）
 ├── examples/（在 luraph-rs/examples/）
-│   └── *.5.1.lua / *.luau.lua  # ★ 所有常用语法的混淆示例（含 L3 扁平化）（对照 tests/cases/）
+│   └── *.5.1.lua / *.luau.lua / *.vm.5.1.lua
+│                             # ★ 所有常用语法的混淆示例（对照 tests/cases/）
 └── lph/                        # 早期 Lua 参考实现（已被 Rust 取代，仅存档）
     ├── rng.lua
     ├── lexer.lua

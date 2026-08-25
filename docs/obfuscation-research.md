@@ -1,6 +1,7 @@
 # Lua 混淆技术研究笔记（学习记录）
 
-> 记录人：Agent Mode ｜ 日期：2026-08-23
+> 记录人：Agent Mode ｜ 日期：2026-08-23（2026-08-25 补 §3 两行方言差异 +
+> §5 实现现状 + §6 语料落地状态）
 > 用途：商业级 Lua 混淆器（对标 Luraph）设计依据。所有「实测」条目均用
 > Lua 5.1.5 与 Luau 0.735 真实解释器验证过，不是纸面推断。
 
@@ -306,7 +307,7 @@ end
 
 ---
 
-## 3. 双方言语义实测表（2026-08-23 实测）
+## 3. 双方言语义实测表（2026-08-23 实测，2026-08-25 补最后两行）
 
 | 特性 | Lua 5.1.5 | Luau 0.735 | 对混淆器的影响 |
 |---|---|---|---|
@@ -329,6 +330,14 @@ end
 | 整数/浮点类型区分 | ❌ 单一 number | ✅ int/float 独立类型 | AST Num 节点带 `isfloat` 标志保真 |
 | `os.clock` | ✅ | ✅ | 时间陷阱双方言可用 |
 | `math.floor` | ✅ | ✅ | `//` 去糖依赖 |
+| for-in 裸 table `for k,v in t` | ❌ **迭代器必须可调用**（运行时
+  `attempt to call a table value` = 正确行为） | ✅ **语言级扩展**（隐式
+  `next, t`） | parser 在 Luau 档把单非调用迭代器归一化为 `next, t`；5.1 档
+  原样透传（VM 与宿主同错）。共享语料两侧行为一致，可覆盖 |
+| 顶层新建全局赋值 | ✅ 合法 | ❌ **报错**（官方 CLI 的 `luaL_sandbox`
+  全局只读，0.600+ 均如此：`attempt to modify a readonly table`） | **共享
+  语料不得含顶层新建全局赋值**（cross 检查必挂）；VM 的 SetGlobal 用
+  `getfenv(0)` 天然同错（语义镜像正确） |
 
 ### 运算符优先级（核对 5.1 `lparser.c` 与 Luau `Parser.cpp` 源码，两者一致）
 
@@ -364,44 +373,53 @@ or(1) and(2) 比较(3) ..(5,右) +- (6) * / % //(7→乘法级) 一元(8) ^(10,�
 
 ---
 
-## 5. Rust 实现规划（等「开始」后执行）
+## 5. Rust 实现规划（M0–M4 已落地，2026-08-25 现状）
 
 ```
 luraph-rs/
-├── Cargo.toml              # 零依赖
+├── Cargo.toml              # 零依赖（std-only，沙箱网络约束）
 └── src/
-    ├── main.rs             # CLI：参数解析 + preset（low/medium/high/vm）+ 文件 I/O
-    ├── rng.rs              # 种子 PRNG（参考 lph/rng.lua 的 Park-Miller）
-    ├── lexer.rs            # 双方言词法（参考 lph/lexer.lua：转义/长串/反引号插值）
-    ├── parser.rs           # 双方言语法（Pratt 优先级表/注解剥离/插值子解析/复合赋值去糖）
+    ├── main.rs             # CLI：参数解析（preset 命名待 M6）+ 管线装配
+    ├── rng.rs              # 种子 PRNG（Park-Miller，rng_check.rs 对拍）
+    ├── lexer.rs            # 双方言词法（转义/长串/反引号插值）
+    ├── parser.rs           # 双方言语法（Pratt/注解剥离/插值/复合赋值去糖；
+    │                       #   Luau for-in 隐式 next 归一化在这）
     ├── ast.rs              # AST 节点 + 克隆 + 遍历工具
     ├── symtab.rs           # resolve pass：作用域/sym 对象/全局名收集
-    ├── desugar.rs          # for/repeat/interp// 去糖
-    ├── printer.rs          # AST → 源码（优先级括号/转义/浮点保真）
+    ├── printer.rs          # AST → 源码（优先级括号/字节精确字符串；
+    │                       #   Ctx::Suffix 后缀位置括号——(5).nope 不得打成 5.nope）
+    ├── minify.rs           # L1 token 感知单行压缩（默认开）
     ├── mangle.rs           # L1 名称混淆
     ├── strings.rs          # L2 字符串加密 + 加载器生成
-    ├── flatten.rs          # L3 CFG 扁平化（块图构建 + 状态机发射）
+    ├── flatten.rs          # L3 CFG 扁平化（块图构建 + 状态机发射 + 循环降级
+    │                       #   make_loop——ForGen 单迭代器语义在这）
     ├── junk.rs             # L3 垃圾代码/透明谓词
     ├── numbers.rs          # L4 数值混淆
-    ├── body.rs             # L5 整体加密
-    ├── antidbg.rs          # L7 校验和/时间陷阱
-    └── vmgen/
-        ├── mod.rs          # L6 编排
-        ├── isa.rs          # 指令集定义 + 编码/随机置换
-        ├── compiler.rs     # AST → 自定义字节码（原型树/upvalue/常量池）
-        └── template.rs     # Lua 解释器模板生成（随机派发树/SoA 表名/死代码）
+    ├── body.rs             # L5 整体加密（loadstring 容器）
+    ├── antidbg.rs          # L7 校验和/时间陷阱/错误重写/金丝雀
+    ├── desugar.rs          # ⚠️ 孤儿文件（未挂 mod，死代码存档——勿依赖）
+    └── vmgen/              # ★ L6 VM
+        ├── mod.rs
+        ├── isa.rs          # 41 条 Op + 每构建随机置换 OpMap + 变长 varint 编码
+        ├── compiler.rs     # AST → 字节码（CellKind 单 cell 模型：Plain/Slot 0x8000/
+        │                   #   Up 别名 0xC000；5.1 构造器存储序方言分支）
+        └── template.rs     # Lua 解释器模板（随机决策树分派/makefn/Nop 死指令/
+                            #   slot_perm 槽位随机/元表·协程·pcall 透传）
 tests/
-├── cases/*.lua             # 语料：闭包/upvalue/递归/元表/协程/多值/尾调用/
-│                           #   转义串/\0/长串/浮点边界/continue(//)(Luau 用例)/...
-└── run_tests.lua           # 矩阵：case × {lua51, luau} × 预设 → 对比 stdout+exitcode
+├── cases/*.lua             # ★ 29 个语料（20 共享 + 9 luau_*；8 个 stress_*）
+├── run_tests.sh            # ★ 官方矩阵（204 项：非 VM 102 + VM 102，含 5.1→luau 交叉）
+├── multiseed.sh            # ★ 多种子回归（VM 改动必跑；seeds 可传参）
+└── gen_examples.sh         # 混淆示例再生成
+tools/luau-cli-mains/       # 重建 .tools 的 luau/luau-compile 自写 main（权威副本）
 ```
 
-**验收标准（商业级定义落地）**
-1. 全语料 × 双解释器 × 全预设 100% 输出一致（stdout + 退出码）
-2. VM 预设输出经 `luau-compile`/`lua51 loadstring` 语法校验 0 错误
-3. 同一 `--seed` 两次构建输出逐字节一致；不同 seed 字节码编码完全不同
-4. 对 VM 预设输出：标准反编译器/格式化器无法恢复源码结构（人工抽查）
-5. 反篡改生效：篡改任一密文段 → 触发陷阱
+**验收标准（商业级定义落地，当前状态 2026-08-25）**
+1. 全语料 × 双解释器 × 全预设 100% 输出一致（stdout + 退出码）✅ 矩阵 204/204
+2. VM 预设输出经 `luau-compile`/`lua51 loadstring` 语法校验 0 错误 ✅（矩阵内含）
+3. 同一 `--seed` 两次构建输出逐字节一致；不同 seed 字节码编码完全不同 ✅
+   （前 2KB 重合率 8.6% 已验证）；**多种子回归**（≥5 seeds）0 失败 ✅
+4. 对 VM 预设输出：标准反编译器/格式化器无法恢复源码结构（人工抽查）🟡 待 M5 收尾
+5. 反篡改生效：篡改任一密文段 → 触发陷阱 ✅（M3 实测）
 
 ---
 
@@ -409,7 +427,13 @@ tests/
 
 > 每次混淆模块改动后，以下语料必须全部通过 `lua51` + `luau` 双方言
 > 语法校验（`loadstring`/`luau-compile`）+ 运行对比（stdout/退出码一致）。
-> 语料文件：`tests/cases/*.lua`（待「开始」后建立），Luau 专属用例单独标记。
+> 语料文件：`luraph-rs/tests/cases/*.lua`（**已建立，29 个**：20 共享
+> 5.1+Luau 双跑 + 9 个 `luau_*` 前缀专属用例；其中 8 个 `stress_*` 是
+> M4 续期新增的应力用例——upvalues/coroutines/metamethods/multival/
+> errors/bigtable/control 共享 + luau_vm 专属），Luau 专属用例单独标记。
+> **共享语料红线**（cross 检查要求原始程序两侧行为一致）：不得含顶层
+> 新建全局赋值（Luau 沙箱报错）、重复键表构造器（5.1/Luau 存储序不同）、
+> 未捕获错误的裸报错（行号格式不同）——详见 HANDOFF §8 第 15 条。
 
 1. **运算符与优先级**：全部二元/一元运算符；易错组合 `-2^2`、`2^-3`、
    `not x and y`、`1..2..3`、`a and b or c`、`#t ^ 2`

@@ -1,7 +1,8 @@
 # 混淆示例（所有常用语法）
 
-`tests/cases/` 里每个语料文件经过 **L1 名称混淆 + L2 字符串加密 + L3 控制流
-（junk 垃圾代码 + CFG 扁平化状态机）**（当前已实现的 pass）后的输出。
+`tests/cases/` 里每个语料文件经过**默认全开管线**
+（L1 名称混淆 + L1 minify + L2 字符串加密 + L3 控制流扁平化/junk +
+L4 数值拆分 + L5 整体加密 + L7 反篡改）后的输出。
 `*.5.1.lua` = 5.1 目标，`*.luau.lua` = Luau 目标（含 Luau 专属
 语法：continue/复合赋值/`//`/反引号插值/类型注解）。
 
@@ -12,9 +13,9 @@
 
 **VM 示例（M4/L6）**：`basics.vm.5.1.lua` / `functions.vm.5.1.lua` /
 `game_loop.vm.5.1.lua` 是 `--vm` 输出（私有字节码 + 生成的混淆解释器，
-单文件 ~300KB——取代表性子集，全量 VM 覆盖在测试矩阵里）。注意：VM 输出
-运行时比非 VM 输出慢一个量级（Lua-on-Lua 解释执行），functions 示例
-约 10s 量级属正常。
+单文件 ~100KB——取代表性子集，全量 VM 覆盖在测试矩阵里）。VM 输出为
+Lua-on-Lua 解释执行，比非 VM 输出慢（语料级用例实测 29~393ms，
+矩阵超时 120s 余量充足）。
 
 **输出纯度**：所有示例均为纯 ASCII——密文/密钥流/字节码等二进制串
 全量 `\ddd` 转义（`Expr::Str.is_binary`），不会泄露随机高字节构成的
@@ -28,7 +29,7 @@ CARGO_NET_OFFLINE=true /home/user/luraph/.tools/bin/cargo build --release
 tests/gen_examples.sh
 ```
 
-## 当前已实现的混淆（M1 + M2）
+## 当前已实现的混淆（M1–M4 全开，M3–M4 标注各自里程碑）
 
 - **L1 名称混淆**：所有局部变量/参数/循环变量/local function 名 → 随机名
   （短/中/长混合风格；避开关键字、程序用到的全局名；隐式 `self` 保持固定名）
@@ -56,7 +57,9 @@ tests/gen_examples.sh
     循环变量/体局部变量每轮 fresh，闭包捕获语义与原生 for 一致）；
     跨分支/跨闭包引用的 local 提升到机器顶部
 
-## 尚未实现（M3–M6）
+## 尚未实现（M5 收尾 + M6）
 
-数值混淆（L4）、整体加密（L5）、自定义 VM（L6）、反篡改（L7）——
-见 `docs/implementation-plan.md`。
+M5 剩余（VM 随机面收尾）：SoA 平行数组容器、7-bit 完整档（7/14/21-bit）、
+解码枢纽/状态元组位置随机化、base-N 编码 + token 转义、帧运行器入场
+原语解包随机化、反编译人工抽查。M6：CLI 预设（low/medium/high/vm/max）
++ 产品文档 + 性能数据。详见 `docs/implementation-plan.md` §3。
