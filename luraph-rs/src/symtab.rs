@@ -151,6 +151,10 @@ impl<'a> Resolver<'a> {
 		self_param: bool,
 	) {
 		self.new_scope();
+		// idempotency: blocks may be resolved more than once (the v15
+		// shell re-resolves the already-passed interpreter block inside
+		// the module table); clear so re-declares don't duplicate.
+		param_syms.clear();
 		for p in params {
 			param_syms.push(self.declare(p, true));
 		}

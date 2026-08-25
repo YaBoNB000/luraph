@@ -99,7 +99,7 @@
 | 双方言模式 | `--dialect 5.1\|luau`（解析/去糖/输出/VM 全链通） | 全模块 | P0 | ✅（含 for-in 方言差异：Luau 隐式 next 归一化） |
 | 种子确定性 | `--seed`（同 seed 逐字节一致，不同 seed 编码完全不同；默认时间种子） | `rng.rs` | P0 | ✅ M1 |
 | 预设 | low(L1+L2) / medium(+L3) / high(+L4+L5+L7，默认) / vm(全开) / max(=vm，v2 预留) | `main.rs` | P0 | ✅ M6（`--preset`；其后 `--no-*`/`--vm` 覆盖；默认 ≡ high；`tests/run_presets.sh` 405 项） |
-| v15 结构同族档（路线 A，对标样本结构指纹） | `--preset v15`（Luau/Roblox 专属，5.1 报错）；发射器换代路线见 `docs/v15-structural-parity-plan.md`（P0 脚手架 ✅，P1–P8 待做） | `main.rs` + `vmgen/` | P1 | 🟡 P0 完成（2026-08-25）：指纹脚本 `tests/v15_fingerprint.py`（样本 32/32，现 `vm` 产物 1/32）+ CLI 开关（stub = vm 管线） |
+| v15 结构同族档（路线 A，对标样本结构指纹） | `--preset v15`（Luau/Roblox 专属，5.1 报错）；发射器换代路线见 `docs/v15-structural-parity-plan.md`（P0/P1 ✅，P2–P8 待做） | `main.rs` + `vmgen/` | P1 | 🟡 P0+P1 完成（2026-08-25）：指纹脚本 32 条（样本 32/32）+ CLI + **外壳换代**（模块表 + `:XX()(...);` 3 行，F1/F2/F18 PASS，29 语料一致） |
 | 强制测试工作流 | 每 pass 完成 → 混淆样本 → lua51+luau 语法+运行对比（语料 29 个文件 + 多种子回归） | `run_tests.sh`+`gen_examples.sh` | P0 | ✅ M0 起执行中（当前 204 项检查全绿 + 5 种子回归 0 失败） |
 
 ---
@@ -139,6 +139,16 @@
 
 ## 4. 更新日志
 
+- **2026-08-25（v15 结构同族：P1 外壳换代）**
+  `main.rs` v15 分支：解释器块先过 junk/mangle/strings/numbers 再包壳，
+  产物 = 3 行 `return setmetatable({XX=function(b)...end end},{}):XX()(...);`
+  （boot 名每构建随机两大写字母、裸字段名、结尾分号）。v15 档关
+  strings（F10 过渡）/body/antidbg（F2/F18）。指纹 F1/F2/F18 PASS；
+  20 共享+应力语料 + 9 个 `luau_*` 在 v15 档全部输出一致；官方矩阵
+  204/204 + 预设矩阵 405/405 全绿。**核心路径修复**：`strings.rs`
+  加载器引用 Ident 由空名+sym 绑定改为实名（二次 resolve 按名查找，
+  空名会退化成坏全局并打印空）；`symtab.rs` `resolve_func_body` 先
+  clear `param_syms`（resolve 幂等，壳内二次 resolve 需要）。
 - **2026-08-25（v15 结构同族：路线 A 拍板 + P0 落地）**
   对 `samples/luraph15.txt` 二轮全文详读（自研块级解析器），
   `docs/v15-structural-parity-plan.md` 大幅修订：§0.1 黄金数订正（227 字段/

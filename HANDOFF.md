@@ -57,7 +57,7 @@
 | **M4（L6 VM：私有字节码 + 生成混淆解释器，`--vm`）** | ✅ **完成 + 续期加固（2026-08-25）：矩阵 204/204 全绿（语料 21→29，新增 8 个 stress_*）+ 多种子回归（5 seeds）0 失败；upvalue 单 cell 别名模型 / 循环变量 per-iteration 共享 cell / 5.1 构造器存储序 / 全变长展开等 9 类语义修复；实现笔记 `docs/vm-l6-implementation.md` §8** |
 | **M5（VM 完整随机面）** | ✅ **完成（2026-08-25）**：SoA 平行数组 + 完整 7/14/21-bit + base-94 载体/token + 解码枢纽/状态元组随机 + 帧入场原语解包 + `luac51 -l` 抽查；矩阵 204/204 + 多种子 0 失败 |
 | **M6（产品化）** | ✅ **完成（2026-08-25）**：`--preset low\|medium\|high\|vm\|max`（默认 ≡ high；vm ≡ `--vm`；max = vm，v2 预留）+ 产品 README + `docs/performance.md`；预设矩阵 405/405 |
-| **v15 结构同族（路线 A）** | 🟡 **进行中**：二轮详读订正计划（5 处架构修正 + 指纹 F21–F32）；**P0 ✅**（`tests/v15_fingerprint.py` 样本 32/32、现 `vm` 产物 1/32；`--preset v15` CLI = Luau 门控 + stub 走 vm 管线）；**下一步 P1 外壳换代**，全部细节在 `docs/v15-structural-parity-plan.md` |
+| **v15 结构同族（路线 A）** | 🟡 **进行中**：二轮详读订正计划（5 处架构修正 + 指纹 F21–F32）；**P0 ✅**（`tests/v15_fingerprint.py` 样本 32/32）；**P1 ✅**（外壳换代：3 行 `return setmetatable({XX=function(b)...},{}):XX()(...);`，F1/F2/F18 PASS，29 语料输出一致；连带修复 strings.rs 空名引用 + symtab 幂等）；**下一步 P2 数字槽原语 + 命名方案**，全部细节在 `docs/v15-structural-parity-plan.md` |
 
 **M5 清单**（对照 `docs/vm-l6-implementation.md` §7，全部勾完）：
 

@@ -4,9 +4,9 @@
 > 当前状态：✅ 环境 ✅ 研究 ✅ v15 分析 ✅ **M0–M6 全部完成**
 > （M6：`--preset low|medium|high|vm|max` + 产品 README + `docs/performance.md`；
 > 官方矩阵 **204/204** + 预设矩阵 **405/405** + 多种子 0 失败）
-> **🟡 v15 结构同族（路线 A 已拍板）**：二轮详读订正计划 + P0 脚手架完成
-> （指纹脚本 32/32 + `--preset v15` CLI），P1–P8 待做，见
-> `docs/v15-structural-parity-plan.md`
+> **🟡 v15 结构同族（路线 A 已拍板）**：二轮详读订正计划 + P0 脚手架 +
+> **P1 外壳换代**完成（模块表 + `:XX()(...);` 3 行形态，29 语料一致），
+> P2–P8 待做，见 `docs/v15-structural-parity-plan.md`
 
 ## 0. 需求（用户确认）
 
@@ -302,8 +302,19 @@ multival/errors/bigtable/control/luau_vm），直接暴露并修复 **9 类真 b
 | **路线拍板** | **✅ 路线 A**（Roblox/Luau 克隆档 `--preset v15`，弃 5.1；现有 `vm` 预设不动） |
 | P0 脚手架 | `luraph-rs/tests/v15_fingerprint.py`：样本 **32/32 PASS**，现 `--preset vm` 产物 **1/32**（防假通过 ✓）；`--preset v15` CLI（Luau 门控、5.1 报错；P0 stub ≡ vm 管线） |
 
-**验收**：指纹脚本样本全绿 + 现产物全红 + CLI 开关存在；官方矩阵 204/204 + 预设矩阵 405/405 仍全绿。
-**下一步**：P1 外壳换代（模块表 + `return setmetatable({...},{}):FC()(...);` 3 行形态），详见计划文档 §4。
+**P0 验收**：指纹脚本样本全绿 + 现产物全红 + CLI 开关存在；官方矩阵 204/204 + 预设矩阵 405/405 仍全绿。
+
+### 🟡 v15 结构同族（路线 A）：P1 完成（2026-08-25）
+
+外壳换代落地：`--preset v15` 产物 = **3 行**（头注释 + 空行 +
+`return setmetatable({XX=function(b)<解释器>return function(...)return VM(<载体>)end end},{}):XX()(...);`，
+boot 名每构建随机、裸标识符字段、结尾分号）。实现要点：解释器块先过
+junk/mangle/numbers 再包壳（加载器进 boot、壳字段名不进 strings）；
+v15 档关 strings/body/antidbg（F10/F2/F18 过渡形态，P4 blob 收回）。
+**连带核心路径修复**：strings.rs 加载器引用改实名（空名+sym 绑定在
+二次 resolve 下打印空名）+ symtab resolve 幂等。指纹 F1/F2/F18 PASS；
+29 语料在 v15 档下全部输出一致；官方矩阵 204/204 + 预设 405/405 全绿。
+**下一步**：P2 数字槽原语 + 入场解包 + 命名方案（字段量级冲样本 227）。
 
 ### ⬜ 剩余
 

@@ -370,6 +370,16 @@ pub(crate) fn build_loader(
 	let p = ident(&np, Some(sp));
 	let s = ident(&ns, Some(ss));
 	let o = ident(&no, Some(so));
+	// Loader-local references must carry their real names, not just sym
+	// bindings: a later re-resolve (the v15 shell re-resolves the already
+	// passed interpreter block inside the module table) looks Idents up
+	// by name, and an empty-name Ident falls through to a broken global.
+	let f1 = ident(&n1, Some(s1));
+	let f2 = ident(&n2, Some(s2));
+	let f3 = ident(&n3, Some(s3));
+	let kref = ident(&nk, Some(sk));
+	let ktref = ident(&kt, Some(skt));
+	let i2ref = ident(&ni2, Some(si2));
 
 	let loop_body = Block {
 		stmts: vec![
@@ -498,47 +508,47 @@ pub(crate) fn build_loader(
 				Some(Expr::Str { bytes: k3, is_binary: true }),
 			],
 		},
-		Stmt::Local {
-			names: vec![nk],
-			syms: vec![sk],
-			values: vec![Some(Expr::Bin {
+	Stmt::Local {
+		names: vec![nk],
+		syms: vec![sk],
+		values: vec![Some(Expr::Bin {
+			op: BinOp::Concat,
+			l: Box::new(f1),
+			r: Box::new(Expr::Bin {
 				op: BinOp::Concat,
-				l: Box::new(ident("", Some(s1))),
-				r: Box::new(Expr::Bin {
-					op: BinOp::Concat,
-					l: Box::new(ident("", Some(s2))),
-					r: Box::new(ident("", Some(s3))),
-				}),
-			})],
-		},
-		Stmt::Local {
-			names: vec![kt],
-			syms: vec![skt],
-			values: vec![Some(Expr::Table { fields: vec![] })],
-		},
-		Stmt::ForNum {
-			var: ni2.clone(),
-			var_sym: si2,
-			start: Box::new(num(1.0)),
-			limit: Box::new(Expr::Un {
-				op: UnOp::Len,
-				e: Box::new(ident("", Some(sk))),
+				l: Box::new(f2),
+				r: Box::new(f3),
 			}),
-			step: None,
-			body: Block {
-				stmts: vec![Stmt::Assign {
-					targets: vec![Expr::Index {
-						obj: Box::new(ident("", Some(skt))),
-						idx: Box::new(ident("", Some(si2))),
-					}],
-					values: vec![global_call(
-						"string",
-						"byte",
-						vec![ident("", Some(sk)), ident("", Some(si2))],
-					)],
+		})],
+	},
+	Stmt::Local {
+		names: vec![kt],
+		syms: vec![skt],
+		values: vec![Some(Expr::Table { fields: vec![] })],
+	},
+	Stmt::ForNum {
+		var: ni2.clone(),
+		var_sym: si2,
+		start: Box::new(num(1.0)),
+		limit: Box::new(Expr::Un {
+			op: UnOp::Len,
+			e: Box::new(kref.clone()),
+		}),
+		step: None,
+		body: Block {
+			stmts: vec![Stmt::Assign {
+				targets: vec![Expr::Index {
+					obj: Box::new(ktref),
+					idx: Box::new(i2ref.clone()),
 				}],
-			},
+				values: vec![global_call(
+					"string",
+					"byte",
+					vec![kref, i2ref],
+				)],
+			}],
 		},
+	},
 		Stmt::LocalFunc {
 			name: dec_name.clone(),
 			sym: sdec,

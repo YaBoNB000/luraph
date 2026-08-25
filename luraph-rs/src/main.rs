@@ -117,17 +117,23 @@ fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
 		}
 		"v15" => {
 			// Route A (2026-08-25): Luraph-v15 structural clone profile,
-			// Luau/Roblox only. P0: behaves like `vm` (stub emission);
-			// P1+ replaces the emitter (module table + :FC()(...) shell,
-			// L5 body / L7 clocks stay OFF for that profile).
+			// Luau/Roblox only. Emission = module table + :<boot>()(...)
+			// shell (P1). L5 whole-program encryption and L7 time traps
+			// stay OFF for this profile: the sample shape has neither
+			// (fingerprints F2/F18), and loadstring/os.clock would mark
+			// the output as not-v15-family. L2 string encryption is also
+			// OFF at P1: chunk-splitting would balloon the literal count
+			// (F10 wants the tens range; sample has 28). Interpreter
+			// strings re-enter encrypted form with the P4 blob, which is
+			// where the sample keeps all program strings.
 			opts.do_mangle = true;
 			opts.do_minify = true;
-			opts.do_strings = true;
+			opts.do_strings = false;
 			opts.do_flatten = true;
 			opts.do_junk = true;
 			opts.do_numbers = true;
-			opts.do_body = true;
-			opts.do_antidbg = true;
+			opts.do_body = false;
+			opts.do_antidbg = false;
 			opts.do_vm = true;
 			opts.do_v15 = true;
 		}
@@ -322,7 +328,7 @@ fn main() -> ExitCode {
 		// program becomes the (to-be-obfuscated) interpreter template +
 		// the bytecode passed as string literals to its entry call
 		let vm_raw = std::env::var("LURAPH_VM_RAW").is_ok();
-		let (mut block, mut table) = if opts.do_vm {
+		let (mut block, mut table, v15_done) = if opts.do_vm {
 			let program = vmgen::compile(&block, &table, &mut rng, !luau);
 			let n = program.fns.len();
 			let tsrc = vmgen::template::generate(
@@ -344,17 +350,112 @@ fn main() -> ExitCode {
 					is_binary: true,
 				})
 				.collect();
-			tblock.stmts.push(ast::Stmt::ExprStmt(ast::Expr::Call {
+			let vm_call = ast::Expr::Call {
 				func: Box::new(ast::Expr::Ident {
 					name: "VM".to_string(),
 					sym: None,
 				}),
 				args,
-			}));
-			let ttable = symtab::resolve(&mut tblock);
-			(tblock, ttable)
+			};
+			if opts.do_v15 {
+				// P1 v15 shell (Route A): the whole program becomes one
+				// module table entered via setmetatable + a bootstrap
+				// method, mirroring the Luraph v15 sample shape:
+				//   return setmetatable({
+				//     <boot> = function(b) <interpreter locals...>
+				//       return function(...) return VM(<carriers>) end
+				//     end,
+				//   }, {}):<boot>()(...);
+				// The obfuscation passes run over the interpreter block
+				// FIRST so that (a) hoisted loaders land inside the boot
+				// handler -- the chunk stays a single `return` (F1/F2)
+				// -- and (b) the shell's own boot field name never hits
+				// the strings pass, staying a bare identifier like the
+				// sample's `jC=function`. Flatten stays off (VM preset);
+				// body/antidbg are off for this preset (F18). Handler-
+				// izing the bootstrap + inlined execution loops = P3
+				// (docs/v15-structural-parity-plan.md).
+				let mut ttable = symtab::resolve(&mut tblock);
+				let mut reserved = mangle::reserved_set(
+					&ttable
+						.globals
+						.iter()
+						.cloned()
+						.collect::<std::collections::HashSet<_>>(),
+				);
+				reserved.extend(ttable.syms.iter().map(|s| s.name.clone()));
+				if opts.do_junk {
+					junk::inject(&mut tblock, &mut ttable, &mut rng, 2);
+				}
+				if opts.do_mangle {
+					mangle::mangle(&mut ttable, &mut rng);
+				}
+				if opts.do_strings {
+					strings::apply_strings(
+						&mut tblock, &mut ttable, &mut rng, &reserved,
+					);
+				}
+				if opts.do_numbers {
+					numbers::apply_numbers(&mut tblock, &mut rng);
+				}
+				let uppers = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+				let boot = format!(
+					"{}{}",
+					uppers[rng.int(0, 25) as usize] as char,
+					uppers[rng.int(0, 25) as usize] as char
+				);
+				let entry_fn = ast::Expr::Function {
+					params: Vec::new(),
+					param_syms: Vec::new(),
+					vararg: true,
+					body: ast::Block {
+						stmts: vec![ast::Stmt::Return(vec![vm_call])],
+					},
+				};
+				let mut boot_stmts = tblock.stmts;
+				boot_stmts.push(ast::Stmt::Return(vec![entry_fn]));
+				let boot_fn = ast::Expr::Function {
+					params: vec!["b".to_string()],
+					param_syms: Vec::new(),
+					vararg: false,
+					body: ast::Block { stmts: boot_stmts },
+				};
+				let module = ast::Expr::Table {
+					fields: vec![ast::TableField::Key {
+						key: ast::Expr::Str {
+							bytes: boot.as_bytes().to_vec(),
+							is_binary: false,
+						},
+						value: boot_fn,
+					}],
+				};
+				let shell = ast::Stmt::Return(vec![ast::Expr::Call {
+					func: Box::new(ast::Expr::Method {
+						obj: Box::new(ast::Expr::Call {
+							func: Box::new(ast::Expr::Ident {
+								name: "setmetatable".to_string(),
+								sym: None,
+							}),
+							args: vec![
+								module,
+								ast::Expr::Table { fields: Vec::new() },
+							],
+						}),
+						name: boot,
+						args: Vec::new(),
+					}),
+					args: vec![ast::Expr::Vararg],
+				}]);
+				let mut shell_block = ast::Block { stmts: vec![shell] };
+				let shell_table = symtab::resolve(&mut shell_block);
+				(shell_block, shell_table, true)
+			} else {
+				tblock.stmts.push(ast::Stmt::ExprStmt(vm_call));
+				let ttable = symtab::resolve(&mut tblock);
+				(tblock, ttable, false)
+			}
 		} else {
-			(block, table)
+			(block, table, false)
 		};
 		// pipeline: junk -> mangle -> flatten -> strings
 		if opts.do_vm && vm_raw {
@@ -370,41 +471,48 @@ fn main() -> ExitCode {
 				tmark = std::time::Instant::now();
 			}
 		};
-		if opts.do_junk {
-			junk::inject(&mut block, &mut table, &mut rng, 2);
-			tlog("junk");
-		}
-		if opts.do_mangle {
-			mangle::mangle(&mut table, &mut rng);
-			tlog("mangle");
-		}
-		let mut reserved = mangle::reserved_set(
-			&table.globals.iter().cloned().collect::<std::collections::HashSet<_>>(),
-		);
-		reserved.extend(table.syms.iter().map(|s| s.name.clone()));
-		// L3 flatten bloats the VM template's big dispatch if/elseif tree
-		// into a state machine that exceeds Lua 5.1's 200-local-variable
-		// limit, so skip it when the VM is enabled (the VM template is
-		// still obfuscated by mangle/strings/numbers/body/antidbg).
-		if opts.do_flatten && !opts.do_vm {
-			flatten::flatten_block(&mut block, &mut table, &mut rng, &mut reserved);
-			tlog("flatten");
-		}
-		if opts.do_strings {
-			strings::apply_strings(&mut block, &mut table, &mut rng, &reserved);
-			tlog("strings");
-		}
-		if opts.do_numbers {
-			numbers::apply_numbers(&mut block, &mut rng);
-			tlog("numbers");
-		}
-		if opts.do_body {
-			body::apply_body(&mut block, &mut table, &mut rng, &mut reserved, luau);
-			tlog("body");
-		}
-		if opts.do_antidbg {
-			antidbg::apply_antidbg(&mut block, &mut table, &mut rng, &mut reserved);
-			tlog("antidbg");
+		// v15 shell: passes already ran over the interpreter block before
+		// the module-table wrap (see above); re-running them here would
+		// double-mangle / hoist loaders out of the boot handler.
+		let mut reserved = std::collections::HashSet::new();
+		if !v15_done {
+			if opts.do_junk {
+				junk::inject(&mut block, &mut table, &mut rng, 2);
+				tlog("junk");
+			}
+			if opts.do_mangle {
+				mangle::mangle(&mut table, &mut rng);
+				tlog("mangle");
+			}
+			reserved = mangle::reserved_set(
+				&table.globals.iter().cloned().collect::<std::collections::HashSet<_>>(),
+			);
+			reserved.extend(table.syms.iter().map(|s| s.name.clone()));
+			// L3 flatten bloats the VM template's big dispatch if/elseif
+			// tree into a state machine that exceeds Lua 5.1's
+			// 200-local-variable limit, so skip it when the VM is enabled
+			// (the VM template is still obfuscated by
+			// mangle/strings/numbers/body/antidbg).
+			if opts.do_flatten && !opts.do_vm {
+				flatten::flatten_block(&mut block, &mut table, &mut rng, &mut reserved);
+				tlog("flatten");
+			}
+			if opts.do_strings {
+				strings::apply_strings(&mut block, &mut table, &mut rng, &reserved);
+				tlog("strings");
+			}
+			if opts.do_numbers {
+				numbers::apply_numbers(&mut block, &mut rng);
+				tlog("numbers");
+			}
+			if opts.do_body {
+				body::apply_body(&mut block, &mut table, &mut rng, &mut reserved, luau);
+				tlog("body");
+			}
+			if opts.do_antidbg {
+				antidbg::apply_antidbg(&mut block, &mut table, &mut rng, &mut reserved);
+				tlog("antidbg");
+			}
 		}
 		tlog("pre-print");
 		let out = printer::print_chunk(&table, &block);
@@ -412,7 +520,17 @@ fn main() -> ExitCode {
 		if opts.do_minify {
 			let m = minify::minify(&out, luau).map_err(|e| format!("minify: {}", e))?;
 			tlog("minify");
-			Ok(m)
+			if opts.do_v15 {
+				// F1/F2 shape: header comment + blank line + one-line body
+				// + trailing semicolon, no trailing newline (sample form).
+				Ok(format!(
+					"-- This file was protected using luraph v{}\n\n{};",
+					VERSION,
+					m.trim_end_matches('\n')
+				))
+			} else {
+				Ok(m)
+			}
 		} else {
 			Ok(out)
 		}
