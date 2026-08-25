@@ -11,20 +11,28 @@
 //!     [type u8]  0=nil | 1=bool(1 byte) | 2=number(text) | 3=string
 //!     number: [len u16][ASCII digits]  (tonumber round-trips exactly)
 //!     string: [len u16][raw bytes]
-//!   code: [op u8][4 x u16-7-bit-varint] per instruction (M5 7-bit tier)
+//!   SoA code (M5):
+//!     [ncode u16]
+//!     [OC : ncode × u8]                  -- opcode array
+//!     [S0 : ncode × 7-bit-varint]        -- operand stream 0
+//!     [S1 : ncode × 7-bit-varint]
+//!     [S2 : ncode × 7-bit-varint]
+//!     [S3 : ncode × 7-bit-varint]
 //!
-//! u16-7-bit-varint (v15-style 7-bit chunking): values < 128 encode in
-//! 1 byte; otherwise 2 bytes = (low7 | 0x80) then high9. Variable
-//! length destroys the fixed-stride (old 9-byte AoS) signature; the
-//! decoder needs only +,-,* (no bitops — 5.1 template constraint):
-//!   b1 < 128 -> v = b1        else v = (b1 - 128) + b2 * 128
+//! 7-bit varint (v15 complete tier): 7/14/21-bit + 128-base rebuild.
+//! Decoder needs only +,-,* (no bitops — 5.1 template constraint):
+//!   b1 < 128 -> v = b1
+//!   b2 < 128 -> v = (b1-128) + b2*128
+//!   b3 < 128 -> v = (b1-128) + (b2-128)*128 + b3*16384
+//!   else     -> v = (b1-128) + (b2-128)*128 + (b3-128)*16384 + b4*2097152
+//! Values ≥ 2³¹ are folded via `v - 2³²` (unsigned→signed, v15 归一化).
 //!
 //! M5 hub randomization: the four operand STREAM SLOTS hold a,b,c,d in
 //! a per-build random permutation (VmProgram.slot_perm); the template
 //! maps stream positions back to a/b/c/d.
 //!
-//! Jump targets are 1-based BYTE offsets into the code stream (computed
-//! from per-instruction encoded lengths at resolve time).
+//! Jump targets are 1-based INSTRUCTION indexes into the SoA arrays
+//! (pc steps by 1; no byte-offset fixpoint).
 //! Operands are 0-based register/const/function indexes; the runtime
 //! adds 1 for Lua arrays.
 //!
@@ -34,6 +42,10 @@
 //!
 //! Dead-instruction padding (M5): Nop instructions are injected at
 //! seed-derived positions; the dispatch carries a harmless Nop handler.
+//!
+//! Bytecode carrier (M5): each function blob is wrapped in a per-build
+//! base-95 encoding + 10-special → 5-char token escape (v15 pC 同款)
+//! before being embedded as a string literal.
 
 /// Base opcode table (pre-permutation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,14 +262,8 @@ impl Instr {
 	pub fn abcd(op: Op, a: u16, b: u16, c: u16, d: u16) -> Instr {
 		Instr { op, a, b, c, d }
 	}
-	/// `slot_perm[i]` = which operand (0=a 1=b 2=c 3=d) sits in stream
-	/// slot i (M5 per-build hub randomization).
-	pub fn encode(&self, map: &OpMap, slot_perm: &[u8; 4], out: &mut Vec<u8>) {
-		out.push(map.code(self.op));
-		let ops = [self.a, self.b, self.c, self.d];
-		for &sl in slot_perm {
-			encode_u16var(out, ops[sl as usize]);
-		}
+	pub fn operands(&self) -> [u16; 4] {
+		[self.a, self.b, self.c, self.d]
 	}
 }
 
@@ -266,15 +272,62 @@ pub fn push_u16(out: &mut Vec<u8>, v: u16) {
 	out.push((v >> 8) as u8);
 }
 
-/// 7-bit-chunk varint for u16: 1 byte when < 128, else 2 bytes
-/// ((v & 0x7F) | 0x80, v >> 7). Bitop-free decoder (5.1-safe):
-/// b1 < 128 -> v = b1;  else v = (b1 - 128) + b2 * 128.
-pub fn encode_u16var(out: &mut Vec<u8>, v: u16) {
+/// 7/14/21-bit varint (v15 complete tier). Continuation = byte ≥ 128.
+/// Width: v<128 → 7-bit; v<16384 → 14-bit; v<2097152 → 21-bit; else 28-bit.
+pub fn encode_varint(out: &mut Vec<u8>, v: u32) {
 	if v < 128 {
 		out.push(v as u8);
+	} else if v < 16_384 {
+		out.push(((v % 128) + 128) as u8);
+		out.push((v / 128) as u8);
+	} else if v < 2_097_152 {
+		out.push(((v % 128) + 128) as u8);
+		out.push((((v / 128) % 128) + 128) as u8);
+		out.push((v / 16_384) as u8);
 	} else {
-		out.push(((v & 0x7f) | 0x80) as u8);
-		out.push((v >> 7) as u8);
+		out.push(((v % 128) + 128) as u8);
+		out.push((((v / 128) % 128) + 128) as u8);
+		out.push((((v / 16_384) % 128) + 128) as u8);
+		out.push((v / 2_097_152) as u8);
+	}
+}
+
+pub fn encode_u16var(out: &mut Vec<u8>, v: u16) {
+	encode_varint(out, v as u32);
+}
+
+/// Decode one varint (Rust-side; mirrors the 5.1-safe Lua decoder).
+pub fn decode_varint(src: &[u8], p: usize) -> Option<(u32, usize)> {
+	let b1 = *src.get(p)? as u32;
+	if b1 < 128 {
+		return Some((b1, p + 1));
+	}
+	let b2 = *src.get(p + 1)? as u32;
+	if b2 < 128 {
+		return Some(((b1 - 128) + b2 * 128, p + 2));
+	}
+	let b3 = *src.get(p + 2)? as u32;
+	if b3 < 128 {
+		let v = (b1 - 128) + (b2 - 128) * 128 + b3 * 16_384;
+		return Some((v, p + 3));
+	}
+	let b4 = *src.get(p + 3)? as u32;
+	let v = (b1 - 128) + (b2 - 128) * 128 + (b3 - 128) * 16_384 + b4 * 2_097_152;
+	Some((v, p + 4))
+}
+
+/// SoA instruction stream: opcode array, then four parallel operand streams.
+/// `slot_perm[i]` = which operand (0=a 1=b 2=c 3=d) occupies stream i.
+pub fn encode_soa(code: &[Instr], map: &OpMap, slot_perm: &[u8; 4], out: &mut Vec<u8>) {
+	push_u16(out, code.len() as u16);
+	for ins in code {
+		out.push(map.code(ins.op));
+	}
+	for sl in 0..4 {
+		let which = slot_perm[sl] as usize;
+		for ins in code {
+			encode_u16var(out, ins.operands()[which]);
+		}
 	}
 }
 
@@ -313,6 +366,154 @@ impl Const {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// bytecode carrier: base-95 + 10-special token escape (v15 pC)
+// ---------------------------------------------------------------------------
+
+/// Specials that get replaced by 5-char tokens (v15 pC set).
+pub const CARRIER_SPECIALS: [u8; 10] = [
+	b'"', b'\'', b'%', b' ', b'$', b'!', b'~', b'#', b'}', b'&',
+];
+
+/// Per-build printable carrier wrapping a raw function blob.
+///
+/// Base-94 over a shuffled 32..126 minus one reserved glyph. The
+/// reserved glyph prefixes every 5-char token, so tokens can never
+/// collide with a digit-stream substring (v15 pC, collision-free).
+#[derive(Debug, Clone)]
+pub struct Carrier {
+	/// Shuffled printable glyphs minus `reserved` — digit 0..93.
+	pub alphabet: [u8; 94],
+	/// Glyph that never appears in the digit stream; token[0].
+	pub reserved: u8,
+	/// 5-byte tokens (`reserved` + 4 alnum), one per CARRIER_SPECIALS.
+	pub tokens: [String; 10],
+}
+
+impl Carrier {
+	pub fn new(rng: &mut crate::rng::Rng) -> Carrier {
+		let mut glyphs: Vec<u8> = (32u8..=126).collect();
+		rng.shuffle(&mut glyphs);
+		let reserved = glyphs[0];
+		let alphabet: [u8; 94] = glyphs[1..].try_into().unwrap();
+		let mut tokens = dummy_tokens();
+		for i in 0..10 {
+			loop {
+				let t = gen_token(rng, reserved);
+				if tokens[..i].iter().any(|x| x == &t) {
+					continue;
+				}
+				tokens[i] = t;
+				break;
+			}
+		}
+		Carrier {
+			alphabet,
+			reserved,
+			tokens,
+		}
+	}
+
+	/// Encode raw bytes → base-94 groups of 5, then token-escape specials.
+	/// A 4-byte little-endian length prefix is prepended so the decoder
+	/// can drop padding. 94^5 > 2^32, so every u32 group is unique.
+	pub fn encode(&self, data: &[u8]) -> Vec<u8> {
+		let n = data.len() as u32;
+		let mut src = Vec::with_capacity(data.len() + 8);
+		src.extend_from_slice(&n.to_le_bytes());
+		src.extend_from_slice(data);
+		while src.len() % 4 != 0 {
+			src.push(0);
+		}
+		let mut digits = Vec::with_capacity(src.len() / 4 * 5);
+		for chunk in src.chunks(4) {
+			let mut v = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+			let mut d = [0u8; 5];
+			for i in 0..5 {
+				d[4 - i] = self.alphabet[(v % 94) as usize];
+				v /= 94;
+			}
+			digits.extend_from_slice(&d);
+		}
+		let mut out = Vec::with_capacity(digits.len() + 32);
+		for &b in &digits {
+			if let Some(idx) = CARRIER_SPECIALS.iter().position(|&s| s == b) {
+				out.extend_from_slice(self.tokens[idx].as_bytes());
+			} else {
+				out.push(b);
+			}
+		}
+		out
+	}
+
+	/// Rust-side inverse (unit tests + dbg). Mirrors the Lua decoder.
+	pub fn decode(&self, enc: &[u8]) -> Option<Vec<u8>> {
+		let mut s = Vec::with_capacity(enc.len());
+		let mut p = 0;
+		while p < enc.len() {
+			if enc[p] == self.reserved {
+				if p + 5 > enc.len() {
+					return None;
+				}
+				let tok = &enc[p..p + 5];
+				let mut hit = None;
+				for i in 0..10 {
+					if self.tokens[i].as_bytes() == tok {
+						hit = Some(CARRIER_SPECIALS[i]);
+						break;
+					}
+				}
+				s.push(hit?);
+				p += 5;
+			} else {
+				s.push(enc[p]);
+				p += 1;
+			}
+		}
+		if s.len() % 5 != 0 {
+			return None;
+		}
+		let mut inv = [255u8; 256];
+		for (i, &ch) in self.alphabet.iter().enumerate() {
+			inv[ch as usize] = i as u8;
+		}
+		let mut raw = Vec::with_capacity(s.len() / 5 * 4);
+		for chunk in s.chunks(5) {
+			let mut v: u32 = 0;
+			for &ch in chunk {
+				let d = inv[ch as usize];
+				if d == 255 {
+					return None;
+				}
+				v = v.checked_mul(94)?.checked_add(d as u32)?;
+			}
+			raw.extend_from_slice(&v.to_le_bytes());
+		}
+		if raw.len() < 4 {
+			return None;
+		}
+		let n = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+		if raw.len() < 4 + n {
+			return None;
+		}
+		Some(raw[4..4 + n].to_vec())
+	}
+}
+
+fn dummy_tokens() -> [String; 10] {
+	std::array::from_fn(|i| format!("Tk{i:03}"))
+}
+
+fn gen_token(rng: &mut crate::rng::Rng, reserved: u8) -> String {
+	const C: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+	let mut s = String::with_capacity(5);
+	s.push(reserved as char);
+	for _ in 0..4 {
+		s.push(C[rng.int(0, (C.len() - 1) as i64) as usize] as char);
+	}
+	s
+}
+
 /// Number text that tonumber() round-trips exactly (same forms the
 /// printer emits: integer -> decimal, float -> Rust {:?}).
 pub fn num_text(v: f64) -> String {
@@ -331,5 +532,61 @@ pub fn num_text(v: f64) -> String {
 		format!("{}", v as i64)
 	} else {
 		format!("{:?}", v)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn varint_roundtrip_tiers() {
+		let samples = [
+			0u32, 1, 127, 128, 255, 16_383, 16_384, 65_535, 100_000, 2_097_151,
+			2_097_152, 10_000_000,
+		];
+		for &v in &samples {
+			let mut o = Vec::new();
+			encode_varint(&mut o, v);
+			let (got, n) = decode_varint(&o, 0).unwrap();
+			assert_eq!(got, v, "v={v} bytes={o:?}");
+			assert_eq!(n, o.len());
+			let expect_len = if v < 128 {
+				1
+			} else if v < 16_384 {
+				2
+			} else if v < 2_097_152 {
+				3
+			} else {
+				4
+			};
+			assert_eq!(o.len(), expect_len, "tier len v={v}");
+		}
+	}
+
+	#[test]
+	fn carrier_roundtrip_many() {
+		let mut rng = crate::rng::Rng::new(42);
+		let c = Carrier::new(&mut rng);
+		for &msg in &[
+			&b""[..],
+			b"a",
+			b"hello",
+			&[0u8, 1, 2, 255, 128, 10, 13][..],
+			&(0u8..=255).collect::<Vec<u8>>(),
+		] {
+			let enc = c.encode(msg);
+			assert!(
+				!enc.contains(&c.reserved) || enc.windows(5).any(|w| w[0] == c.reserved),
+				"reserved only as token prefix"
+			);
+			assert_eq!(c.decode(&enc).as_deref(), Some(msg));
+		}
+		// per-build uniqueness: a different seed must produce a different wrap
+		let mut rng2 = crate::rng::Rng::new(7);
+		let c2 = Carrier::new(&mut rng2);
+		let a = c.encode(b"payload-xyz");
+		let b = c2.encode(b"payload-xyz");
+		assert_ne!(a, b);
 	}
 }

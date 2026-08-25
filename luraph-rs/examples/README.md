@@ -29,7 +29,7 @@ CARGO_NET_OFFLINE=true /home/user/luraph/.tools/bin/cargo build --release
 tests/gen_examples.sh
 ```
 
-## 当前已实现的混淆（M1–M4 全开，M3–M4 标注各自里程碑）
+## 当前已实现的混淆（M1–M5 全开）
 
 - **L1 名称混淆**：所有局部变量/参数/循环变量/local function 名 → 随机名
   （短/中/长混合风格；避开关键字、程序用到的全局名；隐式 `self` 保持固定名）
@@ -57,9 +57,12 @@ tests/gen_examples.sh
     循环变量/体局部变量每轮 fresh，闭包捕获语义与原生 for 一致）；
     跨分支/跨闭包引用的 local 提升到机器顶部
 
-## 尚未实现（M5 收尾 + M6）
+- **L6 VM 随机面**（M5）：SoA 平行数组（opcode / 四条操作数流分存）+
+  完整 7/14/21-bit varint + base-94 载体与 10 特殊字符 token 转义 +
+  每构建随机的解码枢纽/状态元组顺序 + 帧入场原语数字槽解包。
+  `--vm` 输出经 `luac51 -l` 看不到用户结构。
 
-M5 剩余（VM 随机面收尾）：SoA 平行数组容器、7-bit 完整档（7/14/21-bit）、
-解码枢纽/状态元组位置随机化、base-N 编码 + token 转义、帧运行器入场
-原语解包随机化、反编译人工抽查。M6：CLI 预设（low/medium/high/vm/max）
-+ 产品文档 + 性能数据。详见 `docs/implementation-plan.md` §3。
+## 尚未实现（M6）
+
+CLI 预设（low/medium/high/vm/max）+ 产品文档 + 性能数据。
+详见 `docs/implementation-plan.md` §3。

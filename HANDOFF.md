@@ -4,8 +4,8 @@
 > 完整了解：仓库是什么、用户要什么、现在做到哪了、环境怎么用、规矩是什么、
 > 下一步该干什么。读完此文件再动手；细节在 `docs/` 里。
 >
-> **最后更新：2026-08-25**（M4 续期加固完成，矩阵 204/204 全绿，已推送
-> `1ae6374`；下一步 M5 收尾）
+> **最后更新：2026-08-25**（M5 收官：SoA + 完整 7-bit + 载体 + 枢纽/原语
+> 解包，矩阵 204/204 全绿 + 多种子 0 失败；下一步 M6 产品化）
 
 ---
 
@@ -55,22 +55,22 @@
 | **M2（L3 控制流：CFG 扁平化状态机 + 循环嵌套子状态机 + junk）** | ✅ **完成（矩阵 68/68 全绿）** |
 | **M3（L4 数值 + L5 整体加密 + L7 反篡改）** | ✅ 完成（矩阵 68/68） |
 | **M4（L6 VM：私有字节码 + 生成混淆解释器，`--vm`）** | ✅ **完成 + 续期加固（2026-08-25）：矩阵 204/204 全绿（语料 21→29，新增 8 个 stress_*）+ 多种子回归（5 seeds）0 失败；upvalue 单 cell 别名模型 / 循环变量 per-iteration 共享 cell / 5.1 构造器存储序 / 全变长展开等 9 类语义修复；实现笔记 `docs/vm-l6-implementation.md` §8** |
-| **M5（VM 完整随机面）** | 🟡 **~60% 已落地**（见下） |
+| **M5（VM 完整随机面）** | ✅ **完成（2026-08-25）**：SoA 平行数组 + 完整 7/14/21-bit + base-94 载体/token + 解码枢纽/状态元组随机 + 帧入场原语解包 + `luac51 -l` 抽查；矩阵 204/204 + 多种子 0 失败 |
 
-**M5 已落地 / 剩余**（对照 `docs/vm-l6-implementation.md` §7 清单）：
+**M5 清单**（对照 `docs/vm-l6-implementation.md` §7，全部勾完）：
 
-- ✅ 已落地：随机决策树分派（2~4 层阈值分裂 + 平铺底部，`template.rs`
-  `gen_dispatch_tree`）；Nop 死指令填充（按指令流长度注入 + 模板侧无害
-  handler）；7-bit 变长操作数基础档（1/2-byte `r16`，破坏定长步长特征）；
-  slot_perm 操作数槽随机（a/b/c/d 在 4 个流槽的每构建随机排列，编码器/
-  解码器/模板共享）
-- ⬜ 剩余（建议顺序）：① SoA 平行数组容器（opcode/操作数分存，luraph14/15
-  同款）→ ② 7-bit 完整档（7/14/21-bit + 128 进制重建 + 2³² 归一化）→
-  ③ 解码枢纽/状态元组位置每构建随机 → ④ base-N 编码 + token 转义（字节码
-  串载体）→ ⑤ 帧运行器入场原语解包随机化 → ⑥ 反编译人工抽查收尾
+- ✅ 随机决策树分派 / Nop 死指令 / slot_perm 操作数槽随机（M4 续期已有）
+- ✅ SoA 平行数组（`[ncode][W bytes][S0..S3 varint]`；pc 按指令步进；
+  数组名必须是 `W` 不能叫 `OC`——会冲掉 opcode 名表）
+- ✅ 7-bit 完整档（7/14/21/28-bit + 128 进制 + 2³² 归一化）
+- ✅ 解码枢纽/状态元组位置每构建随机（inline/`hub()` + 6 元组序 +
+  `run` 字段序 + helper 声明序）
+- ✅ base-94 + 保留前缀 token 转义（v15 pC 同款 10 特殊字符）
+- ✅ 帧运行器入场原语解包（15 原语 → `P[1..80]` 随机槽，顶层 + run 双解包）
+- ✅ 反编译人工抽查（`luac51 -l` 仅见 L5 容器；用户串不可检索）
 
-**继续开发时**按 `docs/implementation-plan.md` §3 的里程碑顺序（M5 收尾 →
-M6 产品化）。每个 pass 完成后执行 §2.2 强制工作流（矩阵全绿 + 多种子回归
+**继续开发时**按 `docs/implementation-plan.md` §3 的里程碑顺序（**M6
+产品化**）。每个 pass 完成后执行 §2.2 强制工作流（矩阵全绿 + 多种子回归
 + examples 重新生成 + 四个 md 同步 + commit/push）。
 
 ## 4. 环境（全部已就绪，路径如下）
@@ -202,9 +202,9 @@ luraph/
     │   ├── numbers.rs / body.rs / antidbg.rs                    # L4 / L5 / L7
     │   ├── desugar.rs        # ⚠️ 孤儿文件（main.rs 未声明 mod，死代码，勿改勿依赖）
     │   └── vmgen/            # ★ L6 VM
-    │       ├── isa.rs        #   41 条 Op + 每构建置换表 OpMap + 变长 varint 编码
-    │       ├── compiler.rs   #   AST→字节码（CellKind 单 cell 模型 + 方言分支）
-    │       ├── template.rs   #   解释器模板（makefn/决策树/r16/元表透传）
+    │       ├── isa.rs        #   41 条 Op + OpMap + SoA + 完整 7-bit + Carrier
+    │       ├── compiler.rs   #   AST→字节码（单 cell + 方言分支 + 指令下标跳转）
+    │       ├── template.rs   #   解释器（SoA/decarrier/hub/原语解包/决策树）
     │       └── mod.rs
     ├── tests/
     │   ├── run_tests.sh        # ★ 官方矩阵（非 VM + VM 两阶段；.tools 路径回退）
@@ -265,13 +265,13 @@ L1 名称混淆 → L2 字符串加密（5.1 无位运算 → add8 算术密码�
 
 ### 6.4 VM 设计要点（L6，详见 `docs/vm-l6-implementation.md`）
 
-- 寄存器 VM（41 条指令，`vmgen/isa.rs`），变长 varint 编码（1/2-byte
-  基础档已上；SoA 平行数组 + 7-bit 完整档 = M5 剩余）
+- 寄存器 VM（41 条指令，`vmgen/isa.rs`），SoA 平行数组 + 7/14/21-bit
+  varint；跳转 = 1 基指令下标
 - 输出 = 运行时加载器（解密）+ 自定义解释器（Lua 源码，**再过全套混淆
-  管线**）+ 加密字节码 + 入口
-- **每构建随机化（VMC，已落地部分）**：opcode 置换表 ✅、随机决策树
-  分派（2~4 层）✅、Nop 死指令填充 ✅、7-bit 基础档 ✅、slot_perm 操作数
-  槽随机 ✅；剩余：SoA/完整 7-bit/枢纽 ID/入场解包（§3 M5 清单）
+  管线**）+ base-94/token 载体包裹的加密字节码 + 入口
+- **每构建随机化（VMC，M5 全开）**：opcode 置换表 / 随机决策树 /
+  Nop / 完整 7-bit / slot_perm / SoA / 枢纽风格与元组序 / 原语槽号 /
+  载体字母表与 token
 - 密钥流：状态机化 LCG PRNG（mod 2²⁸/2³¹-1，常数每构建随机）
 - 元表/协程/pcall：透传宿主 VM（不模拟，正确性优先）
 - **upvalue 单 cell 模型（2026-08-25 换代，动 upvalue 前必读 §8.1）**：
@@ -297,7 +297,7 @@ Roblox buffer 数据层 + base-N token 转义 + 每帧 Lua 闭包 + 超级指令
 弱点：无时间陷阱/显式校验和，动态 hook 仍可行。→ 全部细节在
 `docs/luraph15-analysis.md`。
 
-## 7. 开工顺序（M0–M4 已完成，从 M5 继续）
+## 7. 开工顺序（M0–M5 已完成，从 M6 继续）
 
 **接手第一步**（环境自检，1 分钟）：
 
@@ -314,24 +314,8 @@ bash tests/run_tests.sh
 bash tests/multiseed.sh
 ```
 
-**M5 剩余项**（建议顺序，每项完成后走 §2.2 强制工作流）：
-
-1. **SoA 平行数组容器**：`vmgen/isa.rs` 编码从「op+4 变长操作数」交错改
-   为 opcode 数组 / 操作数数组分存（luraph14/15 同款，破 AoS 特征）——
-   编码器 + `template.rs` 解码器同步改，**改完必跑多种子回归**
-2. **7-bit 完整档**：7/14/21-bit 变长 + 128 进制重建 + 2³² 归一化
-   （research §2.6 有 v15 同款算法笔记）
-3. **解码枢纽/状态元组位置每构建随机**：模板里 `PF`/`OC`/fetch 位置
-   随机化（当前仅名称过 mangle）
-4. **base-N 编码 + token 转义**：字节码串载体（v15 同款，字符类
-   ASCII 32..126 + 10 特殊字符 → 5 字符 token）
-5. **帧运行器入场原语解包随机化**：数字槽→局部变量解包，槽号/局部名
-   每构建随机
-6. **收尾验收**：`luac51 -l` / 手工反编译抽查（用户结构不可读）+
-   同 seed 逐字节一致 / 异 seed 编码完全不同 复验
-
-**M6 产品化**：CLI 预设（low/medium/high/vm/max）+ README 产品文档 +
-性能数据（research §5 验收 5 条）。
+**M5 已完成。** M6 产品化：CLI 预设（low/medium/high/vm/max）+ README
+产品文档 + 性能数据（research §5 验收 5 条）。
 
 **通用规则**：改 VM 三件套（isa/compiler/template）任何一处 → 先读
 `docs/vm-l6-implementation.md`（尤其 §8 的 9 类坑），改完 = 矩阵 204 +
@@ -364,8 +348,7 @@ bash tests/multiseed.sh
     ③ **`git commit` + `git push origin <工作分支>` 上传 GitHub**
     （历史分叉时先 merge 远端再 push，勿 force push）
     —— 只改代码不更新 md / 不推 GitHub = 该 pass 未完成
-12. 工作分支是 `arena/01a02d14-luraph`（本会话）；新会话的分支以当时的
-    环境说明为准，别动 main
+12. 工作分支以当时环境说明为准（本会话 `arena/01a038ae-luraph`），别动 main
 13. Rust 构建：`export PATH=/home/user/luraph/.tools/bin:$PATH && cd luraph-rs && CARGO_NET_OFFLINE=true cargo build --release`（PATH 必须先导出——cargo 靠 PATH 定位 rustc，光用全路径 cargo 会报 `could not execute process rustc -vV`）
 14. **luau CLI 沙箱**（2026-08-25 实测）：官方 luau CLI（0.600+）全局表
     只读（`luaL_sandbox`）→ 顶层**新建**全局赋值 = `attempt to modify a
@@ -405,6 +388,12 @@ bash tests/multiseed.sh
 
 1. 全部测试语料 × 双解释器 × 全预设：stdout + 退出码 100% 一致
    （当前矩阵 204 项 = 非 VM 102 + VM 102，含 5.1→luau 交叉）
+2. 输出经 `lua51 loadstring` / `luau-compile` 语法校验 0 错误
+3. 同 `--seed` 两次构建逐字节一致；不同 seed 字节码编码完全不同；
+   **多种子回归**（≥5 个 seed × 全语料 × 双方言 × 双阶段）0 失败
+4. VM 预设输出：标准反编译器/格式化器无法恢复源码结构（人工抽查）
+5. 反篡改生效：篡改任一密文段 → 触发陷阱
+�� = 非 VM 102 + VM 102，含 5.1→luau 交叉）
 2. 输出经 `lua51 loadstring` / `luau-compile` 语法校验 0 错误
 3. 同 `--seed` 两次构建逐字节一致；不同 seed 字节码编码完全不同；
    **多种子回归**（≥5 个 seed × 全语料 × 双方言 × 双阶段）0 失败

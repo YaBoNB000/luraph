@@ -192,7 +192,13 @@ fn main() -> ExitCode {
 		let (mut block, mut table) = if opts.do_vm {
 			let program = vmgen::compile(&block, &table, &mut rng, !luau);
 			let n = program.fns.len();
-			let tsrc = vmgen::template::generate(&program.opmap, &program.slot_perm, &mut rng, n);
+			let tsrc = vmgen::template::generate(
+				&program.opmap,
+				&program.slot_perm,
+				&program.carrier,
+				&mut rng,
+				n,
+			);
 			if std::env::var("LURAPH_VM_TSRC").is_ok() {
 				std::fs::write("/tmp/vm_tsrc.lua", &tsrc).unwrap();
 			}
@@ -201,7 +207,7 @@ fn main() -> ExitCode {
 				.fns
 				.iter()
 				.map(|b| ast::Expr::Str {
-					bytes: b.clone(),
+					bytes: program.carrier.encode(b),
 					is_binary: true,
 				})
 				.collect();

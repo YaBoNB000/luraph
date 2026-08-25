@@ -7,20 +7,15 @@
 //! opcode codes are a random permutation (shared with the compiler)
 //! and the dispatch branch order is shuffled.
 //!
-//! VM model:
-//! - a VM function value is a Lua CLOSURE (natively callable, so
-//!   pcall / coroutine.create / wrap / table.sort etc. all work)
-//! - each call: the closure body sets up a fresh value array and runs
-//!   the shared dispatch loop; results come back as a (array, count)
-//! - upvalue = shared cell table { v = <creating frame's V array>,
-//!   i = <slot> }; the creating frame materializes every upvalue
-//!   symbol in its own V (compiler invariant)
-//! - coroutines: `coroutine.yield` is a native global call inside the
-//!   dispatch loop; the frame locals (V, pc, ...) are retained on the
-//!   coroutine's stack across yield/resume
+//! M5 surfaces encoded here:
+//! - SoA parallel arrays (OC / SA / SB / SC / SD) after parse
+//! - 7/14/21-bit varint decoder (r16) + 2^32 fold
+//! - base-94 carrier + reserved-prefix token unescape
+//! - decode-hub / state-tuple order randomized per build
+//! - frame-runner primitive unpack from numbered slots
 
 use crate::rng::Rng;
-use crate::vmgen::isa::{OpMap, N_OPS};
+use crate::vmgen::isa::{Carrier, OpMap, CARRIER_SPECIALS, N_OPS};
 
 /// Opcode names in base order (must match isa::op_index).
 const OP_NAMES: [&str; N_OPS] = [
@@ -31,12 +26,34 @@ const OP_NAMES: [&str; N_OPS] = [
 	"GetUp", "SetUp", "Return", "Nop", "CallE", "CallM",
 ];
 
+const PRIM_SRC: [&str; 15] = [
+	"string.byte",
+	"string.sub",
+	"string.char",
+	"getfenv",
+	"unpack",
+	"math.floor",
+	"type",
+	"error",
+	"getmetatable",
+	"rawget",
+	"rawset",
+	"setmetatable",
+	"select",
+	"pcall",
+	"tonumber",
+];
+
+const PRIM_NAME: [&str; 15] = [
+	"BYTE", "SUB", "CHAR", "GFE", "UNP", "FLR", "TYP", "ERR", "GMT", "RGET",
+	"RSET", "SMT", "SEL", "PCAL", "TONUM",
+];
+
 /// The dispatch body of each opcode (referencing locals: oc, a, b, c, d,
 /// pc, V, C, lastn, vargs, vargc, plus helpers mget/makefn and locals
-/// G/U/FLOOR).
+/// G/U/FLOOR / TYP/ERR/GMT/RGET/RSET).
 fn branch_code(name: &str) -> String {
 	match name {
-	
 		"Jmp" => "pc = b".to_string(),
 		"Jf" => "if not V[a + 1] then pc = b end".to_string(),
 		"Jt" => "if V[a + 1] then pc = b end".to_string(),
@@ -49,22 +66,22 @@ fn branch_code(name: &str) -> String {
 		"Div" => bin_op_code("__div", "arithmetic", "x / y"),
 		"Mod" => bin_op_code("__mod", "arithmetic", "x % y"),
 		"Pow" => bin_op_code("__pow", "arithmetic", "x ^ y"),
-		"Concat" => "local x = V[b + 1]; local y = V[c + 1]; local tx = type(x); local ty = type(y); if (tx == 'number' or tx == 'string') and (ty == 'number' or ty == 'string') then V[a + 1] = x .. y else local f = mget(x, '__concat') or mget(y, '__concat'); if f then V[a + 1] = f(x, y) else error('attempt to perform concatenation on a ' .. tx .. ' value', 0) end end".to_string(),
-		"Unm" => "local x = V[b + 1]; if type(x) == 'number' then V[a + 1] = -x else local f = mget(x, '__unm'); if f then V[a + 1] = f(x) else error('attempt to perform arithmetic on a ' .. type(x) .. ' value', 0) end end".to_string(),
+		"Concat" => "local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); if (tx == 'number' or tx == 'string') and (ty == 'number' or ty == 'string') then V[a + 1] = x .. y else local f = mget(x, '__concat') or mget(y, '__concat'); if f then V[a + 1] = f(x, y) else ERR('attempt to perform concatenation on a ' .. tx .. ' value', 0) end end".to_string(),
+		"Unm" => "local x = V[b + 1]; if TYP(x) == 'number' then V[a + 1] = -x else local f = mget(x, '__unm'); if f then V[a + 1] = f(x) else ERR('attempt to perform arithmetic on a ' .. TYP(x) .. ' value', 0) end end".to_string(),
 		"Not" => "V[a + 1] = not V[b + 1]".to_string(),
 		"Len" => "local x = V[b + 1]; local f = HAS_LEN_META and mget(x, '__len'); if f then V[a + 1] = f(x) else V[a + 1] = #x end".to_string(),
 		"Lt" => cmp_code("x < y", "__lt", false),
 		"Le" => cmp_code("x <= y", "__le", false),
 		"Gt" => cmp_code("x > y", "__lt", true),
 		"Ge" => cmp_code("x >= y", "__le", true),
-		"Eq" => "local x = V[b + 1]; local y = V[c + 1]; local tx = type(x); local ty = type(y); if tx == ty and (tx == 'number' or tx == 'string' or tx == 'boolean' or tx == 'nil') then V[a + 1] = x == y else local f = mget(x, '__eq') or mget(y, '__eq'); if f then V[a + 1] = f(x, y) else V[a + 1] = x == y end end".to_string(),
-		"Ne" => "local x = V[b + 1]; local y = V[c + 1]; local tx = type(x); local ty = type(y); local eqv; if tx == ty and (tx == 'number' or tx == 'string' or tx == 'boolean' or tx == 'nil') then eqv = x == y else local f = mget(x, '__eq') or mget(y, '__eq'); if f then eqv = f(x, y) else eqv = x == y end end; V[a + 1] = not eqv".to_string(),
+		"Eq" => "local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); if tx == ty and (tx == 'number' or tx == 'string' or tx == 'boolean' or tx == 'nil') then V[a + 1] = x == y else local f = mget(x, '__eq') or mget(y, '__eq'); if f then V[a + 1] = f(x, y) else V[a + 1] = x == y end end".to_string(),
+		"Ne" => "local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); local eqv; if tx == ty and (tx == 'number' or tx == 'string' or tx == 'boolean' or tx == 'nil') then eqv = x == y else local f = mget(x, '__eq') or mget(y, '__eq'); if f then eqv = f(x, y) else eqv = x == y end end; V[a + 1] = not eqv".to_string(),
 		"Idiv" => "V[a + 1] = FLOOR(V[b + 1] / V[c + 1])".to_string(),
 		"NewTab" => "V[a + 1] = {}".to_string(),
-"GetTab" => "local t = V[b + 1]; local k = V[c + 1]; local r; if type(t) == 'table' then r = rawget(t, k); if r == nil then local f = mget(t, '__index'); if type(f) == 'function' then r = f(t, k) elseif f ~= nil then r = f[k] end end else local mt = getmetatable(t); if mt and mt['__index'] ~= nil then local f = mt['__index']; if type(f) == 'function' then r = f(t, k) else r = f[k] end else error('attempt to index a ' .. type(t) .. ' value', 0) end end; V[a + 1] = r".to_string(),
-"SetTab" => "local t = V[a + 1]; local k = V[b + 1]; local v = V[c + 1]; if type(t) ~= 'table' then local mt = getmetatable(t); local f = mt and mt['__newindex']; if type(f) == 'function' then f(t, k, v) elseif f ~= nil then rawset(f, k, v) else error('attempt to index a ' .. type(t) .. ' value', 0) end else if rawget(t, k) == nil then local f = mget(t, '__newindex'); if type(f) == 'function' then f(t, k, v) elseif f ~= nil then rawset(f, k, v) else rawset(t, k, v) end else rawset(t, k, v) end end".to_string(),
+		"GetTab" => "local t = V[b + 1]; local k = V[c + 1]; local r; if TYP(t) == 'table' then r = RGET(t, k); if r == nil then local f = mget(t, '__index'); if TYP(f) == 'function' then r = f(t, k) elseif f ~= nil then r = f[k] end end else local mt = GMT(t); if mt and mt['__index'] ~= nil then local f = mt['__index']; if TYP(f) == 'function' then r = f(t, k) else r = f[k] end else ERR('attempt to index a ' .. TYP(t) .. ' value', 0) end end; V[a + 1] = r".to_string(),
+		"SetTab" => "local t = V[a + 1]; local k = V[b + 1]; local v = V[c + 1]; if TYP(t) ~= 'table' then local mt = GMT(t); local f = mt and mt['__newindex']; if TYP(f) == 'function' then f(t, k, v) elseif f ~= nil then RSET(f, k, v) else ERR('attempt to index a ' .. TYP(t) .. ' value', 0) end else if RGET(t, k) == nil then local f = mget(t, '__newindex'); if TYP(f) == 'function' then f(t, k, v) elseif f ~= nil then RSET(f, k, v) else RSET(t, k, v) end else RSET(t, k, v) end end".to_string(),
 		"TabN" => "local t = V[a + 1]; local n = V[b + 1]; t[n + 1] = V[c + 1]; V[b + 1] = n + 1".to_string(),
-		"CallT" => "local f = V[a + 1]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nfixed = math.floor(d / 2); local tail = d % 2 == 1; local ntail = tail and V[a + nfixed + 2] or 0; local nargs = nfixed + off + ntail; local args = {}; if off == 1 then args[1] = f end; for i = 1, nfixed + ntail do if tail and i > nfixed then args[off + i] = V[a + i + 2] else args[off + i] = V[a + i + 1] end end; local t = V[b + 1]; local n = V[c + 1]; local out, nout = callcap(fn, args, nargs); for i = 1, nout do t[n + i] = out[i] end; V[c + 1] = n + nout".to_string(),
+		"CallT" => "local f = V[a + 1]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nfixed = FLOOR(d / 2); local tail = d % 2 == 1; local ntail = tail and V[a + nfixed + 2] or 0; local nargs = nfixed + off + ntail; local args = {}; if off == 1 then args[1] = f end; for i = 1, nfixed + ntail do if tail and i > nfixed then args[off + i] = V[a + i + 2] else args[off + i] = V[a + i + 1] end end; local t = V[b + 1]; local n = V[c + 1]; local out, nout = callcap(fn, args, nargs); for i = 1, nout do t[n + i] = out[i] end; V[c + 1] = n + nout".to_string(),
 		"Closure" => "V[a + 1] = makefn(b + 1, V, ups)".to_string(),
 		"Call" => "local base = a + 1; local f = V[base]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nargs = b + off; local args = {}; if off == 1 then args[1] = f end; for i = 1, b do args[off + i] = V[base + i] end; if d == 1 then for i = 1, vargc do args[nargs + i] = vargs[i] end; nargs = nargs + vargc end; local out, nout = callcap(fn, args, nargs); local nres = c; lastbase = a + 1; lastn = nout; local wn = nout; if nres ~= 255 and nres > wn then wn = nres end; for i = 1, wn do V[base + i] = out[i] end".to_string(),
 		"CallE" => "local base = a + 1; local f = V[base]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nfixed = b; local varg = d % 2 == 1; local tail = d >= 2; local nargs = nfixed + off; if tail then nargs = nargs + V[base + nfixed + 1] end; local args = {}; if off == 1 then args[1] = f end; for i = 1, (tail and (nfixed + V[base + nfixed + 1]) or nfixed) do if tail and i > nfixed then args[off + i] = V[base + i + 1] else args[off + i] = V[base + i] end end; if varg then for i = 1, vargc do args[nargs + i] = vargs[i] end; nargs = nargs + vargc end; local out, nout = callcap(fn, args, nargs); for i = 1, nout do V[base + i] = out[i] end; V[base] = nout".to_string(),
@@ -84,23 +101,17 @@ fn branch_code(name: &str) -> String {
 
 fn bin_op_code(mm: &str, what: &str, expr: &str) -> String {
 	format!(
-		"local x = V[b + 1]; local y = V[c + 1]; if type(x) == 'number' and type(y) == 'number' then V[a + 1] = {expr} else local f = mget(x, '{mm}') or mget(y, '{mm}'); if f then V[a + 1] = f(x, y) else error('attempt to perform {what} on a ' .. type(x) .. ' value', 0) end end"
+		"local x = V[b + 1]; local y = V[c + 1]; if TYP(x) == 'number' and TYP(y) == 'number' then V[a + 1] = {expr} else local f = mget(x, '{mm}') or mget(y, '{mm}'); if f then V[a + 1] = f(x, y) else ERR('attempt to perform {what} on a ' .. TYP(x) .. ' value', 0) end end"
 	)
 }
 
 fn cmp_code(native: &str, mm: &str, swapped: bool) -> String {
 	let call = if swapped { "f(y, x)" } else { "f(x, y)" };
 	format!(
-		"local x = V[b + 1]; local y = V[c + 1]; if type(x) == 'number' and type(y) == 'number' then V[a + 1] = {native} elseif type(x) == 'string' and type(y) == 'string' then V[a + 1] = {native} else local f = mget(x, '{mm}') or mget(y, '{mm}'); if f then V[a + 1] = {call} else error('attempt to compare ' .. type(x) .. ' with ' .. type(y), 0) end end"
+		"local x = V[b + 1]; local y = V[c + 1]; if TYP(x) == 'number' and TYP(y) == 'number' then V[a + 1] = {native} elseif TYP(x) == 'string' and TYP(y) == 'string' then V[a + 1] = {native} else local f = mget(x, '{mm}') or mget(y, '{mm}'); if f then V[a + 1] = {call} else ERR('attempt to compare ' .. TYP(x) .. ' with ' .. TYP(y), 0) end end"
 	)
 }
 
-/// Generate the interpreter source. `fns` = number of bytecode string
-/// parameters (functions). The final entry call arguments are left as
-/// a placeholder list of the parameter names (the caller appends the
-/// bytecode literals as the actual call).
-/// Random dead-instruction (Nop) body: harmless arithmetic on the
-/// always-numeric operands, no side effects (picked per build).
 fn nop_body(rng: &mut Rng) -> String {
 	match rng.int(0, 2) {
 		0 => "local _ = a + b".to_string(),
@@ -168,7 +179,6 @@ fn gen_dispatch_tree(
 			format!("if oc > {} then\n{}\nelse\n{}\nend", p - 1, right_s, left_s)
 		}
 	} else {
-		// all wire codes adjacent: rank-split with a <= threshold
 		let k = rng.int(1, (sc.len() - 1) as i64) as usize;
 		let p = sc[k - 1];
 		let (left, right): (Vec<(usize, u8)>, Vec<(usize, u8)>) =
@@ -183,15 +193,37 @@ fn gen_dispatch_tree(
 	}
 }
 
-pub fn generate(map: &OpMap, slot_perm: &[u8; 4], rng: &mut Rng, n_fns: usize) -> String {
-	// opcode table with per-build random codes
+fn lua_dstr(bytes: &[u8]) -> String {
+	let mut s = String::from("\"");
+	for &b in bytes {
+		s.push_str(&format!("\\{b:03}"));
+	}
+	s.push('"');
+	s
+}
+
+/// Unique slots in 1..80 for the 15 primitives.
+fn prim_slots(rng: &mut Rng) -> [u8; 15] {
+	let mut pool: Vec<u8> = (1..=80).collect();
+	rng.shuffle(&mut pool);
+	let mut out = [0u8; 15];
+	out.copy_from_slice(&pool[..15]);
+	out
+}
+
+pub fn generate(
+	map: &OpMap,
+	slot_perm: &[u8; 4],
+	carrier: &Carrier,
+	rng: &mut Rng,
+	n_fns: usize,
+) -> String {
 	let mut oc_items = Vec::new();
 	for (i, name) in OP_NAMES.iter().enumerate() {
 		oc_items.push(format!("{name} = {}", map.to_wire[i]));
 	}
 	let oc_table = format!("local OC = {{{}}}", oc_items.join(", "));
 
-	// M5: per-build Nop (dead instruction) body
 	let nop = nop_body(rng);
 	let body_of = |name: &str| -> String {
 		if name == "Nop" {
@@ -200,133 +232,291 @@ pub fn generate(map: &OpMap, slot_perm: &[u8; 4], rng: &mut Rng, n_fns: usize) -
 			branch_code(name)
 		}
 	};
-	// randomized decision-tree dispatch over ALL opcodes (Nop included —
-	// it carries the dead-instruction padding)
 	let items: Vec<(usize, u8)> = (0..N_OPS).map(|i| (i, map.to_wire[i])).collect();
 	let branches = gen_dispatch_tree(&items, &body_of, rng, 0);
 
-	// M5 hub randomization: map stream operand slots back to a/b/c/d
-	// (slot_perm[sl] = operand index in stream slot sl)
 	if std::env::var("LURAPH_VM_DBG").is_ok() {
-		eprintln!("[gen] slot_perm={:?}", slot_perm);
+		eprintln!("[gen] slot_perm={:?} reserved={}", slot_perm, carrier.reserved);
 	}
 	let mut pos_of = [1u8; 4];
 	for (sl, &op_idx) in slot_perm.iter().enumerate() {
 		pos_of[op_idx as usize] = sl as u8 + 1;
 	}
-	let fetch = format!(
-		"local t1, p2 = r16(B, pc); pc = p2\n      local t2, p3 = r16(B, pc); pc = p3\n      local t3, p4 = r16(B, pc); pc = p4\n      local t4, p5 = r16(B, pc); pc = p5\n      local a = t{}; local b = t{}; local c = t{}; local d = t{}",
-		pos_of[0], pos_of[1], pos_of[2], pos_of[3]
+
+	// primitive table: numbered slots + shuffled unpack
+	let slots = prim_slots(rng);
+	let mut bind_idx: Vec<usize> = (0..PRIM_SRC.len()).collect();
+	rng.shuffle(&mut bind_idx);
+	let mut p_fill = String::from("local P = {}\n");
+	for &i in &bind_idx {
+		p_fill.push_str(&format!("  P[{}] = {}\n", slots[i], PRIM_SRC[i]));
+	}
+	let unpack_lhs: Vec<&str> = bind_idx.iter().map(|&i| PRIM_NAME[i]).collect();
+	let unpack_rhs: Vec<String> = bind_idx
+		.iter()
+		.map(|&i| format!("P[{}]", slots[i]))
+		.collect();
+	let prim_unpack = format!(
+		"local {} = {}",
+		unpack_lhs.join(", "),
+		unpack_rhs.join(", ")
 	);
 
-	// parameter list F1..Fn
+	// frame-runner re-unpack (same slots, independently shuffled order)
+	let mut run_idx: Vec<usize> = (0..PRIM_SRC.len()).collect();
+	rng.shuffle(&mut run_idx);
+	let run_lhs: Vec<&str> = run_idx.iter().map(|&i| PRIM_NAME[i]).collect();
+	let run_rhs: Vec<String> = run_idx
+		.iter()
+		.map(|&i| format!("P[{}]", slots[i]))
+		.collect();
+	let run_unpack = format!(
+		"local {} = {}",
+		run_lhs.join(", "),
+		run_rhs.join(", ")
+	);
+
+	// carrier decoder tables
+	let mut al_lines = String::from("local AL = {}\n");
+	for (i, &ch) in carrier.alphabet.iter().enumerate() {
+		al_lines.push_str(&format!("  AL[{ch}] = {i}\n"));
+	}
+	let mut tk_lines = String::from("local TK = {}\n");
+	for i in 0..10 {
+		tk_lines.push_str(&format!(
+			"  TK[{}] = {}\n",
+			lua_dstr(carrier.tokens[i].as_bytes()),
+			lua_dstr(&[CARRIER_SPECIALS[i]])
+		));
+	}
+
+	// decode-hub / fetch: two styles, return-tuple order shuffled
+	let use_hub = rng.int(0, 1) == 1;
+	// 6-tuple identity: oc, t1, t2, t3, t4, pc'
+	let mut tup: Vec<usize> = (0..6).collect();
+	rng.shuffle(&mut tup);
+	let srcs = [
+		"W[pc]".to_string(),
+		"SA[pc]".to_string(),
+		"SB[pc]".to_string(),
+		"SC[pc]".to_string(),
+		"SD[pc]".to_string(),
+		"pc + 1".to_string(),
+	];
+	let names = ["h0", "h1", "h2", "h3", "h4", "h5"];
+	// inverse: which hub-return slot holds logical k
+	let mut inv = [0usize; 6];
+	for (slot, &logical) in tup.iter().enumerate() {
+		inv[logical] = slot;
+	}
+	let fetch_assign = format!(
+		"local oc = {n0}; local t1 = {n1}; local t2 = {n2}; local t3 = {n3}; local t4 = {n4}; pc = {n5}\n      local a = t{pa}; local b = t{pb}; local c = t{pc_}; local d = t{pd}",
+		n0 = names[inv[0]],
+		n1 = names[inv[1]],
+		n2 = names[inv[2]],
+		n3 = names[inv[3]],
+		n4 = names[inv[4]],
+		n5 = names[inv[5]],
+		pa = pos_of[0],
+		pb = pos_of[1],
+		pc_ = pos_of[2],
+		pd = pos_of[3],
+	);
+	let hub_ret: Vec<String> = tup.iter().map(|&i| srcs[i].clone()).collect();
+	let hub_fn = format!(
+		"local function hub(W, SA, SB, SC, SD, pc)\n    return {}\n  end",
+		hub_ret.join(", ")
+	);
+	let (hub_decl, fetch) = if use_hub {
+		(
+			hub_fn,
+			format!(
+				"local {}, {}, {}, {}, {}, {} = hub(W, SA, SB, SC, SD, pc)\n      {fetch_assign}",
+				names[0], names[1], names[2], names[3], names[4], names[5]
+			),
+		)
+	} else {
+		let binds: Vec<String> = (0..6)
+			.map(|slot| format!("local {} = {}", names[slot], srcs[tup[slot]]))
+			.collect();
+		(
+			"-- inline decode hub".to_string(),
+			format!("{}\n      {fetch_assign}", binds.join("\n      ")),
+		)
+	};
+
+	// run() SoA unpack order (state-tuple position)
+	let mut fields = vec!["W", "SA", "SB", "SC", "SD", "C"];
+	rng.shuffle(&mut fields);
+	let run_soa = format!(
+		"local {} = {}",
+		fields.join(", "),
+		fields
+			.iter()
+			.map(|f| format!("pf.{f}"))
+			.collect::<Vec<_>>()
+			.join(", ")
+	);
+
 	let mut params = Vec::new();
 	for i in 1..=n_fns {
 		params.push(format!("F{i}"));
 	}
 	let params = params.join(", ");
 
+	// helper-decl order: u16 / r16 / decarrier are independent
+	let u16_fn = r#"local function u16(B, p)
+    return BYTE(B, p) + BYTE(B, p + 1) * 256
+  end"#;
+	let r16_fn = r#"local function r16(B, p)
+    local b1 = BYTE(B, p)
+    if b1 < 128 then
+      return b1, p + 1
+    end
+    local b2 = BYTE(B, p + 1)
+    if b2 < 128 then
+      return (b1 - 128) + b2 * 128, p + 2
+    end
+    local b3 = BYTE(B, p + 2)
+    if b3 < 128 then
+      local v = (b1 - 128) + (b2 - 128) * 128 + b3 * 16384
+      if v >= 2147483648 then v = v - 4294967296 end
+      return v, p + 3
+    end
+    local b4 = BYTE(B, p + 3)
+    local v = (b1 - 128) + (b2 - 128) * 128 + (b3 - 128) * 16384 + b4 * 2097152
+    if v >= 2147483648 then v = v - 4294967296 end
+    return v, p + 4
+  end"#;
+	let decarrier_fn = format!(
+		r#"local function decarrier(s)
+    local acc = ""
+    local i = 1
+    local n = #s
+    local resv = {}
+    while i <= n do
+      if BYTE(s, i) == resv then
+        acc = acc .. (TK[SUB(s, i, i + 4)] or "")
+        i = i + 5
+      else
+        acc = acc .. SUB(s, i, i)
+        i = i + 1
+      end
+    end
+    local raw = ""
+    n = #acc
+    for i = 1, n, 5 do
+      local v = 0
+      v = v * 94 + AL[BYTE(acc, i)]
+      v = v * 94 + AL[BYTE(acc, i + 1)]
+      v = v * 94 + AL[BYTE(acc, i + 2)]
+      v = v * 94 + AL[BYTE(acc, i + 3)]
+      v = v * 94 + AL[BYTE(acc, i + 4)]
+      local b1 = v % 256; v = FLR(v / 256)
+      local b2 = v % 256; v = FLR(v / 256)
+      local b3 = v % 256; v = FLR(v / 256)
+      local b4 = v % 256
+      raw = raw .. CHAR(b1, b2, b3, b4)
+    end
+    local ln = BYTE(raw, 1) + BYTE(raw, 2) * 256 + BYTE(raw, 3) * 65536 + BYTE(raw, 4) * 16777216
+    return SUB(raw, 5, 4 + ln)
+  end"#,
+		carrier.reserved
+	);
+
+	// AL/TK must be declared BEFORE decarrier (Lua locals are visible
+	// only after their declaration line; shuffle would turn them into
+	// accidental globals).
+	let mut helpers = vec![u16_fn.to_string(), r16_fn.to_string(), decarrier_fn];
+	rng.shuffle(&mut helpers);
+	let helpers = format!("{}\n  {}\n  {}", al_lines, tk_lines, helpers.join("\n  "));
+
 	format!(
 		r#"local VM = function({params})
   {oc_table}
   local FN = {{{params}}}
   local PF = {{}}
-  local function u16(B, p)
-    return string.byte(B, p) + string.byte(B, p + 1) * 256
-  end
-  -- 7-bit-chunk varint (M5): b1 < 128 -> 1 byte; else 2 bytes
-  -- (b1-128) + b2*128. No bitops (5.1 template constraint).
-  local function r16(B, p)
-    local b1 = string.byte(B, p)
-    if b1 < 128 then
-      return b1, p + 1
-    end
-    return (b1 - 128) + string.byte(B, p + 1) * 128, p + 2
-  end
+  {p_fill}  {prim_unpack}
+  {helpers}
   local function parse(s)
+    s = decarrier(s)
     local p = 1
     local nregs = u16(s, p); p = p + 2
     local nparams = u16(s, p); p = p + 2
-    local vararg = string.byte(s, p); p = p + 1
+    local vararg = BYTE(s, p); p = p + 1
     local nups = u16(s, p); p = p + 2
     local upsrc = {{}}
     for i = 1, nups do upsrc[i] = u16(s, p); p = p + 2 end
     local nconst = u16(s, p); p = p + 2
     local C = {{}}
     for i = 1, nconst do
-      local t = string.byte(s, p); p = p + 1
+      local t = BYTE(s, p); p = p + 1
       if t == 0 then
         C[i] = nil
       elseif t == 1 then
-        C[i] = string.byte(s, p) == 1; p = p + 1
+        C[i] = BYTE(s, p) == 1; p = p + 1
       else
         local l = u16(s, p); p = p + 2
-        local x = string.sub(s, p, p + l - 1); p = p + l
-        if t == 2 then C[i] = tonumber(x) else C[i] = x end
+        local x = SUB(s, p, p + l - 1); p = p + l
+        if t == 2 then C[i] = TONUM(x) else C[i] = x end
       end
     end
-    return {{ B = string.sub(s, p), nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C }}
+    local ncode = u16(s, p); p = p + 2
+    local W = {{}}
+    for i = 1, ncode do W[i] = BYTE(s, p); p = p + 1 end
+    local function rstream()
+      local T = {{}}
+      for i = 1, ncode do
+        local v, np = r16(s, p); p = np; T[i] = v
+      end
+      return T
+    end
+    local SA, SB, SC, SD = rstream(), rstream(), rstream(), rstream()
+    return {{ nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, W = W, SA = SA, SB = SB, SC = SC, SD = SD }}
   end
   for i = 1, #FN do PF[i] = parse(FN[i]) end
-  -- writable global environment: in Luau the _G table itself is a
-  -- FROZEN snapshot (G[k] = v errors "readonly table"); getfenv(0) is
-  -- the live environment in BOTH dialects (in 5.1 it is _G itself)
-  local G = getfenv(0)
-  local U = unpack
-  local FLOOR = math.floor
-  -- dialect probe: 5.1 tables have NO __len metamethod (5.2+/Luau do);
-  -- the same VM source must behave per-host for the length operator
-  local _probe = setmetatable({{}}, {{ __len = function() return 99 end }})
+  local G = GFE(0)
+  local U = UNP
+  local FLOOR = FLR
+  local _probe = SMT({{}}, {{ __len = function() return 99 end }})
   local HAS_LEN_META = (_probe == nil) or false
   do
-    local okp, vp = pcall(function() return #_probe end)
+    local okp, vp = PCAL(function() return #_probe end)
     HAS_LEN_META = okp and vp == 99
   end
   local function mget(x, k)
-    local mt = getmetatable(x)
+    local mt = GMT(x)
     if mt then return mt[k] end
     return nil
   end
   local function resolve_call(f)
-    if type(f) == 'function' then return f, false end
-    local mt = getmetatable(f)
+    if TYP(f) == 'function' then return f, false end
+    local mt = GMT(f)
     local cc = mt and mt['__call']
-    if type(cc) == 'function' then return cc, true end
-    if type(cc) == 'table' then
+    if TYP(cc) == 'function' then return cc, true end
+    if TYP(cc) == 'table' then
       local cf = cc[f]
-      if type(cf) == 'function' then return cf, false end
+      if TYP(cf) == 'function' then return cf, false end
     end
-    error('attempt to call a ' .. type(f) .. ' value', 0)
+    ERR('attempt to call a ' .. TYP(f) .. ' value', 0)
   end
-  -- call f(args) ONCE, return (values-table, exact count). A bare
-  -- results-table loses trailing nils (and # with them), so the count
-  -- comes from select on the same vararg list.
   local function callcap(f, args, nargs)
     local w = function(...)
       local t = {{ ... }}
-      return t, select('#', ...)
+      return t, SEL('#', ...)
     end
     return w(f(U(args, 1, nargs)))
   end
+  {hub_decl}
   local run
   local function makefn(idx, V, upsf)
     local pf = PF[idx]
-    -- named `c` on purpose: the CREATING frame's cell array arrives as
-    -- `upsf` (run()'s local) — needed for upvalue-alias binding
     local c = {{}}
     for i = 1, #pf.upsrc do
       local src = pf.upsrc[i]
       if src >= 49152 then
-        -- upvalue alias: this frame itself materializes the symbol as
-        -- upvalue src - 49152 — alias its CANONICAL cell object so all
-        -- nesting levels share one cell (5.1 single-cell semantics)
         c[i] = upsf[src - 49152]
       elseif src >= 32768 then
-        -- per-iteration shared cell: V[src - 32768] holds the CURRENT
-        -- iteration's cell table [1] = value; every closure created
-        -- in the same iteration binds the SAME table, and the loop
-        -- body's own reads/writes go through it as well (fresh per
-        -- iteration, shared within one iteration — 5.1 + Luau)
         c[i] = {{ v = V[src - 32768], i = 1 }}
       else
         c[i] = {{ v = V, i = src }}
@@ -345,13 +535,12 @@ pub fn generate(map: &OpMap, slot_perm: &[u8; 4], rng: &mut Rng, n_fns: usize) -
     end
   end
   run = function(pf, V, ups, vargs, vargc)
-    local B = pf.B
-    local C = pf.C
+    {run_unpack}
+    {run_soa}
     local pc = 1
     local lastn = 0
     local lastbase = 0
     while true do
-      local oc = string.byte(B, pc); pc = pc + 1
       {fetch}
       {branches}
     end
@@ -364,7 +553,13 @@ end
 "#,
 		params = params,
 		oc_table = oc_table,
-		branches = branches,
+		p_fill = p_fill,
+		prim_unpack = prim_unpack,
+		helpers = helpers,
+		hub_decl = hub_decl,
+		run_unpack = run_unpack,
+		run_soa = run_soa,
 		fetch = fetch,
+		branches = branches,
 	)
 }

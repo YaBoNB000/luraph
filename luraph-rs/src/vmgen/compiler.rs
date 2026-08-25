@@ -40,7 +40,7 @@
 use crate::ast::*;
 use crate::rng::Rng;
 use crate::symtab::SymTable;
-use crate::vmgen::isa::{self, Const, Instr, Op, OpMap};
+use crate::vmgen::isa::{self, Carrier, Const, Instr, Op, OpMap};
 use std::collections::{HashMap, HashSet};
 
 /// How a symbol's value lives in the current frame.
@@ -67,6 +67,9 @@ pub struct VmProgram {
 	/// slot i. Encoder writes in this order; the template maps the
 	/// stream positions back to a/b/c/d.
 	pub slot_perm: [u8; 4],
+	/// M5 bytecode carrier (base-94 + token escape). Shared by every
+	/// function blob so the interpreter embeds one decoder.
+	pub carrier: Carrier,
 	pub fns: Vec<Vec<u8>>,
 }
 
@@ -268,44 +271,19 @@ impl<'a> Ctx<'a> {
 				}
 			}
 		}
-		// M5 7-bit tier: variable-length operands, so jump targets are
-		// 1-based BYTE offsets from per-instruction encoded lengths. A
-		// jump's own target-operand varint size depends on the target
-		// value, so iterate to a fixpoint (converges in <= 2 passes).
-		let map = &self.program.opmap;
-		let perm = &self.program.slot_perm;
-		for _ in 0..4 {
-			let mut prefix = vec![0u32; self.code.len() + 1];
-			let mut tmp: Vec<u8> = Vec::with_capacity(9);
-			for (i, ins) in self.code.iter().enumerate() {
-				tmp.clear();
-				ins.encode(map, perm, &mut tmp);
-				prefix[i + 1] = prefix[i] + tmp.len() as u32;
-			}
-			let mut changed = false;
-			for (_, (pos, jumps)) in &self.labels {
-				if let Some(base) = pos {
-					let target = (1 + prefix[*base]) as u16;
-					for &p in jumps {
-						if self.code[p - 1].b != target {
-							self.code[p - 1].b = target;
-							changed = true;
-						}
-					}
+		// M5 SoA: jump targets are 1-based INSTRUCTION indexes into the
+		// parallel arrays (pc steps by 1). No byte-offset fixpoint.
+		for (_, (pos, jumps)) in &self.labels {
+			if let Some(base) = pos {
+				let target = (*base as u16) + 1;
+				for &p in jumps {
+					self.code[p - 1].b = target;
 				}
 			}
-			if !changed {
-				break;
-			}
 		}
-		let mut prefix = vec![0u32; self.code.len() + 1];
-		let mut tmp: Vec<u8> = Vec::with_capacity(9);
-		for (i, ins) in self.code.iter().enumerate() {
-			tmp.clear();
-			ins.encode(map, perm, &mut tmp);
-			prefix[i + 1] = prefix[i] + tmp.len() as u32;
-		}
-		let mut out = Vec::with_capacity(prefix[self.code.len()] as usize + 64);
+		let map = &self.program.opmap;
+		let perm = &self.program.slot_perm;
+		let mut out = Vec::with_capacity(self.code.len() * 6 + 64);
 		isa::push_u16(&mut out, nregs);
 		isa::push_u16(&mut out, self.nparams);
 		out.push(self.vararg as u8);
@@ -317,9 +295,7 @@ impl<'a> Ctx<'a> {
 		for c in &self.consts {
 			c.encode(&mut out);
 		}
-		for ins in &self.code {
-			ins.encode(map, perm, &mut out);
-		}
+		isa::encode_soa(&self.code, map, perm, &mut out);
 		out
 	}
 }
@@ -757,6 +733,7 @@ fn compile_chunk(
 	let mut program = VmProgram {
 		opmap: OpMap::new(rng),
 		slot_perm,
+		carrier: Carrier::new(rng),
 		// slots 0..total-1 = nested functions (DFS order); the main chunk
 		// is compiled last and becomes slot `total` (PF[#FN] in the
 		// template)
@@ -2158,29 +2135,33 @@ mod dbg {
 					}
 				}
 			}
-			// variable-length (7-bit varint) decode, slot_perm order
+			// SoA: [ncode u16][OC bytes][4 × ncode varints]
 			let perm = &prog.slot_perm;
-			let mut q = p;
-			let mut i = 0usize;
-			while q < b.len() {
-				let nm = wire2name[b[q] as usize].unwrap_or("??");
-				q += 1;
+			let ncode = u16(p) as usize;
+			p += 2;
+			let mut ops: Vec<u8> = Vec::with_capacity(ncode);
+			for _ in 0..ncode {
+				ops.push(b[p]);
+				p += 1;
+			}
+			let mut streams = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+			for s in 0..4 {
+				for _ in 0..ncode {
+					let (v, np) = isa::decode_varint(b, p).expect("varint");
+					streams[s].push(v as u16);
+					p = np;
+				}
+			}
+			for i in 0..ncode {
+				let nm = wire2name[ops[i] as usize].unwrap_or("??");
 				let mut vals = [0u16; 4];
-				for s in 0..4usize {
-					let b1 = b[q] as u16;
-					if b1 < 128 {
-						vals[perm[s] as usize] = b1;
-						q += 1;
-					} else {
-						vals[perm[s] as usize] = (b1 - 128) + (b[q + 1] as u16) * 128;
-						q += 2;
-					}
+				for s in 0..4 {
+					vals[perm[s] as usize] = streams[s][i];
 				}
 				eprintln!(
 					"  [{i}] {nm} a={} b={} c={} d={}",
 					vals[0], vals[1], vals[2], vals[3]
 				);
-				i += 1;
 			}
 		}
 	}

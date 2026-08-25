@@ -5,8 +5,8 @@
 > §2 进度表 + §3 里程碑勾选 + 更新日志**（四处一起改，不允许只记日志不改状态），
 > 并同步 `PROGRESS.md` / `HANDOFF.md` / `examples/README.md`，
 > **最后 commit + push 到 GitHub**（用户规矩 2026-08-23）。
-> 初版：2026-08-23 ｜ 最后更新：2026-08-23（**M3 完成**：L4+L5+L7 全量）
-> **当前状态：M0 ✅ + M1 ✅ + M2 ✅ + M3 ✅（L4 数值 + L5 整体加密 + L7 反篡改 全量）+ M4 ✅（L6 VM 最小可用）→ 下一步 M5 VM 完整随机面**
+> 初版：2026-08-23 ｜ 最后更新：2026-08-25（**M5 收官**：SoA + 完整 7-bit + 载体 + 枢纽/原语解包）
+> **当前状态：M0–M5 ✅ → 下一步 M6 产品化**
 
 ---
 
@@ -67,16 +67,16 @@
 | 方法 | 说明 | Rust 模块 | 优先级 | 状态 |
 |---|---|---|---|---|
 | ISA 设计（~40 条寄存器指令） | 加载/取值/赋值/算术/比较/跳转/调用/表/闭包 | `vmgen/isa.rs` | P0 | ✅ M4（41 条，含 CallE/CallM 多尾展开） |
-| SoA 字节码容器 | opcode/操作数分存平行数组（luraph14/15 同款，破坏 AoS 特征） | `vmgen/isa.rs` | P0 | 🟡 M5（现为变长交错（7-bit 档），功能正确，SoA 平行数组待 M5） |
+| SoA 字节码容器 | opcode/操作数分存平行数组（luraph14/15 同款，破坏 AoS 特征） | `vmgen/isa.rs` | P0 | ✅ M5（`[ncode][OC bytes][S0..S3 varint streams]`；pc 按指令步进） |
 | opcode 随机置换（每构建） | 随机置换表 + 死指令填充 | `vmgen/isa.rs` | P0 | ✅（置换表 + Nop 死指令填充，M4 续期） |
 | AST → 字节码编译器 | 原型树/upvalue/常量池/多值协议(nresults 0/-1)/尾调用 | `vmgen/compiler.rs` | P0 | ✅ M4+续期（upvalue 单 cell 别名模型 + 循环变量 per-iteration 共享 cell + 5.1 构造器存储序 + 全变长展开） |
 | 解释器模板生成（Lua 源码） | fetch-decode-execute + 随机二分决策树（2~4 层） | `vmgen/template.rs` | P0 | ✅（随机决策树 2~4 层 + 分支序 shuffle，M4 续期） |
 | continue 扁平分派风格（Luau 档） | 叶 = `状态=handler(); continue`（luraph15 同款，5.1 用嵌套树） | `vmgen/template.rs` | P1 | 📐 |
-| 帧运行器入场原语解包 | 数字槽→局部变量一次性解包，槽号/局部名每构建随机 | `vmgen/template.rs` | P0 | 📐 |
+| 帧运行器入场原语解包 | 数字槽→局部变量一次性解包，槽号/局部名每构建随机 | `vmgen/template.rs` | P0 | ✅ M5（15 个宿主原语进 `P[1..80]` 随机槽；VM 顶 + `run` 入场各解包一次，顺序独立 shuffle） |
 | 普通/协程双帧运行器 + UL 跨 yield 传表 | 协程帧走 coroutine.wrap + setfenv；大结构跨 yield 成对传送 | `vmgen/template.rs` | P0 | 📐 |
-| 7-bit 分块操作数编码 | 7/14/21-bit 变长 + 128 进制重建 + 2³² 归一化（VM 档可选开） | `vmgen/compiler.rs`+`template.rs` | P1 | ✅ 基础档（2-byte 变长 r16，M4 续期）/ 完整 7/14/21 档待 M5 |
-| 状态元组位置传参（混函数引用） | 状态含原语指针，每构建顺序随机 | `vmgen/template.rs` | P0 | 📐 |
-| 解码枢纽状态 + 私有解码辅助 | 解码主循环枢纽 ID 每构建随机；辅助函数运行器内私有 | `vmgen/template.rs` | P0 | 📐 |
+| 7-bit 分块操作数编码 | 7/14/21-bit 变长 + 128 进制重建 + 2³² 归一化（VM 档可选开） | `vmgen/compiler.rs`+`template.rs` | P1 | ✅ M5（7/14/21/28-bit 四档；解码无位运算；≥2³¹ 做 `v-2³²`） |
+| 状态元组位置传参（混函数引用） | 状态含原语指针，每构建顺序随机 | `vmgen/template.rs` | P0 | ✅ M5（`run` 解包 `W/SA/SB/SC/SD/C` 字段序每构建 shuffle；fetch 6 元组序 shuffle） |
+| 解码枢纽状态 + 私有解码辅助 | 解码主循环枢纽 ID 每构建随机；辅助函数运行器内私有 | `vmgen/template.rs` | P0 | ✅ M5（inline fetch / `hub()` 两风格；u16/r16/decarrier 声明序 shuffle；AL/TK 固定在 decarrier 之前） |
 | base-N 编码 + token 转义 | 字符类 ASCII 32..126 + 10 特殊字符→5 字符 token（pC 同款） | `vmgen/isa.rs` | P0 | 📐 |
 | 元表/协程/pcall 透传宿主 | 不模拟，正确性优先 | `vmgen/compiler.rs` | P0 | ✅ M4（实测语料通过） |
 | 解释器自身再过 L1/L2/垃圾注入 | 模板生成后走同一套 pass（表名随机化） | 管线 | P0 | ✅ M4（含 L3/L4/L5/L7） |
@@ -111,11 +111,11 @@
 | 调研 + 双方言语义实测 | ✅ 100% | `docs/obfuscation-research.md` |
 | Luraph v15 分析（含动态分析共三轮） | ✅ 100% | `docs/luraph15-analysis.md`（§11 25 项功能对比：采纳 20 / 延后 2 / 拒绝 2 / 我方独有 1） |
 | 全部混淆方法设计（L1–L7 + VM） | ✅ 100% | 本文件 §1 + research §2.6 + v15 报告 §8/§10 |
-| **Rust 混淆器代码** | ✅ **M0+M1+M2+M3+M4 完成，M5 大半已落地** | M4 L6 VM（私有字节码 + 生成混淆解释器，`--vm`）；M5 已含：随机决策树分派（2~4 层）/ 死指令 Nop / 7-bit 变长操作数 / 操作数槽位随机（slot_perm）；M5 剩：SoA 容器 / base-N+token 转义 / 枢纽 ID / 入场解包随机化 |
+| **Rust 混淆器代码** | ✅ **M0–M5 完成** | M5 收官：SoA 平行数组 + 完整 7/14/21-bit + base-94 载体/token + 解码枢纽/状态元组随机 + 帧入场原语解包。下一步 M6 产品化 |
 | 测试语料 + 矩阵 | ✅ 100% | **29 个语料文件**（20 共享 + 9 Luau 专属；M4 续期新增 8 个 stress_*：upvalues/coroutines/metamethods/multival/errors/bigtable/control/luau_vm）；非 VM 102 项 + VM 102 项 = **204 项全绿**（含 VM 双解释器交叉）；**多种子回归**（seeds 1/7/4242/31337/999999 × 全语料 × 双方言 × 双阶段）0 失败 |
 | 混淆示例 | ✅ M1+M2 产出 | `luraph-rs/examples/`（`tests/gen_examples.sh` 再生成） |
 
-**一句话：设计 100%，代码 M0–M4 完成且 M4 经应力语料加固（矩阵 204/204 全绿 + 多种子回归 0 失败），M5 随机面已完成约 60%，下一步 M5 收尾（SoA/base-N/枢纽 ID/入场解包）。**
+**一句话：设计 100%，代码 M0–M5 完成（矩阵 204/204 全绿 + 多种子回归 0 失败），下一步 M6 产品化（CLI 预设 + README + 性能数据）。**
 
 ---
 
@@ -129,7 +129,7 @@
 | **M3 数值+整体+反篡改** | numbers(L4) + body(L5) + antidbg(L7) | 同上；篡改密文段→触发陷阱 |
 | **M4 VM 最小可用** ✅ 2026-08-24 | vmgen: isa + compiler + template（41 指令覆盖全语料） | `--vm` 输出双方言运行一致（136/136 全绿，含 luau 交叉 + luau-compile 语法校验）；同 seed 逐字节一致 / 异 seed 编码完全不同（已验证）；无原生字节码可读结构（VM 容器 = 混淆解释器 + 加密字节码串） |
 | **M4 续期（VM 语义加固）** ✅ 2026-08-25 | 应力语料（8 个 stress_*）暴露并修复 9 类 VM/管线语义 bug：upvalue 单 cell 别名模型（消灭中间副本）/ 循环变量 per-iteration 共享 cell / CallT 表存储 off-by-one / GetTab 索引错误 / 尾部多值展开（return .../a,b=.../a,b=f()）/ 5.1 构造器存储序 / 打印机后缀括号 / 多目标赋值解析 / Luau for-in 隐式 next；语料 21→29，矩阵 136→**204 全绿** + 多种子回归（5 seeds）0 失败 | 见 §4 更新日志 2026-08-25 条目 |
-| **M5 VM 完整**（~60% 已落地） | 已落地：随机决策树分派 / Nop 死指令 / 7-bit 变长档（基础）/ slot_perm 操作数槽随机。剩：SoA 平行数组容器 / base-N+token 转义 / 枢纽 ID 随机 / 入场解包随机化 / 反编译人工抽查 | 同 seed 逐字节一致；异 seed 编码完全不同；反编译器人工抽查失效 |
+| **M5 VM 完整** ✅ 2026-08-25 | SoA 平行数组 + 完整 7/14/21-bit + base-94 载体/token + 解码枢纽/状态元组随机 + 帧入场原语解包 + 反编译抽查 | 同 seed 逐字节一致；异 seed 前 2KB 重合 9.5%；`luac51 -l` 仅见 L5 容器、无用户字符串；矩阵 204/204 + 5 种子回归 0 失败 |
 | **M6 产品化** | CLI 预设打磨 + README 产品文档 + 性能数据 | 全预设 × 全语料 × 双解释器 100% 通过（research §5 验收 5 条） |
 
 **M4 已完成并加固（2026-08-25），当前进行项：M5 VM 随机面收尾（SoA/base-N/枢纽 ID/入场解包）。**
@@ -138,6 +138,31 @@
 
 ## 4. 更新日志
 
+- **2026-08-25（M5 收官：SoA + 完整 7-bit + 载体 + 枢纽/原语解包）**
+  按 HANDOFF §7 建议顺序一次落地 M5 全部剩余项（编码器/`template.rs`
+  同步改，改完跑矩阵 + 多种子）：
+  1. **SoA 平行数组**：函数码流从「op+4 变长操作数」交错改为
+     `[ncode u16][OC × ncode][S0..S3 各 ncode 条 varint]`；跳转目标从
+     字节偏移改为 **1 基指令下标**（不再需要变长 fixpoint）。
+  2. **7-bit 完整档**：7/14/21/28-bit 四档（`v<128 / <16384 / <2097152`），
+     128 进制重建，`v≥2³¹` 做 `v-2³²` 归一化；模板 `r16` 无位运算。
+  3. **base-94 + token 转义**：每构建洗牌 ASCII 32..126 抽出 1 个保留
+     字符作 token 前缀（碰撞不可能）+ 10 个 5 字符 token（v15 pC 同款
+     特殊字符集）；4 字节 LE 长度前缀；`parse` 先 `decarrier` 再拆 SoA。
+  4. **解码枢纽 / 状态元组**：fetch 在 inline / `hub()` 两风格间随机；
+     6 元组（oc,t1..t4,pc'）返回序每构建 shuffle；`run` 解包
+     `W/SA/SB/SC/SD/C` 字段序 shuffle；u16/r16/decarrier 声明序 shuffle
+     （AL/TK 表固定在 decarrier 之前——Lua local 作用域从声明行起）。
+  5. **帧入场原语解包**：15 个宿主原语（`string.byte/sub/char`、
+     `getfenv/unpack/math.floor/type/error/getmetatable/rawget/rawset/
+     setmetatable/select/pcall/tonumber`）写入 `P[1..80]` 随机槽；
+     VM 顶解包一次供 parse/decarrier，`run` 入场再解包一次（独立顺序）。
+  6. **反编译抽查**：`luac51 -l` 仅见 L5 容器加载器；输出不含用户
+     字符串（`hello user` 检索为假）；同 seed 逐字节一致 / 异 seed
+     前 2KB 重合 9.5%。
+  **验收**：矩阵 **204/204 全绿**；多种子 `{1,7,4242,31337,999999}`
+  **0 失败**。opcode 名表与 SoA 数组不可同名（初版都叫 `OC`，
+  `OC.Jmp` 被冲成 nil——数组改名 `W`）。
 - **2026-08-25（M4 续期：VM 语义加固 + 工具链重建 + 语料扩容）**
   **背景**：沙箱重置抹掉 `/home/user/tools` 与部分 /tmp 工件 → 工具链整体
   **重建进仓库** `luraph/.tools/bin`（持久化）：Rust 1.88（npm @rustbin）、

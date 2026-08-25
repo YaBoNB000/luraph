@@ -1,14 +1,11 @@
 # 项目进度（PROGRESS）
 
 > 最后更新：2026-08-25
-> 当前状态：✅ 环境 ✅ 研究 ✅ v15 分析 ✅ M0 地基 ✅ M1 词法+字符串 ✅ M2 控制流
-> ✅ M3 数值+整体加密+反篡改 ✅ **M4 VM 完成 + 续期加固（2026-08-25）**
-> （L6 私有字节码 VM：41 条寄存器指令 + 每构建 opcode 随机置换 + 生成的混淆解释器；
-> 语料 21→29（新增 8 个 stress_*）× 双方言 ×（lua51 + luau 交叉）矩阵 **204 项全绿** +
-> **多种子回归**（seeds 1/7/4242/31337/999999）0 失败；upvalue 单 cell 别名模型 /
-> 循环变量 per-iteration 共享 cell / 5.1 构造器存储序 / 全变长展开等 9 类语义坑
-> 踩平并记录于 `docs/vm-l6-implementation.md` §8；工具链已重建进仓库
-> `luraph/.tools/bin` 抗沙箱重置；M5 随机面已落地约 60%，剩 SoA/base-N/枢纽 ID/入场解包）
+> 当前状态：✅ 环境 ✅ 研究 ✅ v15 分析 ✅ M0–M4 ✅ **M5 VM 完整随机面收官**
+> （SoA 平行数组 + 完整 7/14/21-bit + base-94/token 载体 + 解码枢纽/状态元组
+> 随机 + 帧入场原语解包 + `luac51 -l` 抽查；矩阵 **204/204 全绿** + 多种子
+> `{1,7,4242,31337,999999}` 0 失败；同 seed 逐字节一致 / 异 seed 前 2KB
+> 重合 9.5%；下一步 M6 产品化）
 
 ## 0. 需求（用户确认）
 
@@ -270,15 +267,23 @@ multival/errors/bigtable/control/luau_vm），直接暴露并修复 **9 类真 b
   同错（语义镜像正确）。
 - **for-in 方言差异**：Luau 隐式 next / 5.1 必须可调用。
 
-### ⬜ 剩余（按 implementation-plan.md 里程碑推进）
+### ✅ M5 完成（2026-08-25）：VM 完整随机面
 
-- [ ] **M5**（~60% 已落地）：**VM 完整随机面**。已落地：随机决策树分派
-      （2~4 层）/ Nop 死指令填充 / 7-bit 变长基础档 / slot_perm 操作数
-      槽随机。剩：SoA 平行数组容器、7-bit 完整档（7/14/21-bit）、
-      解码枢纽/状态元组位置随机化、base-N 编码 + token 转义、
-      帧运行器入场原语解包随机化、反编译人工抽查
-      （见 `docs/vm-l6-implementation.md` §7）
-- [ ] **M6**：CLI 预设（low/medium/high/vm）+ README 产品文档
+| 项 | 落地 |
+|---|---|
+| SoA 平行数组 | `[ncode][W bytes][S0..S3 varint]`；pc 按指令步进；跳转 = 1 基指令下标 |
+| 7-bit 完整档 | 7/14/21/28-bit + 128 进制 + 2³² 归一化；模板 `r16` 无位运算 |
+| base-94 + token | 每构建字母表/保留前缀；10 个 5 字符 token（v15 pC 特殊字符集） |
+| 解码枢纽/状态元组 | inline / `hub()` 两风格；6 元组序 + `run` 字段序 + helper 声明序 shuffle |
+| 帧入场原语解包 | 15 原语 → `P[1..80]` 随机槽；VM 顶 + `run` 双解包 |
+| 反编译抽查 | `luac51 -l` 仅见 L5 容器；用户串不可检索 |
+
+**验收**：矩阵 204/204；多种子 0 失败；同 seed 一致 / 异 seed 前 2KB 重合 9.5%。
+踩坑：SoA 数组不可与 opcode 名表同名（`OC`）；`AL`/`TK` 必须声明在 `decarrier` 之前。
+
+### ⬜ 剩余
+
+- [ ] **M6**：CLI 预设（low/medium/high/vm/max）+ README 产品文档 + 性能数据
 - 每个 pass 完成后执行强制工作流（矩阵全绿 + examples 重新生成才算完成）
 
 ## 4. 目录结构（当前，2026-08-25）
@@ -305,7 +310,7 @@ luraph/
 │   ├── make_trace.py           # 探针注入生成器
 │   ├── run_trace.lua / run1.lua# 动态运行包装器
 │   └── polyfill.lua            # buffer/Vector3 polyfill（buffer 部分因 CLI 内建而未用上）
-├── luraph-rs/                  # ★ Rust 混淆器（M4 完成 + 续期，矩阵 204/204 全绿）
+├── luraph-rs/                  # ★ Rust 混淆器（M5 收官，矩阵 204/204 全绿）
 │   ├── Cargo.toml              #   std-only 零依赖
 │   ├── src/
 │   │   ├── main.rs             #   CLI（--dialect/-o/--seed/--vm +
@@ -320,9 +325,9 @@ luraph/
 │   │   ├── rng.rs / rng_check.rs                   # 种子 PRNG
 │   │   ├── desugar.rs            #   ⚠️ 孤儿文件（未挂 mod，死代码存档）
 │   │   └── vmgen/                # ★ L6 VM
-│   │       ├── isa.rs            #     41 条 Op + 每构建置换 + 变长 varint 编码
-│   │       ├── compiler.rs       #     AST→字节码（单 cell 模型 + 方言分支）
-│   │       ├── template.rs       #     解释器模板（决策树/makefn/元表透传）
+│   │       ├── isa.rs            #     41 条 Op + SoA + 完整 7-bit + Carrier
+    │   │       ├── compiler.rs       #     AST→字节码（单 cell + 指令下标跳转）
+    │   │       ├── template.rs       #     解释器（SoA/decarrier/hub/原语解包）
 │   │       └── mod.rs
 │   ├── tests/
 │   │   ├── cases/*.lua         #   ★ 29 个测试语料（20 共享 + 9 luau_*；8 个 stress_*）
