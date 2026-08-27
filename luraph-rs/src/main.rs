@@ -398,12 +398,7 @@ fn main() -> ExitCode {
 				if opts.do_numbers {
 					numbers::apply_numbers(&mut tblock, &mut rng);
 				}
-				let uppers = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-				let boot = format!(
-					"{}{}",
-					uppers[rng.int(0, 25) as usize] as char,
-					uppers[rng.int(0, 25) as usize] as char
-				);
+				let boot = vmgen::v15::boot_name(&mut rng);
 				let entry_fn = ast::Expr::Function {
 					params: Vec::new(),
 					param_syms: Vec::new(),
@@ -414,21 +409,26 @@ fn main() -> ExitCode {
 				};
 				let mut boot_stmts = tblock.stmts;
 				boot_stmts.push(ast::Stmt::Return(vec![entry_fn]));
+				// sample FC shape: `function(b, ...)`
 				let boot_fn = ast::Expr::Function {
 					params: vec!["b".to_string()],
 					param_syms: Vec::new(),
-					vararg: false,
+					vararg: true,
 					body: ast::Block { stmts: boot_stmts },
 				};
-				let module = ast::Expr::Table {
-					fields: vec![ast::TableField::Key {
-						key: ast::Expr::Str {
-							bytes: boot.as_bytes().to_vec(),
-							is_binary: false,
-						},
-						value: boot_fn,
-					}],
-				};
+				// P2: module table = 65 primitive slots + 2 LCG factory
+				// slots + 1 mutable constant slot + named constants
+				// (vmgen/v15.rs), boot handler field, all shuffled.
+				let mut fields = vmgen::v15::module_fields(&mut rng);
+				fields.push(ast::TableField::Key {
+					key: ast::Expr::Str {
+						bytes: boot.as_bytes().to_vec(),
+						is_binary: false,
+					},
+					value: boot_fn,
+				});
+				rng.shuffle(&mut fields);
+				let module = ast::Expr::Table { fields };
 				let shell = ast::Stmt::Return(vec![ast::Expr::Call {
 					func: Box::new(ast::Expr::Method {
 						obj: Box::new(ast::Expr::Call {

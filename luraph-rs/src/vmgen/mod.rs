@@ -10,5 +10,6 @@
 pub mod compiler;
 pub mod isa;
 pub mod template;
+pub mod v15;
 
 pub use compiler::compile;

@@ -99,7 +99,7 @@
 | 双方言模式 | `--dialect 5.1\|luau`（解析/去糖/输出/VM 全链通） | 全模块 | P0 | ✅（含 for-in 方言差异：Luau 隐式 next 归一化） |
 | 种子确定性 | `--seed`（同 seed 逐字节一致，不同 seed 编码完全不同；默认时间种子） | `rng.rs` | P0 | ✅ M1 |
 | 预设 | low(L1+L2) / medium(+L3) / high(+L4+L5+L7，默认) / vm(全开) / max(=vm，v2 预留) | `main.rs` | P0 | ✅ M6（`--preset`；其后 `--no-*`/`--vm` 覆盖；默认 ≡ high；`tests/run_presets.sh` 405 项） |
-| v15 结构同族档（路线 A，对标样本结构指纹） | `--preset v15`（Luau/Roblox 专属，5.1 报错）；发射器换代路线见 `docs/v15-structural-parity-plan.md`（P0/P1 ✅，P2–P8 待做） | `main.rs` + `vmgen/` | P1 | 🟡 P0+P1 完成（2026-08-25）：指纹脚本 32 条（样本 32/32）+ CLI + **外壳换代**（模块表 + `:XX()(...);` 3 行，F1/F2/F18 PASS，29 语料一致） |
+| v15 结构同族档（路线 A，对标样本结构指纹） | `--preset v15`（Luau/Roblox 专属，5.1 报错）；发射器换代路线见 `docs/v15-structural-parity-plan.md`（P0/P1/P2 ✅，P3–P8 待做） | `main.rs` + `vmgen/` | P1 | 🟡 P0–P2 完成（2026-08-25）：指纹脚本 32 条（样本 32/32）+ CLI + 外壳换代（3 行模块表）+ **模块表铺开**（`vmgen/v15.rs`：65 原语槽 + 诱饵 LCG + 具名常量，指纹 10/32） |
 | 强制测试工作流 | 每 pass 完成 → 混淆样本 → lua51+luau 语法+运行对比（语料 29 个文件 + 多种子回归） | `run_tests.sh`+`gen_examples.sh` | P0 | ✅ M0 起执行中（当前 204 项检查全绿 + 5 种子回归 0 失败） |
 
 ---
@@ -139,6 +139,18 @@
 
 ## 4. 更新日志
 
+- **2026-08-25（v15 结构同族：P2 模块表铺开）**
+  `vmgen/v15.rs`：65 原语数字槽（槽号 1..126 稀疏洗牌；`Vector3.new`/
+  `Vector2.new` Roblox 专属、Luau CLI 缺失、表构造期求值会崩 → 不发射，
+  `vector.create` 覆盖 F19）+ 2 诱饵 LCG 工厂槽（状态机化 `%268435456`
+  写入、`function(b,b,b,u)` 参数遮蔽、静态零调用 → F15/F25/F28）+
+  1 可变常量槽 `[N]=0` + 10 具名常量字段（AL/BL/EL/PL/QL/cL/dL/gL/h/s，
+  h = 死常数表）。全字段洗序混存，boot 名 = 字母表基字母 + `C` 后缀。
+  指纹 **10/32**（F9 69 槽/66 原语槽 + F15/17/19/25/28/29 + F1/2/18）；
+  F3 = 80 字段，量级差由 P3 handler 群补齐。验证：29 语料 × v15 一致；
+  多种子 5×4 零失败；官方矩阵 204/204 + 预设矩阵 405/405 全绿。
+  附带：`luraph-rs/tools/rebuild_tools.sh` 工具链一键重建脚本（沙箱
+  重置两次后的应对）。
 - **2026-08-25（v15 结构同族：P1 外壳换代）**
   `main.rs` v15 分支：解释器块先过 junk/mangle/strings/numbers 再包壳，
   产物 = 3 行 `return setmetatable({XX=function(b)...end end},{}):XX()(...);`
