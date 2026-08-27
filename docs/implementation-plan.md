@@ -99,7 +99,7 @@
 | 双方言模式 | `--dialect 5.1\|luau`（解析/去糖/输出/VM 全链通） | 全模块 | P0 | ✅（含 for-in 方言差异：Luau 隐式 next 归一化） |
 | 种子确定性 | `--seed`（同 seed 逐字节一致，不同 seed 编码完全不同；默认时间种子） | `rng.rs` | P0 | ✅ M1 |
 | 预设 | low(L1+L2) / medium(+L3) / high(+L4+L5+L7，默认) / vm(全开) / max(=vm，v2 预留) | `main.rs` | P0 | ✅ M6（`--preset`；其后 `--no-*`/`--vm` 覆盖；默认 ≡ high；`tests/run_presets.sh` 405 项） |
-| v15 结构同族档（路线 A，对标样本结构指纹） | `--preset v15`（Luau/Roblox 专属，5.1 报错）；发射器换代路线见 `docs/v15-structural-parity-plan.md`（P0/P1/P2 ✅，P3–P8 待做） | `main.rs` + `vmgen/` | P1 | 🟡 P0–P2 完成（2026-08-25）：指纹脚本 32 条（样本 32/32）+ CLI + 外壳换代（3 行模块表）+ **模块表铺开**（`vmgen/v15.rs`：65 原语槽 + 诱饵 LCG + 具名常量，指纹 10/32） |
+| v15 结构同族档（路线 A，对标样本结构指纹） | `--preset v15`（Luau/Roblox 专属，5.1 报错）；发射器换代路线见 `docs/v15-structural-parity-plan.md`（P0/P1/P2 ✅，P3 增量 1 ✅，P3 扩容+P4–P8 待做） | `main.rs` + `vmgen/` | P1 | 🟡 P0–P3 增量 1 完成（2026-08-25）：指纹脚本 32 条（样本 32/32）+ CLI + 外壳换代 + 模块表铺开（65 原语槽 + 诱饵 LCG）+ **CPS 引导骨架**（初始化器/顶层机/continue 循环/单字符 handler 链/算术助手，指标随原型数线性扩展，指纹 11/32） |
 | 强制测试工作流 | 每 pass 完成 → 混淆样本 → lua51+luau 语法+运行对比（语料 29 个文件 + 多种子回归） | `run_tests.sh`+`gen_examples.sh` | P0 | ✅ M0 起执行中（当前 204 项检查全绿 + 5 种子回归 0 失败） |
 
 ---
@@ -139,6 +139,17 @@
 
 ## 4. 更新日志
 
+- **2026-08-25（v15 结构同族：P3 增量 1 — CPS 引导骨架）**
+  `vmgen/v15.rs::scaffold`：boot 换代为初始化器（`return true,<s0>,
+  nil×10`）+ 顶层机（FC 形态，控制码协议）+ CPS 循环（二叉范围树 +
+  `continue` 叶集中单函数）+ 单字符 staging handler 链（每原型 1 个：
+  载体入上下文表 + 校验和经 mul32/mod2³² 助手折叠，真实调用）+ 解释器
+  定义 handler（过 junk/mangle 的模板以文本嵌入，VM 名按 mangle 后符号
+  查回）+ 控制码 handler。状态池 3..236 每构建随机、元组填充序洗牌、
+  脚手架名走 53 字母表族。实测（functions 语料）：103 字段 / 24 具名
+  函数 / 20 returns / 19 IDs / 55 方法调用 / 18 continue——随原型数
+  线性扩展；指纹 10→11/32。验证：29 语料 + 多种子 5×6 一致；矩阵
+  204/204 + 预设 405/405 全绿。
 - **2026-08-25（v15 结构同族：P2 模块表铺开）**
   `vmgen/v15.rs`：65 原语数字槽（槽号 1..126 稀疏洗牌；`Vector3.new`/
   `Vector2.new` Roblox 专属、Luau CLI 缺失、表构造期求值会崩 → 不发射，

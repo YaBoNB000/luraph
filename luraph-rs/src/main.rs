@@ -342,39 +342,35 @@ fn main() -> ExitCode {
 				std::fs::write("/tmp/vm_tsrc.lua", &tsrc).unwrap();
 			}
 			let mut tblock = parser::parse(&tsrc, luau).map_err(|e| e.to_string())?;
-			let args: Vec<ast::Expr> = program
+			let carrier_bytes: Vec<Vec<u8>> = program
 				.fns
 				.iter()
-				.map(|b| ast::Expr::Str {
-					bytes: program.carrier.encode(b),
-					is_binary: true,
-				})
+				.map(|b| program.carrier.encode(b))
 				.collect();
-			let vm_call = ast::Expr::Call {
-				func: Box::new(ast::Expr::Ident {
-					name: "VM".to_string(),
-					sym: None,
-				}),
-				args,
-			};
 			if opts.do_v15 {
-				// P1 v15 shell (Route A): the whole program becomes one
-				// module table entered via setmetatable + a bootstrap
-				// method, mirroring the Luraph v15 sample shape:
+				// P3 increment 1 (Route A): CPS bootstrap scaffold. The
+				// interpreter block runs through the passes first (junk +
+				// mangle; strings/numbers/body/antidbg stay off for this
+				// preset), gets printed, and is embedded inside the
+				// interpreter-definition handler of the scaffold:
+				//
 				//   return setmetatable({
-				//     <boot> = function(b) <interpreter locals...>
-				//       return function(...) return VM(<carriers>) end
-				//     end,
-				//   }, {}):<boot>()(...);
-				// The obfuscation passes run over the interpreter block
-				// FIRST so that (a) hoisted loaders land inside the boot
-				// handler -- the chunk stays a single `return` (F1/F2)
-				// -- and (b) the shell's own boot field name never hits
-				// the strings pass, staying a bare identifier like the
-				// sample's `jC=function`. Flatten stays off (VM preset);
-				// body/antidbg are off for this preset (F18). Handler-
-				// izing the bootstrap + inlined execution loops = P3
-				// (docs/v15-structural-parity-plan.md).
+				//     <P2 fields...>,
+				//     <init>  = initializer (return true, s0, nil×10),
+				//     <mul>/<mod> = arithmetic assistants (iL/vL shape),
+				//     <g_k>   = per-carrier staging handlers (checksum
+				//               folded through the assistants),
+				//     <dh>    = interpreter-definition handler:
+				//               <passed interpreter> + entry closure,
+				//     <ctl>   = control handler (2 = done / 1 = continue),
+				//     <loop>  = CPS loop: range tree + `continue` leaves,
+				//     <fc>    = top machine (FC shape): initializer +
+				//               while-flag loop + control-code return,
+				//   }, {}):<fc>()(...);
+				//
+				// Remaining P3 work: scaling the handler chain (splitting
+				// the decode pipeline) + inlining the execution loops
+				// into dual numeric-slot runners (docs plan §P3 A/B).
 				let mut ttable = symtab::resolve(&mut tblock);
 				let mut reserved = mangle::reserved_set(
 					&ttable
@@ -398,35 +394,37 @@ fn main() -> ExitCode {
 				if opts.do_numbers {
 					numbers::apply_numbers(&mut tblock, &mut rng);
 				}
-				let boot = vmgen::v15::boot_name(&mut rng);
-				let entry_fn = ast::Expr::Function {
-					params: Vec::new(),
-					param_syms: Vec::new(),
-					vararg: true,
-					body: ast::Block {
-						stmts: vec![ast::Stmt::Return(vec![vm_call])],
-					},
-				};
-				let mut boot_stmts = tblock.stmts;
-				boot_stmts.push(ast::Stmt::Return(vec![entry_fn]));
-				// sample FC shape: `function(b, ...)`
-				let boot_fn = ast::Expr::Function {
-					params: vec!["b".to_string()],
-					param_syms: Vec::new(),
-					vararg: true,
-					body: ast::Block { stmts: boot_stmts },
-				};
-				// P2: module table = 65 primitive slots + 2 LCG factory
-				// slots + 1 mutable constant slot + named constants
-				// (vmgen/v15.rs), boot handler field, all shuffled.
+				// Locate the VM local's post-mangle name (the definition
+				// handler's entry closure must call it by that name).
+				let mut vm_name = String::from("VM");
+				for st in tblock.stmts.iter() {
+					if let ast::Stmt::Local { names, syms, .. } = st {
+						if names.first().map(|s| s.as_str()) == Some("VM") {
+							if let Some(id) = syms.first() {
+								vm_name = ttable.syms[*id as usize]
+									.name
+									.clone();
+							}
+						}
+					}
+				}
+				let interp_src = printer::print_chunk(&ttable, &tblock);
+				let (scaffold_fields, fc) = vmgen::v15::scaffold(
+					&mut rng,
+					&interp_src,
+					&vm_name,
+					&carrier_bytes,
+				);
 				let mut fields = vmgen::v15::module_fields(&mut rng);
-				fields.push(ast::TableField::Key {
-					key: ast::Expr::Str {
-						bytes: boot.as_bytes().to_vec(),
-						is_binary: false,
-					},
-					value: boot_fn,
-				});
+				for (name, value) in scaffold_fields {
+					fields.push(ast::TableField::Key {
+						key: ast::Expr::Str {
+							bytes: name.into_bytes(),
+							is_binary: false,
+						},
+						value,
+					});
+				}
 				rng.shuffle(&mut fields);
 				let module = ast::Expr::Table { fields };
 				let shell = ast::Stmt::Return(vec![ast::Expr::Call {
@@ -441,7 +439,7 @@ fn main() -> ExitCode {
 								ast::Expr::Table { fields: Vec::new() },
 							],
 						}),
-						name: boot,
+						name: fc,
 						args: Vec::new(),
 					}),
 					args: vec![ast::Expr::Vararg],
@@ -450,6 +448,19 @@ fn main() -> ExitCode {
 				let shell_table = symtab::resolve(&mut shell_block);
 				(shell_block, shell_table, true)
 			} else {
+				let vm_call = ast::Expr::Call {
+					func: Box::new(ast::Expr::Ident {
+						name: "VM".to_string(),
+						sym: None,
+					}),
+					args: carrier_bytes
+						.into_iter()
+						.map(|b| ast::Expr::Str {
+							bytes: b,
+							is_binary: true,
+						})
+						.collect(),
+				};
 				tblock.stmts.push(ast::Stmt::ExprStmt(vm_call));
 				let ttable = symtab::resolve(&mut tblock);
 				(tblock, ttable, false)

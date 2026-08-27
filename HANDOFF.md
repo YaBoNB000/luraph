@@ -57,7 +57,7 @@
 | **M4（L6 VM：私有字节码 + 生成混淆解释器，`--vm`）** | ✅ **完成 + 续期加固（2026-08-25）：矩阵 204/204 全绿（语料 21→29，新增 8 个 stress_*）+ 多种子回归（5 seeds）0 失败；upvalue 单 cell 别名模型 / 循环变量 per-iteration 共享 cell / 5.1 构造器存储序 / 全变长展开等 9 类语义修复；实现笔记 `docs/vm-l6-implementation.md` §8** |
 | **M5（VM 完整随机面）** | ✅ **完成（2026-08-25）**：SoA 平行数组 + 完整 7/14/21-bit + base-94 载体/token + 解码枢纽/状态元组随机 + 帧入场原语解包 + `luac51 -l` 抽查；矩阵 204/204 + 多种子 0 失败 |
 | **M6（产品化）** | ✅ **完成（2026-08-25）**：`--preset low\|medium\|high\|vm\|max`（默认 ≡ high；vm ≡ `--vm`；max = vm，v2 预留）+ 产品 README + `docs/performance.md`；预设矩阵 405/405 |
-| **v15 结构同族（路线 A）** | 🟡 **进行中**：P0 ✅（指纹脚本 32/32）→ P1 ✅（外壳 3 行 `:XX()(...);`）→ **P2 ✅**（`vmgen/v15.rs`：65 原语槽 + 2 诱饵 LCG 工厂 + 具名常量混存，80 字段，指纹 10/32：F9/F15/F17/F19/F25/F28/F29…）；**下一步 P3 引导管线 handler 化 + 执行循环内联化**（最重），细节在 `docs/v15-structural-parity-plan.md` |
+| **v15 结构同族（路线 A）** | 🟡 **进行中**：P0 ✅ → P1 ✅（外壳 3 行）→ P2 ✅（65 原语槽 + 诱饵 LCG + 具名常量）→ **P3 增量 1 ✅**（`vmgen/v15.rs::scaffold` CPS 骨架：初始化器/顶层机/continue 叶循环/单字符 handler 链/算术助手；指标随原型数线性扩展，指纹 11/32）；**下一步 P3-A 扩容（解码管线细拆冲样本量级）+ P3-B 执行内联（双运行器）**，细节在 `docs/v15-structural-parity-plan.md` |
 
 **M5 清单**（对照 `docs/vm-l6-implementation.md` §7，全部勾完）：
 
