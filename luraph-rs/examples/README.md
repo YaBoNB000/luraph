@@ -17,14 +17,15 @@ L4 数值拆分 + L5 整体加密 + L7 反篡改）后的输出。
 Lua-on-Lua 解释执行，比非 VM 输出慢（语料级用例实测 29~393ms，
 矩阵超时 120s 余量充足）。
 
-**v15 结构同族示例（路线 A，2026-08-27 起）**：`basics.v15.luau.lua` /
-`functions.v15.luau.lua` / `game_loop.v15.luau.lua` 是 `--preset v15`
-输出（**仅 Luau/Roblox 目标**）：3 行形态（头注释 + 空行 +
+**v15 结构同族示例（路线 A，2026-08-27 起，全语料覆盖）**：全部 **30 个
+语料**（21 共享 + 9 `luau_*`）各有 `--preset v15` 输出 `<case>.v15.luau.lua`
+（**仅 Luau/Roblox 目标**）：3 行形态（头注释 + 空行 +
 `return setmetatable({...},{}):XX()(...);`）——模块表 = 65 原语数字槽
 + 2 诱饵 LCG 工厂 + 具名常量混存 + CPS 引导骨架（初始化器/顶层机/
-`continue` 叶循环/单字符 staging handler 链/算术助手）。对照标准 =
-`docs/v15-structural-parity-plan.md` 的 32 条指纹（当前进度 11/32，
-P3 扩容进行中）；运行验证同矩阵口径（29 语料输出一致）。
+`continue` 叶循环/单字符 staging handler 链/算术助手，handler 数随原型数
+线性扩展）。验收：`luau-compile` 语法检测 30/30 通过 + 运行输出与原语料
+逐一一致；对照标准 = `docs/v15-structural-parity-plan.md` 的 32 条指纹
+（当前进度 11/32，P3 扩容进行中）。
 
 **输出纯度**：所有示例均为纯 ASCII——密文/密钥流/字节码等二进制串
 全量 `\ddd` 转义（`Expr::Str.is_binary`），不会泄露随机高字节构成的
