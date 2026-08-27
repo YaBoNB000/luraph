@@ -381,46 +381,83 @@ pub fn scaffold(
 	carriers: &[Vec<u8>],
 ) -> (Vec<(String, Expr)>, String) {
 	let mut nm = Names::new(rng);
-	let fc = nm.take(); // entry machine (xC family)
-	let init = nm.take(); // initializer (xL family)
-	let mul = nm.take(); // mul32 assistant (xL)
-	let modulo = nm.take(); // mod 2^32 assistant (xL)
-	let loop_name = nm.take(); // CPS loop (single)
-	let ctl = nm.take(); // control handler (single)
+	let fc = nm.take(); // entry machine
+	let init = nm.take(); // initializer
+	let mul = nm.take(); // mul32 assistant
+	let modulo = nm.take(); // mod 2^32 assistant
+	let loop_name = nm.take(); // CPS loop
+	let ctl = nm.take(); // control handler
 	let dhandler = nm.take(); // interpreter-definition handler
-	let mut ghandlers: Vec<String> = carriers
+	let ehandler = nm.take(); // entry-builder handler
+	let v1h = nm.take(); // verify (re-fold over stored chunks)
+	let v2h = nm.take(); // verify (compare -> trap / continue)
+
+	let n = carriers.len();
+	const CHUNKS: usize = 3;
+
+	// Split every carrier into CHUNKS literals (the entry builder
+	// concats them back when calling the VM).
+	let chunked: Vec<Vec<Vec<u8>>> = carriers
 		.iter()
-		.map(|_| nm.take())
+		.map(|c| {
+			let base = c.len() / CHUNKS;
+			let rem = c.len() % CHUNKS;
+			let mut out = Vec::new();
+			let mut s = 0;
+			for i in 0..CHUNKS {
+				let len = base + if i < rem { 1 } else { 0 };
+				out.push(c[s..s + len].to_vec());
+				s += len;
+			}
+			out
+		})
 		.collect();
 
-	// state pool: s0 (first staging) .. sdef .. sdone, ascending
-	let n = carriers.len();
-	let need = (n + 3) as i64;
+	// context-table layout:
+	//   C[1 .. n*CHUNKS]  carrier chunks
+	//   C[vmslot]         VM closure (set by the def handler)
+	//   C[entryslot]      entry closure
+	//   C[sumslot]        fold checksum (staging phase)
+	//   C[verifyslot]     re-fold checksum (verify phase)
+	let vmslot = n * CHUNKS + 1;
+	let entryslot = vmslot + 1;
+	let sumslot = entryslot + 1;
+	let verifyslot = sumslot + 1;
+
+	// one state per step + terminal; ascending
+	let nsteps = n * (1 + CHUNKS) + 4;
+	let need = (nsteps + 1) as i64;
 	let mut ids: Vec<i64> = (3..=236).collect();
+	if (ids.len() as i64) < need {
+		ids.extend(237..=236 + need);
+	}
 	rng.shuffle(&mut ids);
 	let mut states: Vec<i64> = ids[..need as usize].to_vec();
 	states.sort();
-	let s0 = states[0];
-	let sdef = states[n];
-	let sdone = states[n + 1];
-
-	// context-table layout: C[1..n]=carriers, C[n+1]=entry, C[n+2]=checksum
-	let eidx = n + 1;
-	let sumidx = n + 2;
+	let sdone = states[nsteps as usize];
 
 	let mut fields: Vec<(String, Expr)> = Vec::new();
+	let mut leaves: Vec<(i64, String)> = Vec::new();
+	let mut fillers = vec!["p1", "p2", "p3"];
+	let mut state_i = 0usize;
+	// (dispatch state of this step, state returned to the loop)
+	let mut step = |i: &mut usize| -> (i64, i64) {
+		let d = states[*i];
+		let r = states[*i + 1];
+		*i += 1;
+		(d, r)
+	};
 
-	// ---- initializer: return true, <startId>, nil×10 (sample _L shape)
+	// ---- initializer: return true, <startId>, nil x10 (sample _L)
 	fields.push((
 		init.clone(),
 		parse_expr(&format!(
 			"function(b,...) return true,{},nil,nil,nil,nil,nil,nil,nil,nil,nil,nil end",
-			s0
+			states[0]
 		)),
 	));
 
-	// ---- arithmetic assistants (sample iL / vL shapes, real callers:
-	// the staging handlers accumulate a checksum through them)
+	// ---- arithmetic assistants (sample iL / vL shapes)
 	fields.push((
 		mul.clone(),
 		parse_expr(
@@ -432,54 +469,168 @@ pub fn scaffold(
 		parse_expr("function(b,b) return b%4294967296 end"),
 	));
 
-	// ---- carrier staging handlers: one per prototype. Each stores its
-	// carrier into the context table and folds its length into the
-	// checksum through the assistants (genuine calls). Tuple fillers are
-	// permuted per handler (sample style).
-	let mut fillers = vec!["p1", "p2", "p3"];
-	for (k, carrier) in carriers.iter().enumerate() {
-		rng.shuffle(&mut fillers);
-		let (ra, rb, rc) = (fillers[0], fillers[1], fillers[2]);
-		let next = if k + 1 < n { states[k + 1] } else { sdef };
-		let src = format!(
-			"function(b,C,{ra},{rb},{rc}) local s=C[{sumidx}]; \
-			 C[{sumidx}]=b:{modulo}(b:{mul}(s,31)+{len}); \
-			 C[{ck}]={lit}; return {next},C,{rb},{rc},{ra} end",
-			sumidx = sumidx,
-			modulo = modulo,
-			mul = mul,
-			len = carrier.len(),
-			ck = k + 1,
-			lit = lua_bytes_lit(carrier),
-			next = next,
-			ra = ra,
-			rb = rb,
-			rc = rc,
-		);
-		fields.push((ghandlers[k].clone(), parse_expr(&src)));
+	// ---- staging chain: per carrier = 1 fold handler (length checksum
+	// through the assistants) + CHUNKS storage handlers
+	for (k, chunks) in chunked.iter().enumerate() {
+		{
+			rng.shuffle(&mut fillers);
+			let (ra, rb, rc) = (fillers[0], fillers[1], fillers[2]);
+			let (st, ret) = step(&mut state_i);
+			let name = nm.take();
+			// content checksum: fold the carrier's byte SUM (the verify
+			// phase recomputes it from the stored chunks, so any
+			// tampering -- even length-preserving -- breaks the fold)
+			let ksum: usize = carriers[k].iter().map(|&b| b as usize).sum();
+			let src = format!(
+				"function(b,C,{ra},{rb},{rc}) local s=C[{sumslot}]; \
+				 C[{sumslot}]=b:{modulo}(b:{mul}(s,31)+{ksum}); \
+				 return {ret},C,{rb},{rc},{ra} end",
+				sumslot = sumslot,
+				modulo = modulo,
+				mul = mul,
+				ksum = ksum,
+				ret = ret,
+				ra = ra,
+				rb = rb,
+				rc = rc,
+			);
+			fields.push((name.clone(), parse_expr(&src)));
+			leaves.push((
+				st,
+				format!("V,C,f1,f2,f3=b:{}(C,f1,f2,f3);continue;", name),
+			));
+		}
+		for (j, chunk) in chunks.iter().enumerate() {
+			rng.shuffle(&mut fillers);
+			let (ra, rb, rc) = (fillers[0], fillers[1], fillers[2]);
+			let (st, ret) = step(&mut state_i);
+			let name = nm.take();
+			let src = format!(
+				"function(b,C,{ra},{rb},{rc}) C[{idx}]={lit}; \
+				 return {ret},C,{rc},{ra},{rb} end",
+				idx = k * CHUNKS + j + 1,
+				lit = lua_bytes_lit(chunk),
+				ret = ret,
+				ra = ra,
+				rb = rb,
+				rc = rc,
+			);
+			fields.push((name.clone(), parse_expr(&src)));
+			leaves.push((
+				st,
+				format!("V,C,f1,f2,f3=b:{}(C,f1,f2,f3);continue;", name),
+			));
+		}
 	}
 
-	// ---- interpreter-definition handler: embeds the passed interpreter
-	// (defines the VM local), builds the entry closure over the staged
-	// carriers, stores it in the context table.
+	// ---- interpreter-definition handler
 	{
 		rng.shuffle(&mut fillers);
 		let (ra, rb, rc) = (fillers[0], fillers[1], fillers[2]);
-		let crefs: Vec<String> = (1..=n).map(|i| format!("C[{}]", i)).collect();
+		let (st, ret) = step(&mut state_i);
 		let src = format!(
 			"function(b,C,{ra},{rb},{rc}) {interp} \
-			 local E=function(...) return {vm}({crefs}) end; \
-			 C[{eidx}]=E; return {sdone},C,{rc},{ra},{rb} end",
+			 C[{vmslot}]={vm}; return {ret},C,{rc},{ra},{rb} end",
 			interp = interp_src,
+			vmslot = vmslot,
 			vm = vm_name,
-			crefs = crefs.join(","),
-			eidx = eidx,
-			sdone = sdone,
+			ret = ret,
 			ra = ra,
 			rb = rb,
 			rc = rc,
 		);
 		fields.push((dhandler.clone(), parse_expr(&src)));
+		leaves.push((
+			st,
+			format!("V,C,f1,f2,f3=b:{}(C,f1,f2,f3);continue;", dhandler),
+		));
+	}
+
+	// ---- entry-builder handler: concats each carrier's chunks back and
+	// wraps the VM call in the user-facing closure
+	{
+		rng.shuffle(&mut fillers);
+		let (ra, rb, rc) = (fillers[0], fillers[1], fillers[2]);
+		let (st, ret) = step(&mut state_i);
+		let cargs: Vec<String> = (0..n)
+			.map(|k| {
+				let base = k * CHUNKS + 1;
+				format!("C[{}]..C[{}]..C[{}]", base, base + 1, base + 2)
+			})
+			.collect();
+		let src = format!(
+			"function(b,C,{ra},{rb},{rc}) \
+			 local E=function(...) return C[{vmslot}]({cargs}) end; \
+			 C[{entryslot}]=E; return {ret},C,{ra},{rc},{rb} end",
+			vmslot = vmslot,
+			cargs = cargs.join(","),
+			entryslot = entryslot,
+			ret = ret,
+			ra = ra,
+			rb = rb,
+			rc = rc,
+		);
+		fields.push((ehandler.clone(), parse_expr(&src)));
+		leaves.push((
+			st,
+			format!("V,C,f1,f2,f3=b:{}(C,f1,f2,f3);continue;", ehandler),
+		));
+	}
+
+	// ---- verify phase (sample site3 shape): re-fold the checksum over
+	// the STORED chunks (real integrity check) then compare; mismatch =
+	// silent trap (no os.clock -- fingerprint F18 safe)
+	{
+		rng.shuffle(&mut fillers);
+		let (ra, rb, rc) = (fillers[0], fillers[1], fillers[2]);
+		let (st, ret) = step(&mut state_i);
+		let mut body = String::from("local s=0;");
+		for k in 0..n {
+			let base = k * CHUNKS + 1;
+			// re-fold the byte sums from the STORED chunks
+			body.push_str(&format!(
+				"local t{k}=0;for i=1,#C[{a}] do t{k}=t{k}+string.byte(C[{a}],i) end;\
+				 for i=1,#C[{b2}] do t{k}=t{k}+string.byte(C[{b2}],i) end;\
+				 for i=1,#C[{c}] do t{k}=t{k}+string.byte(C[{c}],i) end;\
+				 s=b:{mod}(b:{mul}(s,31)+t{k});",
+				k = k,
+				a = base,
+				b2 = base + 1,
+				c = base + 2,
+				mod = modulo,
+				mul = mul,
+			));
+		}
+		let src = format!(
+			"function(b,C,{ra},{rb},{rc}) {body} C[{verifyslot}]=s; \
+			 return {ret},C,{rb},{ra},{rc} end",
+			body = body,
+			verifyslot = verifyslot,
+			ret = ret,
+			ra = ra,
+			rb = rb,
+			rc = rc,
+		);
+		fields.push((v1h.clone(), parse_expr(&src)));
+		leaves.push((
+			st,
+			format!("V,C,f1,f2,f3=b:{}(C,f1,f2,f3);continue;", v1h),
+		));
+	}
+	{
+		let (st, _ret) = step(&mut state_i); // ret == sdone, used below
+		let src = format!(
+			"function(b,C,p1,p2,p3) if C[{verifyslot}]==C[{sumslot}] then \
+			 return {sdone},C,p2,p3,p1 else while true do end end end",
+			verifyslot = verifyslot,
+			sumslot = sumslot,
+			sdone = sdone,
+		);
+		fields.push((v2h.clone(), parse_expr(&src)));
+		leaves.push((
+			st,
+			format!("V,C,f1,f2,f3=b:{}(C,f1,f2,f3);continue;", v2h),
+		));
 	}
 
 	// ---- control handler (sample `_` shape): 2 = done, 1 = continue
@@ -487,50 +638,33 @@ pub fn scaffold(
 		ctl.clone(),
 		parse_expr(&format!(
 			"function(b,C,V) if V>={} then return 2,C[{}] else return 1 end end",
-			sdone, eidx
+			sdone, entryslot
 		)),
 	));
 
-	// ---- CPS loop: binary range tree, leaves = handler call + continue;
-	// the >sdef range is the control leaf (sample `a` shape).
+	// ---- CPS loop: binary range tree + continue leaves + control leaf
 	{
-		let mut leaves: Vec<(i64, String)> = Vec::new();
-		for (k, st) in states[..n].iter().enumerate() {
-			leaves.push((
-				*st,
-				format!(
-					"V,C,f1,f2,f3=b:{}(C,f1,f2,f3);continue;",
-					ghandlers[k]
-				),
-			));
-		}
-		leaves.push((
-			sdef,
-			format!("V,C,f1,f2,f3=b:{}(C,f1,f2,f3);continue;", dhandler),
-		));
 		let tree = dispatch_tree("V", &leaves, 0, leaves.len());
+		let max_leaf = leaves.last().unwrap().0;
 		let src = format!(
 			"function(b,C,V,f1,f2,f3) while true do if V<={} then {} \
 			 else local h,E=b:{}(C,V); if h==2 then return 2,E end; V=h end end end",
-			sdef, tree, ctl
+			max_leaf, tree, ctl
 		);
-		fields.push((loop_name.clone(), parse_expr(&src)))
+		fields.push((loop_name.clone(), parse_expr(&src)));
 	}
 
-	// ---- top machine (sample FC shape): initializer + tuple rename +
-	// while-flag loop driving the CPS loop; control code 2 = return the
-	// entry closure.
+	// ---- top machine (sample FC shape)
 	{
 		let src = format!(
 			"function(b,...) local u,z,Z,o,w,K,G,q,M,F,H,E=b:{}(); \
 			 local V,f1,f2,f3,C=z,Z,o,w,{{}}; C[{}]=0; \
 			 while u do local h2,B=b:{}(C,V,f1,f2,f3); \
 			 if h2==2 then return B end end end",
-			init, sumidx, loop_name
+			init, sumslot, loop_name
 		);
 		fields.push((fc.clone(), parse_expr(&src)));
 	}
 
-	let _ = ghandlers.remove(0); // silence unused warning when n==1 path varies
 	(fields, fc)
 }
