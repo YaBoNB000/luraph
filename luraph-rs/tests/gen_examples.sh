@@ -24,4 +24,10 @@ done
 for case in basics functions game_loop; do
 	"$TOOL" --vm --dialect 5.1 --seed $SEED "$ROOT/tests/cases/$case.lua" "$OUT/$case.vm.5.1.lua"
 done
+
+# v15 structural-parity examples (Route A): same subset, Luau-only
+# profile (module table + CPS bootstrap, docs/v15-structural-parity-plan.md)
+for case in basics functions game_loop; do
+	"$TOOL" --preset v15 --dialect luau --seed $SEED "$ROOT/tests/cases/$case.lua" "$OUT/$case.v15.luau.lua"
+done
 echo "generated $(ls "$OUT" | wc -l) examples in $OUT"

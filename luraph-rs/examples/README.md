@@ -17,6 +17,15 @@ L4 数值拆分 + L5 整体加密 + L7 反篡改）后的输出。
 Lua-on-Lua 解释执行，比非 VM 输出慢（语料级用例实测 29~393ms，
 矩阵超时 120s 余量充足）。
 
+**v15 结构同族示例（路线 A，2026-08-27 起）**：`basics.v15.luau.lua` /
+`functions.v15.luau.lua` / `game_loop.v15.luau.lua` 是 `--preset v15`
+输出（**仅 Luau/Roblox 目标**）：3 行形态（头注释 + 空行 +
+`return setmetatable({...},{}):XX()(...);`）——模块表 = 65 原语数字槽
++ 2 诱饵 LCG 工厂 + 具名常量混存 + CPS 引导骨架（初始化器/顶层机/
+`continue` 叶循环/单字符 staging handler 链/算术助手）。对照标准 =
+`docs/v15-structural-parity-plan.md` 的 32 条指纹（当前进度 11/32，
+P3 扩容进行中）；运行验证同矩阵口径（29 语料输出一致）。
+
 **输出纯度**：所有示例均为纯 ASCII——密文/密钥流/字节码等二进制串
 全量 `\ddd` 转义（`Expr::Str.is_binary`），不会泄露随机高字节构成的
 可读 Unicode（如繁体字）；用户可读字符串在 L2 开启时同样是加密形态。
@@ -67,3 +76,5 @@ tests/gen_examples.sh
 根目录 `README.md` 有完整用法。示例按**默认 high** 生成（与 `--preset high`
 逐字节一致）。VM 三件示例等价于 `--preset vm`。五档对照矩阵：
 `tests/run_presets.sh`（405 项）。性能：`docs/performance.md`。
+v15 档（路线 A 结构同族）为独立发射管线，示例见上节，验收以
+`tests/v15_fingerprint.py` 对照 `samples/luraph15.txt`。
