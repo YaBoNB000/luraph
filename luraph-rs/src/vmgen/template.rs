@@ -275,6 +275,18 @@ pub fn generate(
 	}
 	let branches = gen_dispatch_tree(&items, &body_of, rng, 0);
 
+	// v15 (Phase B): the carrier->prototype decode is emitted as its own
+	// state-machine segment (an explicit decode-state loop) instead of the
+	// shared `for` loop, establishing the separated decode stage that the
+	// CPS pipeline builds on. Non-v15 keeps the original `for` byte-for-byte.
+	let decode_seg = if v15 {
+		String::from(
+			"local di = 1\n  while di <= #FN do\n    PF[di] = parse(FN[di])\n    di = di + 1\n  end",
+		)
+	} else {
+		String::from("for i = 1, #FN do PF[i] = parse(FN[i]) end")
+	};
+
 	// v15 (P3-B): bytecode self-modification + dead dispatch segment.
 	//   self-mod: the compiler reports every Nop site; at load time each
 	//   is rewritten to the Nop-alias wire value via a LITERAL constant
@@ -553,7 +565,7 @@ pub fn generate(
     local SA, SB, SC, SD = rstream(), rstream(), rstream(), rstream()
     return {{ nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, W = W, SA = SA, SB = SB, SC = SC, SD = SD }}
   end
-  for i = 1, #FN do PF[i] = parse(FN[i]) end
+  {decode_seg}
 {v15_selfmod}  local G = GFE(0)
   local U = UNP
   local FLOOR = FLR
@@ -641,5 +653,6 @@ end
 		fetch = fetch,
 		branches = branches,
 		v15_selfmod = v15_selfmod,
+		decode_seg = decode_seg,
 	)
 }
