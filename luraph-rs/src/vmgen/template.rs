@@ -275,6 +275,104 @@ pub fn generate(
 	}
 	let branches = gen_dispatch_tree(&items, &body_of, rng, 0);
 
+	// parse function: non-v15 keeps the original monolithic decode
+	// byte-for-byte; v15 emits it as an explicit state-machine decode
+	// (Phase B CPS foundation) with identical semantics.
+	let parse_fn = if v15 {
+		String::from(
+			r#"local function parse(s)
+    s = decarrier(s)
+    local p = 1
+    local st = 1
+    local nregs, nparams, vararg, nups, upsrc, nconst, C, ncode, W, SA, SB, SC, SD
+    while st <= 5 do
+      if st == 1 then
+        nregs = u16(s, p); p = p + 2
+        nparams = u16(s, p); p = p + 2
+        vararg = BYTE(s, p); p = p + 1
+        nups = u16(s, p); p = p + 2
+        upsrc = {}
+        st = 2
+      elseif st == 2 then
+        for i = 1, nups do upsrc[i] = u16(s, p); p = p + 2 end
+        nconst = u16(s, p); p = p + 2
+        C = {}
+        st = 3
+      elseif st == 3 then
+        for i = 1, nconst do
+          local t = BYTE(s, p); p = p + 1
+          if t == 0 then
+            C[i] = nil
+          elseif t == 1 then
+            C[i] = BYTE(s, p) == 1; p = p + 1
+          else
+            local l = u16(s, p); p = p + 2
+            local x = SUB(s, p, p + l - 1); p = p + l
+            if t == 2 then C[i] = TONUM(x) else C[i] = x end
+          end
+        end
+        ncode = u16(s, p); p = p + 2
+        W = {}
+        st = 4
+      elseif st == 4 then
+        for i = 1, ncode do W[i] = BYTE(s, p); p = p + 1 end
+        st = 5
+      else
+        local function rstream()
+          local T = {}
+          for i = 1, ncode do
+            local v, np = r16(s, p); p = np; T[i] = v
+          end
+          return T
+        end
+        SA, SB, SC, SD = rstream(), rstream(), rstream(), rstream()
+        st = 6
+      end
+    end
+    return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, W = W, SA = SA, SB = SB, SC = SC, SD = SD }
+  end"#,
+		)
+	} else {
+		String::from(
+			r#"local function parse(s)
+    s = decarrier(s)
+    local p = 1
+    local nregs = u16(s, p); p = p + 2
+    local nparams = u16(s, p); p = p + 2
+    local vararg = BYTE(s, p); p = p + 1
+    local nups = u16(s, p); p = p + 2
+    local upsrc = {}
+    for i = 1, nups do upsrc[i] = u16(s, p); p = p + 2 end
+    local nconst = u16(s, p); p = p + 2
+    local C = {}
+    for i = 1, nconst do
+      local t = BYTE(s, p); p = p + 1
+      if t == 0 then
+        C[i] = nil
+      elseif t == 1 then
+        C[i] = BYTE(s, p) == 1; p = p + 1
+      else
+        local l = u16(s, p); p = p + 2
+        local x = SUB(s, p, p + l - 1); p = p + l
+        if t == 2 then C[i] = TONUM(x) else C[i] = x end
+      end
+    end
+    local ncode = u16(s, p); p = p + 2
+    local W = {}
+    for i = 1, ncode do W[i] = BYTE(s, p); p = p + 1 end
+    local function rstream()
+      local T = {}
+      for i = 1, ncode do
+        local v, np = r16(s, p); p = np; T[i] = v
+      end
+      return T
+    end
+    local SA, SB, SC, SD = rstream(), rstream(), rstream(), rstream()
+    return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, W = W, SA = SA, SB = SB, SC = SC, SD = SD }
+  end"#,
+		)
+	};
+
 	// v15 (Phase B): the carrier->prototype decode is emitted as its own
 	// state-machine segment (an explicit decode-state loop) instead of the
 	// shared `for` loop, establishing the separated decode stage that the
@@ -529,42 +627,7 @@ pub fn generate(
   local PF = {{}}
   {p_fill}  {prim_unpack}
   {helpers}
-  local function parse(s)
-    s = decarrier(s)
-    local p = 1
-    local nregs = u16(s, p); p = p + 2
-    local nparams = u16(s, p); p = p + 2
-    local vararg = BYTE(s, p); p = p + 1
-    local nups = u16(s, p); p = p + 2
-    local upsrc = {{}}
-    for i = 1, nups do upsrc[i] = u16(s, p); p = p + 2 end
-    local nconst = u16(s, p); p = p + 2
-    local C = {{}}
-    for i = 1, nconst do
-      local t = BYTE(s, p); p = p + 1
-      if t == 0 then
-        C[i] = nil
-      elseif t == 1 then
-        C[i] = BYTE(s, p) == 1; p = p + 1
-      else
-        local l = u16(s, p); p = p + 2
-        local x = SUB(s, p, p + l - 1); p = p + l
-        if t == 2 then C[i] = TONUM(x) else C[i] = x end
-      end
-    end
-    local ncode = u16(s, p); p = p + 2
-    local W = {{}}
-    for i = 1, ncode do W[i] = BYTE(s, p); p = p + 1 end
-    local function rstream()
-      local T = {{}}
-      for i = 1, ncode do
-        local v, np = r16(s, p); p = np; T[i] = v
-      end
-      return T
-    end
-    local SA, SB, SC, SD = rstream(), rstream(), rstream(), rstream()
-    return {{ nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, W = W, SA = SA, SB = SB, SC = SC, SD = SD }}
-  end
+  {parse_fn}
   {decode_seg}
 {v15_selfmod}  local G = GFE(0)
   local U = UNP
@@ -654,5 +717,6 @@ end
 		branches = branches,
 		v15_selfmod = v15_selfmod,
 		decode_seg = decode_seg,
+		parse_fn = parse_fn,
 	)
 }
