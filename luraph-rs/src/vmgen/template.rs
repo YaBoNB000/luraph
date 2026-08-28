@@ -812,8 +812,7 @@ pub fn generate(
     local pc = 1
     local lastn = 0
     local lastbase = 0
-    local O = {{}}
-    {handler_defs}
+    {o_decl}{handler_defs}
     while true do
       {fetch}
       {branches}
@@ -839,5 +838,12 @@ end
 		decode_seg = decode_seg,
 		parse_fn = parse_fn,
 		makefn_decl = makefn_decl,
+		o_decl = if v15 {
+			// stage A: overflow table for nres=255 results spilling past
+			// the scattered register allocation
+			"local O = {}\n    ".to_string()
+		} else {
+			String::new()
+		},
 	)
 }
