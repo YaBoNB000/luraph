@@ -93,7 +93,7 @@ fn branch_code(name: &str) -> String {
 		"SetGlobal" => "G[C[b + 1]] = V[a + 1]".to_string(),
 		"GetUp" => "local u = ups[b + 1]; V[a + 1] = u.v[u.i]".to_string(),
 		"SetUp" => "local u = ups[a + 1]; u.v[u.i] = V[b + 1]".to_string(),
-		"Return" => "local out = {}; local n = b; local total; if n == 255 then local pre = d; for i = 1, pre do out[i] = V[a + i] end; if c == 1 then for i = 1, vargc do out[pre + i] = vargs[i] end; total = pre + vargc else for i = 1, lastn do out[pre + i] = V[lastbase + i] end; total = pre + lastn end else for i = 1, n do out[i] = V[a + i] end; total = n end; return out, total".to_string(),
+		"Return" => "local out = {}; local n = b; local total; if n == 255 then local pre = d; for i = 1, pre do out[i] = V[a + i] end; if c == 1 then for i = 1, vargc do out[pre + i] = vargs[i] end; total = pre + vargc else for i = 1, lastn do out[pre + i] = V[lastbase + i] end; total = pre + lastn end else for i = 1, n do out[i] = V[a + i] end; total = n end; return U(out, 1, total)".to_string(),
 		"Nop" => "".to_string(),
 		_ => panic!("unknown opcode name {name}"),
 	}
@@ -684,8 +684,9 @@ pub fn generate(
       for i = 1, vargc do vargs[i] = all[pf.nparams + i] end
       local V2 = {{}}
       for i = 1, pf.nparams do V2[i] = all[i] end
-      local out, n = run(pf, V2, c, vargs, vargc)
-      return U(out, 1, n)
+      -- real TCO: tail call into run so deep tail recursion reuses the
+      -- frame instead of stacking one per level
+      return run(pf, V2, c, vargs, vargc)
     end
   end
   run = function(pf, V, ups, vargs, vargc)
@@ -701,8 +702,7 @@ pub fn generate(
   end
   local vargs = {{}}
   local V2 = {{}}
-  local out, n = run(PF[#FN], V2, {{}}, vargs, 0)
-  return U(out, 1, n)
+  return run(PF[#FN], V2, {{}}, vargs, 0)
 end
 "#,
 		params = params,
