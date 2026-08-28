@@ -337,6 +337,7 @@ fn main() -> ExitCode {
 				&program.carrier,
 				&mut rng,
 				n,
+				opts.do_v15,
 			);
 			if std::env::var("LURAPH_VM_TSRC").is_ok() {
 				std::fs::write("/tmp/vm_tsrc.lua", &tsrc).unwrap();
@@ -409,22 +410,25 @@ fn main() -> ExitCode {
 					}
 				}
 				let interp_src = printer::print_chunk(&ttable, &tblock);
+				// P3-B: the interpreter lives in a numeric-slot runner
+				// ([r1], sample [73] shape); the user-facing entry is
+				// routed through a second numeric-slot runner ([r2],
+				// sample [18] shape). Reserve both slots so P2's
+				// primitive-slot draw can't collide with them.
+				let mut slot_pool: Vec<i64> = (1..=126).collect();
+				rng.shuffle(&mut slot_pool);
+				let r1 = slot_pool[0];
+				let r2 = slot_pool[1];
 				let (scaffold_fields, fc) = vmgen::v15::scaffold(
 					&mut rng,
 					&interp_src,
 					&vm_name,
 					&carrier_bytes,
+					r1,
+					r2,
 				);
-				let mut fields = vmgen::v15::module_fields(&mut rng);
-				for (name, value) in scaffold_fields {
-					fields.push(ast::TableField::Key {
-						key: ast::Expr::Str {
-							bytes: name.into_bytes(),
-							is_binary: false,
-						},
-						value,
-					});
-				}
+				let mut fields = vmgen::v15::module_fields(&mut rng, &[r1, r2]);
+				fields.extend(scaffold_fields);
 				rng.shuffle(&mut fields);
 				let module = ast::Expr::Table { fields };
 				let shell = ast::Stmt::Return(vec![ast::Expr::Call {

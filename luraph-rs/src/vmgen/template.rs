@@ -125,22 +125,22 @@ fn nop_body(rng: &mut Rng) -> String {
 /// tests; at the depth cap a flat if/elseif bottom is emitted, so the
 /// visible nesting stays in the 2~4 layer band. Per-build shape.
 fn gen_dispatch_tree(
-	items: &[(usize, u8)],
+	items: &[(String, u8)],
 	body_of: &dyn Fn(&str) -> String,
 	rng: &mut Rng,
 	depth: u32,
 ) -> String {
 	let n = items.len();
 	if n == 1 {
-		let name = OP_NAMES[items[0].0];
+		let name = items[0].0.as_str();
 		return format!("if oc == OC.{} then\n{}\nend", name, body_of(name));
 	}
 	if depth >= 3 {
-		let mut v: Vec<(usize, u8)> = items.to_vec();
+		let mut v: Vec<(String, u8)> = items.to_vec();
 		rng.shuffle(&mut v);
 		let mut s = String::new();
 		for (i, (idx, _)) in v.iter().enumerate() {
-			let name = OP_NAMES[*idx];
+			let name = idx.as_str();
 			if i == 0 {
 				s.push_str(&format!("if oc == OC.{} then\n{}\n", name, body_of(name)));
 			} else {
@@ -169,7 +169,7 @@ fn gen_dispatch_tree(
 		} else {
 			rng.int(lo as i64 + 1, hi as i64 - 1) as u8
 		};
-		let (left, right): (Vec<(usize, u8)>, Vec<(usize, u8)>) =
+		let (left, right): (Vec<(String, u8)>, Vec<(String, u8)>) =
 			items.iter().cloned().partition(|&(_, c)| c < p);
 		let left_s = gen_dispatch_tree(&left, body_of, rng, depth + 1);
 		let right_s = gen_dispatch_tree(&right, body_of, rng, depth + 1);
@@ -181,7 +181,7 @@ fn gen_dispatch_tree(
 	} else {
 		let k = rng.int(1, (sc.len() - 1) as i64) as usize;
 		let p = sc[k - 1];
-		let (left, right): (Vec<(usize, u8)>, Vec<(usize, u8)>) =
+		let (left, right): (Vec<(String, u8)>, Vec<(String, u8)>) =
 			items.iter().cloned().partition(|&(_, c)| c <= p);
 		let left_s = gen_dispatch_tree(&left, body_of, rng, depth + 1);
 		let right_s = gen_dispatch_tree(&right, body_of, rng, depth + 1);
@@ -217,23 +217,51 @@ pub fn generate(
 	carrier: &Carrier,
 	rng: &mut Rng,
 	n_fns: usize,
+	v15: bool,
 ) -> String {
 	let mut oc_items = Vec::new();
 	for (i, name) in OP_NAMES.iter().enumerate() {
 		oc_items.push(format!("{name} = {}", map.to_wire[i]));
 	}
+	if v15 {
+		oc_items.push(format!("NopA = {}", map.nop_alias));
+	}
 	let oc_table = format!("local OC = {{{}}}", oc_items.join(", "));
 
 	let nop = nop_body(rng);
 	let body_of = |name: &str| -> String {
-		if name == "Nop" {
+		if name == "Nop" || name == "NopA" {
 			nop.clone()
 		} else {
 			branch_code(name)
 		}
 	};
-	let items: Vec<(usize, u8)> = (0..N_OPS).map(|i| (i, map.to_wire[i])).collect();
+	let mut items: Vec<(String, u8)> = (0..N_OPS)
+		.map(|i| (OP_NAMES[i].to_string(), map.to_wire[i]))
+		.collect();
+	if v15 {
+		// Nop alias leaf: a second wire value dispatching to the same
+		// Nop body. The post-parse self-mod rewrites Nop sites between
+		// the two encodings (bytecode mutates at load time; both decode
+		// to Nop, so semantics are unchanged).
+		items.push(("NopA".to_string(), map.nop_alias));
+	}
 	let branches = gen_dispatch_tree(&items, &body_of, rng, 0);
+
+	// v15 (P3-B): bytecode self-modification + dead dispatch segment.
+	//   self-mod: every even-indexed Nop site is rewritten from the
+	//   primary wire value to the alias at load time -- opcode encoding
+	//   is unstable within the stream, and OC.Nop/OC.NopA are both
+	//   live (frequency analysis can't settle on one mapping).
+	//   dead segment: a site1-shaped fetch tree (sample's never-hit
+	//   decode path) guarded by an always-false flag.
+	let v15_selfmod = if v15 {
+		String::from(
+			"  local NW = OC.Nop\n  local NA = OC.NopA\n  for i = 1, #PF do\n    local W = PF[i].W\n    for j = 1, #W do\n      if W[j] == NW and j % 2 == 0 then W[j] = NA end\n    end\n  end\n  local DA = {}\n  local DP = 1\n  local DF = 0\n  while DF > 0 do\n    local f = DA[DP]\n    if f >= 4 then\n      if f < 6 then\n        if f ~= 5 then DF = 0 else DF = 0 end\n      else DF = 0 end\n    elseif f < 2 then DF = 0\n    else DF = 0 end\n    DP = DP + 1\n  end\n",
+		)
+	} else {
+		String::new()
+	};
 
 	if std::env::var("LURAPH_VM_DBG").is_ok() {
 		eprintln!("[gen] slot_perm={:?} reserved={}", slot_perm, carrier.reserved);
@@ -475,7 +503,7 @@ pub fn generate(
     return {{ nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, W = W, SA = SA, SB = SB, SC = SC, SD = SD }}
   end
   for i = 1, #FN do PF[i] = parse(FN[i]) end
-  local G = GFE(0)
+{v15_selfmod}  local G = GFE(0)
   local U = UNP
   local FLOOR = FLR
   local _probe = SMT({{}}, {{ __len = function() return 99 end }})
@@ -561,5 +589,6 @@ end
 		run_soa = run_soa,
 		fetch = fetch,
 		branches = branches,
+		v15_selfmod = v15_selfmod,
 	)
 }

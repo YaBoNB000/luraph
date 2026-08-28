@@ -171,8 +171,10 @@ fn lcg_factory(rng: &mut Rng, states: usize) -> Expr {
 /// All P2 module-table fields (primitives + LCG factories + mutable
 /// constant slot + named constants). Slot numbers are a Fisher-Yates
 /// sample of 1..=126 (sparse, per build).
-pub fn module_fields(rng: &mut Rng) -> Vec<TableField> {
-	let mut slots: Vec<i64> = (1..=126).collect();
+pub fn module_fields(rng: &mut Rng, exclude: &[i64]) -> Vec<TableField> {
+	let mut slots: Vec<i64> = (1..=126)
+		.filter(|n| !exclude.contains(n))
+		.collect();
 	rng.shuffle(&mut slots);
 	let mut it = slots.into_iter();
 	let mut fields: Vec<TableField> = Vec::new();
@@ -379,7 +381,9 @@ pub fn scaffold(
 	interp_src: &str,
 	vm_name: &str,
 	carriers: &[Vec<u8>],
-) -> (Vec<(String, Expr)>, String) {
+	runner1: i64,
+	runner2: i64,
+) -> (Vec<TableField>, String) {
 	let mut nm = Names::new(rng);
 	let fc = nm.take(); // entry machine
 	let init = nm.take(); // initializer
@@ -387,7 +391,6 @@ pub fn scaffold(
 	let modulo = nm.take(); // mod 2^32 assistant
 	let loop_name = nm.take(); // CPS loop
 	let ctl = nm.take(); // control handler
-	let dhandler = nm.take(); // interpreter-definition handler
 	let ehandler = nm.take(); // entry-builder handler
 	let v1h = nm.take(); // verify (re-fold over stored chunks)
 	let v2h = nm.take(); // verify (compare -> trap / continue)
@@ -436,8 +439,22 @@ pub fn scaffold(
 	states.sort();
 	let sdone = states[nsteps as usize];
 
-	let mut fields: Vec<(String, Expr)> = Vec::new();
+	let mut fields: Vec<TableField> = Vec::new();
 	let mut leaves: Vec<(i64, String)> = Vec::new();
+	let named = |name: String, value: Expr| TableField::Key {
+		key: Expr::Str {
+			bytes: name.into_bytes(),
+			is_binary: false,
+		},
+		value,
+	};
+	let slotted = |slot: i64, value: Expr| TableField::Key {
+		key: Expr::Num {
+			value: slot as f64,
+			isfloat: false,
+		},
+		value,
+	};
 	let mut fillers = vec!["p1", "p2", "p3"];
 	let mut state_i = 0usize;
 	// (dispatch state of this step, state returned to the loop)
@@ -449,7 +466,7 @@ pub fn scaffold(
 	};
 
 	// ---- initializer: return true, <startId>, nil x10 (sample _L)
-	fields.push((
+	fields.push(named(
 		init.clone(),
 		parse_expr(&format!(
 			"function(b,...) return true,{},nil,nil,nil,nil,nil,nil,nil,nil,nil,nil end",
@@ -458,13 +475,13 @@ pub fn scaffold(
 	));
 
 	// ---- arithmetic assistants (sample iL / vL shapes)
-	fields.push((
+	fields.push(named(
 		mul.clone(),
 		parse_expr(
 			"function(b,u,z) local Z=bit32.band; u,z=Z(u,4294967295),Z(z,4294967295); local o,w=Z(u,65535),bit32.rshift; local K,G,q=w(u,16),Z(z,65535),w(z,16); return Z(o*G+bit32.lshift(Z(o*q+K*G,65535),16),4294967295)%4294967296 end",
 		),
 	));
-	fields.push((
+	fields.push(named(
 		modulo.clone(),
 		parse_expr("function(b,b) return b%4294967296 end"),
 	));
@@ -494,7 +511,7 @@ pub fn scaffold(
 				rb = rb,
 				rc = rc,
 			);
-			fields.push((name.clone(), parse_expr(&src)));
+			fields.push(named(name.clone(), parse_expr(&src)));
 			leaves.push((
 				st,
 				format!("V,C,f1,f2,f3=b:{}(C,f1,f2,f3);continue;", name),
@@ -515,7 +532,7 @@ pub fn scaffold(
 				rb = rb,
 				rc = rc,
 			);
-			fields.push((name.clone(), parse_expr(&src)));
+			fields.push(named(name.clone(), parse_expr(&src)));
 			leaves.push((
 				st,
 				format!("V,C,f1,f2,f3=b:{}(C,f1,f2,f3);continue;", name),
@@ -523,7 +540,8 @@ pub fn scaffold(
 		}
 	}
 
-	// ---- interpreter-definition handler
+	// ---- interpreter-definition runner: lives in a numeric slot
+	// (sample [73] shape), not a named field
 	{
 		rng.shuffle(&mut fillers);
 		let (ra, rb, rc) = (fillers[0], fillers[1], fillers[2]);
@@ -539,10 +557,12 @@ pub fn scaffold(
 			rb = rb,
 			rc = rc,
 		);
-		fields.push((dhandler.clone(), parse_expr(&src)));
+		fields.push(slotted(runner1, parse_expr(&src)));
 		leaves.push((
 			st,
-			format!("V,C,f1,f2,f3=b:{}(C,f1,f2,f3);continue;", dhandler),
+			// indexed call: no implicit self -- pass b explicitly
+			// (sample shape: b[73](b, ...))
+			format!("V,C,f1,f2,f3=b[{}](b,C,f1,f2,f3);continue;", runner1),
 		));
 	}
 
@@ -561,16 +581,18 @@ pub fn scaffold(
 		let src = format!(
 			"function(b,C,{ra},{rb},{rc}) \
 			 local E=function(...) return C[{vmslot}]({cargs}) end; \
-			 C[{entryslot}]=E; return {ret},C,{ra},{rc},{rb} end",
+			 C[{entryslot}]=function(...) return b[{r2}](b,E,...) end; \
+			 return {ret},C,{ra},{rc},{rb} end",
 			vmslot = vmslot,
 			cargs = cargs.join(","),
 			entryslot = entryslot,
+			r2 = runner2,
 			ret = ret,
 			ra = ra,
 			rb = rb,
 			rc = rc,
 		);
-		fields.push((ehandler.clone(), parse_expr(&src)));
+		fields.push(named(ehandler.clone(), parse_expr(&src)));
 		leaves.push((
 			st,
 			format!("V,C,f1,f2,f3=b:{}(C,f1,f2,f3);continue;", ehandler),
@@ -611,7 +633,7 @@ pub fn scaffold(
 			rb = rb,
 			rc = rc,
 		);
-		fields.push((v1h.clone(), parse_expr(&src)));
+		fields.push(named(v1h.clone(), parse_expr(&src)));
 		leaves.push((
 			st,
 			format!("V,C,f1,f2,f3=b:{}(C,f1,f2,f3);continue;", v1h),
@@ -626,7 +648,7 @@ pub fn scaffold(
 			sumslot = sumslot,
 			sdone = sdone,
 		);
-		fields.push((v2h.clone(), parse_expr(&src)));
+		fields.push(named(v2h.clone(), parse_expr(&src)));
 		leaves.push((
 			st,
 			format!("V,C,f1,f2,f3=b:{}(C,f1,f2,f3);continue;", v2h),
@@ -634,7 +656,7 @@ pub fn scaffold(
 	}
 
 	// ---- control handler (sample `_` shape): 2 = done, 1 = continue
-	fields.push((
+	fields.push(named(
 		ctl.clone(),
 		parse_expr(&format!(
 			"function(b,C,V) if V>={} then return 2,C[{}] else return 1 end end",
@@ -651,7 +673,7 @@ pub fn scaffold(
 			 else local h,E=b:{}(C,V); if h==2 then return 2,E end; V=h end end end",
 			max_leaf, tree, ctl
 		);
-		fields.push((loop_name.clone(), parse_expr(&src)));
+		fields.push(named(loop_name.clone(), parse_expr(&src)));
 	}
 
 	// ---- top machine (sample FC shape)
@@ -663,8 +685,16 @@ pub fn scaffold(
 			 if h2==2 then return B end end end",
 			init, sumslot, loop_name
 		);
-		fields.push((fc.clone(), parse_expr(&src)));
+		fields.push(named(fc.clone(), parse_expr(&src)));
 	}
+
+	// ---- second runner (sample [18] shape): the user-facing entry is
+	// invoked through it, so the call path crosses two numeric-slot
+	// runners like the sample's [73]/[18] pair
+	fields.push(slotted(
+		runner2,
+		parse_expr("function(b,E,...) return E(...) end"),
+	));
 
 	(fields, fc)
 }

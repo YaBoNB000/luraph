@@ -181,6 +181,11 @@ pub fn op_index(op: Op) -> usize {
 pub struct OpMap {
 	/// wire code for each base op (op_index order)
 	pub to_wire: [u8; N_OPS],
+	/// Second wire value that also dispatches to Nop (v15 self-mod:
+	/// bytecode rewrites Nop sites between the two encodings, so opcode
+	/// encoding is unstable even within one stream). Derived
+	/// deterministically (no rng draw) so legacy output stays identical.
+	pub nop_alias: u8,
 }
 
 impl OpMap {
@@ -191,8 +196,21 @@ impl OpMap {
 			let j = rng.int(0, i as i64) as usize;
 			to_wire.swap(i, j);
 		}
+		// first unused wire value (deterministic; no rng consumption)
+		let mut used = [false; 256];
+		for &w in to_wire.iter() {
+			used[w as usize] = true;
+		}
+		let mut alias = 0u8;
+		for w in 0..256u16 {
+			if !used[w as usize] {
+				alias = w as u8;
+				break;
+			}
+		}
 		OpMap {
 			to_wire: to_wire.try_into().unwrap(),
+			nop_alias: alias,
 		}
 	}
 
