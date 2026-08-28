@@ -383,6 +383,8 @@ pub fn scaffold(
 	carriers: &[Vec<u8>],
 	runner1: i64,
 	runner2: i64,
+	ks_slot: i64,
+	kg_slot: i64,
 ) -> (Vec<TableField>, String) {
 	let mut nm = Names::new(rng);
 	let fc = nm.take(); // entry machine
@@ -401,13 +403,21 @@ pub fn scaffold(
 	let n = carriers.len();
 	const CHUNKS: usize = 3;
 
-	// P4 carrier keystream: each chunk's bytes are XORed at build time
-	// with a positional key (K1*i + K2) % 256 and the chunk handlers
-	// reverse it at runtime via bit32.bxor -- the stored literals are no
-	// longer directly base-94 readable (fingerprint F16: bit32.bxor +
-	// %256 both present in the decode path). K1/K2 are per-build random.
-	let ks1: i64 = rng.int(1, 255);
-	let ks2: i64 = rng.int(0, 255);
+	// SECURITY (sample parity): the carrier keystream comes from a
+	// state-machine LCG, NOT literal constants in the chunk handlers.
+	// ks_slot holds the LCG state (seeded); kg_slot holds a 3-step LCG
+	// generator (sample [96] shape) that advances the state and returns
+	// it. Each chunk handler calls the generator to obtain its key
+	// constant, so no key material appears at the decode site -- the key
+	// is runtime-derived and its constants live inside the state-machine
+	// transitions (not statically extractable from a chunk handler).
+	let ks_seed: i64 = rng.int(1, 268435455);
+	let lcm = |rng: &mut Rng| rng.int(100_001, 1_100_001) | 1;
+	let lcc = |rng: &mut Rng| rng.int(1_000_000, 268_000_000) | 1;
+	let (km1, kc1) = (lcm(rng), lcc(rng));
+	let (km2, kc2) = (lcm(rng), lcc(rng));
+	let (km3, kc3) = (lcm(rng), lcc(rng));
+	let mut ks_state: i64 = ks_seed;
 
 	// Split every carrier into CHUNKS literals (the entry builder
 	// concats them back when calling the VM).
@@ -466,6 +476,29 @@ pub fn scaffold(
 		},
 		value,
 	};
+	// SECURITY: LCG keystream slots. KSC = the LCG state (seeded);
+	// KG = a 3-step LCG state-machine generator (sample [96] shape) that
+	// advances b[KSC] by three transitions and returns it. Key constants
+	// live in this generator's state-machine body, never at the decode
+	// site, so the keystream is runtime-derived (not statically
+	// extractable from a chunk handler).
+	fields.push(slotted(
+		ks_slot,
+		Expr::Num {
+			value: ks_seed as f64,
+			isfloat: false,
+		},
+	));
+	fields.push(slotted(
+		kg_slot,
+		parse_expr(&format!(
+			"function(b) local x=b[{ks}];local u=0;while true do if u<=0 then x=({m1}*x+{c1})%268435456;u=1 elseif u<=1 then x=({m2}*x+{c2})%268435456;u=2 else x=({m3}*x+{c3})%268435456;b[{ks}]=x;return x end end end",
+			ks = ks_slot,
+			m1 = km1, c1 = kc1,
+			m2 = km2, c2 = kc2,
+			m3 = km3, c3 = kc3,
+		)),
+	));
 	let mut fillers = vec!["p1", "p2", "p3"];
 	let mut state_i = 0usize;
 	// (dispatch state of this step, state returned to the loop)
@@ -549,25 +582,28 @@ pub fn scaffold(
 			let (ra, rb, rc) = (fillers[0], fillers[1], fillers[2]);
 			let (st, ret) = step(&mut state_i);
 			let name = nm.take();
-			// P4: XOR the chunk bytes with the positional keystream so the
-			// stored literal is opaque; the handler reverses it at runtime.
+			// Advance the LCG by three steps (matching the runtime KG
+			// generator) to obtain this chunk's key constant, then XOR.
+			ks_state = (km1 * ks_state + kc1) % 268435456;
+			ks_state = (km2 * ks_state + kc2) % 268435456;
+			ks_state = (km3 * ks_state + kc3) % 268435456;
+			let ks_const: i64 = ks_state;
 			let xored: Vec<u8> = chunk
 				.iter()
 				.enumerate()
 				.map(|(i, &c)| {
-					let key = ((ks1 * (i as i64 + 1) + ks2) % 256) as u8;
+					let key = ((ks_const + (i as i64 + 1)) % 256) as u8;
 					c ^ key
 				})
 				.collect();
 			let src = format!(
-				"function(b,C,{ra},{rb},{rc}) local seg={lit}; local t={{}}; \
-				 for i=1,#seg do t[i]=string.char(bit32.bxor(string.byte(seg,i),({k1}*i+{k2})%256)) end; \
+				"function(b,C,{ra},{rb},{rc}) local seg={lit}; local kv=b[{kg}](b); local t={{}}; \
+				 for i=1,#seg do t[i]=string.char(bit32.bxor(string.byte(seg,i),(kv+i)%256)) end; \
 				 C[{idx}]=table.concat(t); \
 				 return {ret},C,{rc},{ra},{rb} end",
 				idx = k * CHUNKS + j + 1,
 				lit = lua_bytes_lit(&xored),
-				k1 = ks1,
-				k2 = ks2,
+				kg = kg_slot,
 				ret = ret,
 				ra = ra,
 				rb = rb,

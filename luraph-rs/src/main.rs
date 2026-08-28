@@ -432,6 +432,8 @@ fn main() -> ExitCode {
 				rng.shuffle(&mut slot_pool);
 				let r1 = slot_pool[0];
 				let r2 = slot_pool[1];
+				let ks = slot_pool[2]; // LCG keystream state slot
+				let kg = slot_pool[3]; // LCG keystream generator slot
 				let (scaffold_fields, fc) = vmgen::v15::scaffold(
 					&mut rng,
 					&interp_src,
@@ -439,8 +441,10 @@ fn main() -> ExitCode {
 					&carrier_bytes,
 					r1,
 					r2,
+					ks,
+					kg,
 				);
-				let mut fields = vmgen::v15::module_fields(&mut rng, &[r1, r2]);
+				let mut fields = vmgen::v15::module_fields(&mut rng, &[r1, r2, ks, kg]);
 				fields.extend(scaffold_fields);
 				rng.shuffle(&mut fields);
 				let module = ast::Expr::Table { fields };
