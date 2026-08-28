@@ -696,11 +696,15 @@ pub fn scaffold(
 		));
 	}
 
-	// ---- control handler (sample `_` shape): 2 = done, 1 = continue
+	// ---- control handler (sample `_` shape): 2 = done, 1 = continue.
+	// The control code is selected with a fused conditional
+	// (`(cond) and 2 or 1`, sample family style, F23); behaviour is
+	// identical to the explicit if/else.
 	fields.push(named(
 		ctl.clone(),
 		parse_expr(&format!(
-			"function(b,C,V) if V>={} then return 2,C[{}] else return 1 end end",
+			"function(b,C,V) local h=(V>={}) and 2 or 1; \
+			 if h==2 then return 2,C[{}] end; return 1 end",
 			sdone, entryslot
 		)),
 	));
