@@ -99,6 +99,26 @@ fn branch_code(name: &str) -> String {
 	}
 }
 
+/// v15 stage A (operand scattering): handler bodies for the opcodes
+/// that walk CONTIGUOUS register ranges. Single-register operands are
+/// already scattered in the wire stream (handler bodies unchanged —
+/// `V[a + 1]` reads the scattered slot directly); range-based opcodes
+/// keep a logical base and translate every step through the per-
+/// function slot table S. Closure passes S into makefn so upvalue
+/// descriptors resolve against the parent's scattered frame.
+fn branch_code_v15(name: &str) -> String {
+	match name {
+		"LoadNil" => "for i = 1, b do V[S[a + i]] = nil end".to_string(),
+		"Call" => "local base = a + 1; local f = V[S[base]]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nargs = b + off; local args = {}; if off == 1 then args[1] = f end; for i = 1, b do args[off + i] = V[S[base + i]] end; if d == 1 then for i = 1, vargc do args[nargs + i] = vargs[i] end; nargs = nargs + vargc end; local out, nout = callcap(fn, args, nargs); local nres = c; lastbase = a + 1; lastn = nout; local wn = nout; if nres ~= 255 and nres > wn then wn = nres end; for i = 1, wn do local s = S[base + i]; if s then V[s] = out[i] else O[base + i] = out[i] end end".to_string(),
+		"CallE" => "local base = a + 1; local f = V[S[base]]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nfixed = b; local varg = d % 2 == 1; local tail = d >= 2; local nargs = nfixed + off; if tail then nargs = nargs + V[S[base + nfixed + 1]] end; local args = {}; if off == 1 then args[1] = f end; for i = 1, (tail and (nfixed + V[S[base + nfixed + 1]]) or nfixed) do if tail and i > nfixed then local x = base + i + 1; local s = S[x]; if s then args[off + i] = V[s] else args[off + i] = O[x] end else args[off + i] = V[S[base + i]] end end; if varg then for i = 1, vargc do args[nargs + i] = vargs[i] end; nargs = nargs + vargc end; local out, nout = callcap(fn, args, nargs); for i = 1, nout do local s = S[base + i]; if s then V[s] = out[i] else O[base + i] = out[i] end end; V[S[base]] = nout".to_string(),
+		"CallM" => "local base = a + 1; local f = V[S[base]]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nfixed = b; local ntail = V[S[base + nfixed + 1]]; local nargs = nfixed + ntail + off; local args = {}; if off == 1 then args[1] = f end; for i = 1, nfixed + ntail do if i <= nfixed then args[off + i] = V[S[base + i]] else local x = base + i + 1; local s = S[x]; if s then args[off + i] = V[s] else args[off + i] = O[x] end end end; if d == 1 then for i = 1, vargc do args[nargs + i] = vargs[i] end; nargs = nargs + vargc end; local out, nout = callcap(fn, args, nargs); local nres = c; lastbase = a + 1; lastn = nout; local wn = nout; if nres ~= 255 and nres > wn then wn = nres end; for i = 1, wn do local s = S[base + i]; if s then V[s] = out[i] else O[base + i] = out[i] end end".to_string(),
+		"CallT" => "local f = V[S[a + 1]]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nfixed = FLOOR(d / 2); local tail = d % 2 == 1; local ntail = tail and V[S[a + nfixed + 2]] or 0; local nargs = nfixed + off + ntail; local args = {}; if off == 1 then args[1] = f end; for i = 1, nfixed + ntail do if tail and i > nfixed then local x = a + i + 2; local s = S[x]; if s then args[off + i] = V[s] else args[off + i] = O[x] end else args[off + i] = V[S[a + i + 1]] end end; local t = V[b + 1]; local n = V[c + 1]; local out, nout = callcap(fn, args, nargs); for i = 1, nout do t[n + i] = out[i] end; V[c + 1] = n + nout".to_string(),
+		"Return" => "local out = {}; local n = b; local total; if n == 255 then local pre = d; for i = 1, pre do out[i] = V[S[a + i]] end; if c == 1 then for i = 1, vargc do out[pre + i] = vargs[i] end; total = pre + vargc else for i = 1, lastn do local s = S[lastbase + i]; if s then out[pre + i] = V[s] else out[pre + i] = O[lastbase + i] end end; total = pre + lastn end else for i = 1, n do out[i] = V[S[a + i]] end; total = n end; return U(out, 1, total)".to_string(),
+		"Closure" => "V[a + 1] = makefn(b + 1, V, ups, S)".to_string(),
+		_ => branch_code(name),
+	}
+}
+
 fn bin_op_code(mm: &str, what: &str, expr: &str) -> String {
 	format!(
 		"local x = V[b + 1]; local y = V[c + 1]; if TYP(x) == 'number' and TYP(y) == 'number' then V[a + 1] = {expr} else local f = mget(x, '{mm}') or mget(y, '{mm}'); if f then V[a + 1] = f(x, y) else ERR('attempt to perform {what} on a ' .. TYP(x) .. ' value', 0) end end"
@@ -284,7 +304,7 @@ pub fn generate(
     s = decarrier(s)
     local p = 1
     local st = 1
-    local nregs, nparams, vararg, nups, upsrc, nconst, C, ncode, W, SA, SB, SC, SD
+    local nregs, nparams, vararg, nups, upsrc, nconst, C, S, ncode, W, SA, SB, SC, SD
     while st <= 5 do
       if st == 1 then
         nregs = u16(s, p); p = p + 2
@@ -311,6 +331,9 @@ pub fn generate(
             if t == 2 then C[i] = TONUM(x) else C[i] = x end
           end
         end
+        local ns = u16(s, p); p = p + 2
+        S = {}
+        for i = 1, ns do S[i] = u16(s, p); p = p + 2 end
         ncode = u16(s, p); p = p + 2
         W = {}
         st = 4
@@ -329,7 +352,7 @@ pub fn generate(
         st = 6
       end
     end
-    return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, W = W, SA = SA, SB = SB, SC = SC, SD = SD }
+    return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, S = S, W = W, SA = SA, SB = SB, SC = SC, SD = SD }
   end"#,
 		)
 	} else {
@@ -536,6 +559,11 @@ pub fn generate(
 
 	// run() SoA unpack order (state-tuple position)
 	let mut fields = vec!["W", "SA", "SB", "SC", "SD", "C"];
+	if v15 {
+		// stage A: the per-function register slot table S joins the
+		// state tuple (scattered register layout)
+		fields.push("S");
+	}
 	rng.shuffle(&mut fields);
 	let run_soa = format!(
 		"local {} = {}",
@@ -552,6 +580,70 @@ pub fn generate(
 		params.push(format!("F{i}"));
 	}
 	let params = params.join(", ");
+
+	// makefn: v15 stage A variant translates upvalue descriptors and
+	// parameter fills through the scattered slot tables (the PARENT's
+	// S resolves upsrc register references; the child's pf.S maps the
+	// parameter registers). Legacy keeps the dense layout.
+	let makefn_decl = if v15 {
+		String::from(
+			"local function makefn(idx, V, upsf, S)
+    local pf = PF[idx]
+    local c = {}
+    for i = 1, #pf.upsrc do
+      local src = pf.upsrc[i]
+      if src >= 49152 then
+        c[i] = upsf[src - 49152]
+      elseif src >= 32768 then
+        c[i] = { v = V[S[src - 32768]], i = 1 }
+      else
+        c[i] = { v = V, i = S[src] }
+      end
+    end
+    return function(...)
+      local all = { ... }
+      local vargc = #all - pf.nparams
+      if vargc < 0 then vargc = 0 end
+      local vargs = {}
+      for i = 1, vargc do vargs[i] = all[pf.nparams + i] end
+      local V2 = {}
+      for i = 1, pf.nparams do V2[pf.S[i]] = all[i] end
+      -- real TCO: tail call into run so deep tail recursion reuses the
+      -- frame instead of stacking one per level
+      return run(pf, V2, c, vargs, vargc)
+    end
+  end",
+		)
+	} else {
+		String::from(
+			"local function makefn(idx, V, upsf)
+    local pf = PF[idx]
+    local c = {}
+    for i = 1, #pf.upsrc do
+      local src = pf.upsrc[i]
+      if src >= 49152 then
+        c[i] = upsf[src - 49152]
+      elseif src >= 32768 then
+        c[i] = { v = V[src - 32768], i = 1 }
+      else
+        c[i] = { v = V, i = src }
+      end
+    end
+    return function(...)
+      local all = { ... }
+      local vargc = #all - pf.nparams
+      if vargc < 0 then vargc = 0 end
+      local vargs = {}
+      for i = 1, vargc do vargs[i] = all[pf.nparams + i] end
+      local V2 = {}
+      for i = 1, pf.nparams do V2[i] = all[i] end
+      -- real TCO: tail call into run so deep tail recursion reuses the
+      -- frame instead of stacking one per level
+      return run(pf, V2, c, vargs, vargc)
+    end
+  end",
+		)
+	};
 
 	// helper-decl order: u16 / r16 / decarrier are independent
 	let u16_fn = r#"local function u16(B, p)
@@ -633,9 +725,9 @@ pub fn generate(
 				nop.clone()
 			} else if name == "Return" {
 				// CPS: return the signal {out, total}; the loop unpacks
-				branch_code(name).replace("return U(out, 1, total)", "return {out, total}")
+				branch_code_v15(name).replace("return U(out, 1, total)", "return {out, total}")
 			} else {
-				branch_code(name)
+				branch_code_v15(name)
 			};
 			hdefs.push_str("H[OC.");
 			hdefs.push_str(name);
@@ -660,10 +752,10 @@ pub fn generate(
 		let cps_fetch = format!(
 			"local oc = W[pc]\nlocal a = {sa}[pc]\nlocal b = {sb}[pc]\nlocal c = {sc}[pc]\nlocal d = {sd}[pc]\npc = pc + 1\nif oc == OC.Call then {call} elseif oc == OC.CallE then {calle} elseif oc == OC.CallM then {callm} elseif oc == OC.CallT then {callt} else local r = H[oc](a,b,c,d); if r then return U(r[1], 1, r[2]) end end",
 			sa = sa, sb = sb, sc = sc, sd = sd,
-			call = branch_code("Call"),
-			calle = branch_code("CallE"),
-			callm = branch_code("CallM"),
-			callt = branch_code("CallT"),
+			call = branch_code_v15("Call"),
+			calle = branch_code_v15("CallE"),
+			callm = branch_code_v15("CallM"),
+			callt = branch_code_v15("CallT"),
 		);
 		(cps_fetch, String::new())
 	} else {
@@ -713,38 +805,14 @@ pub fn generate(
   end
   {hub_decl}
   local run
-  local function makefn(idx, V, upsf)
-    local pf = PF[idx]
-    local c = {{}}
-    for i = 1, #pf.upsrc do
-      local src = pf.upsrc[i]
-      if src >= 49152 then
-        c[i] = upsf[src - 49152]
-      elseif src >= 32768 then
-        c[i] = {{ v = V[src - 32768], i = 1 }}
-      else
-        c[i] = {{ v = V, i = src }}
-      end
-    end
-    return function(...)
-      local all = {{ ... }}
-      local vargc = #all - pf.nparams
-      if vargc < 0 then vargc = 0 end
-      local vargs = {{}}
-      for i = 1, vargc do vargs[i] = all[pf.nparams + i] end
-      local V2 = {{}}
-      for i = 1, pf.nparams do V2[i] = all[i] end
-      -- real TCO: tail call into run so deep tail recursion reuses the
-      -- frame instead of stacking one per level
-      return run(pf, V2, c, vargs, vargc)
-    end
-  end
+  {makefn_decl}
   run = function(pf, V, ups, vargs, vargc)
     {run_unpack}
     {run_soa}
     local pc = 1
     local lastn = 0
     local lastbase = 0
+    local O = {{}}
     {handler_defs}
     while true do
       {fetch}
@@ -770,5 +838,6 @@ end
 		v15_selfmod = v15_selfmod,
 		decode_seg = decode_seg,
 		parse_fn = parse_fn,
+		makefn_decl = makefn_decl,
 	)
 }

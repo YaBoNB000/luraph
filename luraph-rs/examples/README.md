@@ -23,9 +23,13 @@ Lua-on-Lua 解释执行，比非 VM 输出慢（语料级用例实测 29~393ms�
 `return setmetatable({...},{}):XX()(...);`）——模块表 = 65 原语数字槽
 + 2 诱饵 LCG 工厂 + 具名常量混存 + CPS 引导骨架（初始化器/顶层机/
 `continue` 叶循环/单字符 staging handler 链/算术助手，handler 数随原型数
-线性扩展）。验收：`luau-compile` 语法检测 30/30 通过 + 运行输出与原语料
-逐一一致；对照标准 = `docs/v15-structural-parity-plan.md` 的 32 条指纹
-（当前进度 11/32，P3 扩容进行中）。
+线性扩展）。执行 = CPS 分发（每指令 `H[OC.*]` handler + Call 系内联 +
+真 TCO，深尾递归不溢栈）；解码 = 显式状态机 + LCG 密钥流分块（解码点
+无密钥常量）；**字节码操作数散布**（阶段 A：寄存器/常量/upvalue 每函数
+随机槽，随机面全在载体编码 blob 内）。验收：`luau-compile` 语法检测
+30/30 通过 + 运行输出与原语料逐一一致；对照标准 =
+`docs/v15-structural-parity-plan.md` 的 32 条指纹（当前进度 17/32，
+剩余为阶段 D/E 结构打磨）。
 
 **输出纯度**：所有示例均为纯 ASCII——密文/密钥流/字节码等二进制串
 全量 `\ddd` 转义（`Expr::Str.is_binary`），不会泄露随机高字节构成的

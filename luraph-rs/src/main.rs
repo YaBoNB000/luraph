@@ -332,7 +332,7 @@ fn main() -> ExitCode {
 		// the bytecode passed as string literals to its entry call
 		let vm_raw = std::env::var("LURAPH_VM_RAW").is_ok();
 		let (mut block, mut table, v15_done) = if opts.do_vm {
-			let program = vmgen::compile(&block, &table, &mut rng, !luau);
+			let program = vmgen::compile(&block, &table, &mut rng, !luau, opts.do_v15);
 			let n = program.fns.len();
 			let tsrc = vmgen::template::generate(
 				&program.opmap,

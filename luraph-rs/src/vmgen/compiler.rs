@@ -60,6 +60,16 @@ enum CellKind {
 	Up(u16),
 }
 
+/// v15 stage A: wire-operand role (see Ctx::op_roles).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ORole {
+	Val,
+	Reg,
+	Base,
+	Const,
+	Up,
+}
+
 pub struct VmProgram {
 	pub opmap: OpMap,
 	/// M5 hub randomization: operand stream-slot order.
@@ -87,6 +97,9 @@ struct Ctx<'a> {
 	/// target dialect: true = Lua 5.1 (table-constructor store order:
 	/// array part stores LAST), false = Luau (source order)
 	lua51: bool,
+	/// v15 stage A (operand scattering): registers/consts/upvalues are
+	/// scattered into random slots per function before serialization
+	scatter: bool,
 	/// next nested-function slot (global DFS order over the chunk)
 	next_fn_slot: usize,
 	/// scope chain of declared syms -> cell kind (outermost first)
@@ -138,12 +151,14 @@ impl<'a> Ctx<'a> {
 		rng: &'a mut Rng,
 		symtab: &'a crate::symtab::SymTable,
 		lua51: bool,
+		scatter: bool,
 	) -> Ctx<'a> {
 		Ctx {
 			program,
 			rng,
 			symtab,
 			lua51,
+			scatter,
 			next_fn_slot: 0,
 			scopes: vec![HashMap::new()],
 			upvals: HashMap::new(),
@@ -238,6 +253,128 @@ impl<'a> Ctx<'a> {
 		self.scopes.pop();
 	}
 
+	/// v15 stage A (operand scattering, luraph15 D1 family): operand
+	/// roles per opcode.
+	///   Reg   = single register — scattered (wire value = slot - 1)
+	///   Base  = base of a CONTIGUOUS register range — kept logical;
+	///           the v15 runtime translates through the per-function
+	///           slot table S (LoadNil/Call*/Return iterate ranges)
+	///   Const = constant index — scattered inside a padded pool
+	///   Up    = upvalue index — scattered through the up permutation
+	///   Val   = opaque value (jump target / count / flag / proto idx)
+	fn op_roles(op: Op) -> [ORole; 4] {
+		use ORole::*;
+		match op {
+			Op::Jmp => [Val, Val, Val, Val],
+			Op::Jf | Op::Jt => [Reg, Val, Val, Val],
+			Op::LoadNil => [Base, Val, Val, Val],
+			Op::LoadK => [Reg, Const, Val, Val],
+			Op::Move => [Reg, Reg, Val, Val],
+			Op::Add
+			| Op::Sub
+			| Op::Mul
+			| Op::Div
+			| Op::Mod
+			| Op::Pow
+			| Op::Idiv
+			| Op::Concat
+			| Op::Lt
+			| Op::Le
+			| Op::Gt
+			| Op::Ge
+			| Op::Eq
+			| Op::Ne
+			| Op::GetTab
+			| Op::SetTab
+			| Op::TabN => [Reg, Reg, Reg, Val],
+			Op::Unm | Op::Not | Op::Len => [Reg, Reg, Val, Val],
+			Op::NewTab | Op::VarArgTab | Op::VarArgC => [Reg, Val, Val, Val],
+			Op::VarArgTabN => [Reg, Reg, Val, Val],
+			Op::CallT => [Base, Reg, Reg, Val],
+			Op::Closure => [Reg, Val, Val, Val],
+			Op::Call | Op::CallE | Op::CallM => [Base, Val, Val, Val],
+			Op::GetGlobal | Op::SetGlobal => [Reg, Const, Val, Val],
+			Op::GetUp => [Reg, Up, Val, Val],
+			Op::SetUp => [Up, Reg, Val, Val],
+			Op::Return => [Base, Val, Val, Val],
+			Op::Nop => [Val, Val, Val, Val],
+		}
+	}
+
+	/// v15 stage A: scatter registers/constants/upvalues into random
+	/// slots and rewrite the wire operands accordingly. Returns the
+	/// register slot table S (S[r] = 1-based physical slot of logical
+	/// register r-1), serialized after the constants; the v15
+	/// interpreter consults it for range-based accesses and makefn
+	/// translates upvalue descriptors through the PARENT's S. After
+	/// this pass register/const/up operands share one opaque numeric
+	/// space — static register recovery loses its small-integer anchor.
+	fn scatter_operands(&mut self, nregs: u16) -> Vec<u16> {
+		// 1. register slots: sigma[r] = 1-based physical slot (~50%
+		// density for small frames; extra spread capped at 64 so very
+		// large frames stay in the 2-byte varint tier)
+		let n = nregs as usize;
+		let smax = n + (n / 2).min(64).max(8);
+		let mut pool: Vec<u16> = (1..=smax as u16).collect();
+		self.rng.shuffle(&mut pool);
+		let sigma: Vec<u16> = pool[..n].to_vec();
+
+		// 2. constant pool scattering: real constants land at random
+		// positions in a padded pool; holes get nil / decoy numbers
+		let nc = self.consts.len();
+		let cmax = nc + (nc / 2).max(4);
+		let mut cpos: Vec<usize> = (0..cmax).collect();
+		self.rng.shuffle(&mut cpos);
+		let kappa: Vec<usize> = cpos[..nc].to_vec();
+		let mut consts2: Vec<Const> = vec![Const::Nil; cmax];
+		let mut used = vec![false; cmax];
+		for (i, c) in self.consts.drain(..).enumerate() {
+			consts2[kappa[i]] = c;
+			used[kappa[i]] = true;
+		}
+		for j in 0..cmax {
+			if !used[j] && self.rng.int(0, 3) == 0 {
+				consts2[j] = Const::Num(self.rng.int(0, 999_999) as f64);
+			}
+		}
+		self.consts = consts2;
+
+		// 3. upvalue permutation (upsrc reordered; operands map through
+		// the inverse)
+		let nu = self.upsrc.len();
+		let mut perm: Vec<usize> = (0..nu).collect();
+		self.rng.shuffle(&mut perm);
+		let old_upsrc = std::mem::take(&mut self.upsrc);
+		let mut tau = vec![0usize; nu];
+		for (ni, &oi) in perm.iter().enumerate() {
+			self.upsrc.push(old_upsrc[oi]);
+			tau[oi] = ni;
+		}
+
+		// 4. wire operand rewrite
+		for ins in self.code.iter_mut() {
+			let roles = Self::op_roles(ins.op);
+			let ops = [ins.a, ins.b, ins.c, ins.d];
+			for k in 0..4 {
+				let v = ops[k] as usize;
+				let nv = match roles[k] {
+					ORole::Reg => sigma[v] - 1,
+					ORole::Const => kappa[v] as u16,
+					ORole::Up => tau[v] as u16,
+					_ => ops[k],
+				};
+				match k {
+					0 => ins.a = nv,
+					1 => ins.b = nv,
+					2 => ins.c = nv,
+					_ => ins.d = nv,
+				}
+			}
+		}
+
+		sigma
+	}
+
 	fn finish(mut self, nregs: u16) -> (Vec<u8>, Vec<u16>) {
 		// implicit trailing return (a chunk/function without an explicit
 		// return returns nothing — the code must terminate)
@@ -285,6 +422,13 @@ impl<'a> Ctx<'a> {
 				}
 			}
 		}
+		// v15 stage A: operand scattering post-pass (rewrites wire
+		// operands; yields the register slot table S serialized below)
+		let s_tab = if self.scatter {
+			Some(self.scatter_operands(nregs))
+		} else {
+			None
+		};
 		let map = &self.program.opmap;
 		let perm = &self.program.slot_perm;
 		// Nop sites are final here (no more insertions after this point)
@@ -306,6 +450,12 @@ impl<'a> Ctx<'a> {
 		isa::push_u16(&mut out, self.consts.len() as u16);
 		for c in &self.consts {
 			c.encode(&mut out);
+		}
+		if let Some(s_tab) = &s_tab {
+			isa::push_u16(&mut out, s_tab.len() as u16);
+			for s in s_tab {
+				isa::push_u16(&mut out, *s);
+			}
 		}
 		isa::encode_soa(&self.code, map, perm, &mut out);
 		(out, nops)
@@ -736,6 +886,7 @@ fn compile_chunk(
 	table: &SymTable,
 	rng: &mut Rng,
 	lua51: bool,
+	scatter: bool,
 ) -> VmProgram {
 	let total = count_fns_count(block);
 	// M5: per-build random operand slot permutation (hub randomization)
@@ -753,7 +904,7 @@ fn compile_chunk(
 		nop_sites: vec![Vec::new(); total],
 	};
 	{
-		let mut ctx = Ctx::new_main(&mut program, rng, table, lua51);
+		let mut ctx = Ctx::new_main(&mut program, rng, table, lua51, scatter);
 		ctx.compile_block(block);
 		let nregs = ctx.next_reg;
 		let (bytes, nops) = ctx.finish(nregs);
@@ -1926,6 +2077,7 @@ impl<'a> Ctx<'a> {
 			rng: self.rng,
 			symtab: self.symtab,
 			lua51: self.lua51,
+			scatter: self.scatter,
 			next_fn_slot: self.next_fn_slot,
 			scopes: vec![HashMap::new()],
 			upvals: HashMap::new(),
@@ -2075,8 +2227,14 @@ fn call_arg_info(e: &Expr) -> (u16, bool) {
 // entry point
 // ---------------------------------------------------------------------------
 
-pub fn compile(block: &Block, table: &SymTable, rng: &mut Rng, lua51: bool) -> VmProgram {
-	compile_chunk(block, table, rng, lua51)
+pub fn compile(
+	block: &Block,
+	table: &SymTable,
+	rng: &mut Rng,
+	lua51: bool,
+	scatter: bool,
+) -> VmProgram {
+	compile_chunk(block, table, rng, lua51, scatter)
 }
 
 #[cfg(test)]
@@ -2086,6 +2244,7 @@ mod dbg {
 	use crate::symtab;
 
 	#[test]
+	#[ignore] // dev tool: needs /tmp/nt5.lua
 	fn dbg_header() {
 		let src = std::fs::read_to_string("/tmp/nt5.lua").unwrap();
 		let mut block = parser::parse(&src, false).unwrap();
@@ -2118,7 +2277,7 @@ mod dbg {
 			}
 		}
 		let mut rng = crate::rng::Rng::new(42);
-		let prog = compile_chunk(&block, &table, &mut rng, true);
+		let prog = compile_chunk(&block, &table, &mut rng, true, false);
 		eprintln!("fns={}", prog.fns.len());
 		let names = ["Jmp","Jf","Jt","LoadNil","LoadK","Move","Add","Sub","Mul","Div","Mod","Pow","Concat","Unm","Not","Len","Lt","Le","Gt","Ge","Eq","Ne","Idiv","NewTab","GetTab","SetTab","TabN","CallT","Closure","Call","VarArgTab","VarArgC","VarArgTabN","GetGlobal","SetGlobal","GetUp","SetUp","Return","Nop","CallE","CallM"];
 		let mut wire2name: Vec<Option<&str>> = vec![None; 256];
@@ -2179,5 +2338,75 @@ mod dbg {
 				);
 			}
 		}
+	}
+
+	/// v15 stage A: verify the scatter post-pass — S slots distinct and
+	/// spread beyond the dense range, wire operands scattered, consts
+	/// padded.
+	#[test]
+	fn scatter_layout_properties() {
+		let src = "local function f(a, b, c) local x = a + b * c; local y = x - a; return y, x end return f(1, 2, 3)";
+		let mut block = parser::parse(src, true).unwrap();
+		let table = symtab::resolve(&mut block);
+		let mut rng = crate::rng::Rng::new(7);
+		let prog = compile_chunk(&block, &table, &mut rng, false, true);
+		let mut saw_scattered_operand = false;
+		for b in &prog.fns {
+			let u16 = |p: usize| (b[p] as u16) | ((b[p + 1] as u16) << 8);
+			let mut p = 0;
+			let nregs = u16(p) as usize; p += 2;
+			p += 2; // nparams
+			p += 1; // vararg
+			let nups = u16(p) as usize; p += 2 + 2 * nups;
+			let nconst = u16(p) as usize; p += 2;
+			for _ in 0..nconst {
+				let t = b[p]; p += 1;
+				match t {
+					0 => {}
+					1 => { p += 1; }
+					_ => { let l = u16(p) as usize; p += 2 + l; }
+				}
+			}
+			let ns = u16(p) as usize; p += 2;
+			assert_eq!(ns, nregs, "S table length must equal nregs");
+			let mut slots: Vec<u16> = Vec::new();
+			for _ in 0..ns { slots.push(u16(p)); p += 2; }
+			let mut sorted = slots.clone();
+			sorted.sort_unstable(); sorted.dedup();
+			assert_eq!(sorted.len(), ns, "S slots must be distinct");
+			let smax = nregs + (nregs / 2).min(64).max(8);
+			for &s in &slots {
+				assert!((1..=smax as u16).contains(&s), "slot in range");
+			}
+			if nregs >= 4 {
+				assert!(
+					*slots.iter().max().unwrap() as usize > nregs,
+					"slots must be spread beyond the dense range"
+				);
+			}
+			// wire operands: decode streams; single-register operands
+			// of arithmetic ops must reach beyond nregs somewhere
+			let ncode = u16(p) as usize; p += 2;
+			p += ncode; // skip the opcode array
+			let perm = &prog.slot_perm;
+			let mut streams = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+			for s in 0..4 {
+				for _ in 0..ncode {
+					let (v, np) = isa::decode_varint(b, p).expect("varint");
+					streams[s].push(v as u16);
+					p = np;
+				}
+			}
+			for i in 0..ncode {
+				let mut vals = [0u16; 4];
+				for s in 0..4 {
+					vals[perm[s] as usize] = streams[s][i];
+				}
+				if vals.iter().any(|&v| v as usize > nregs) {
+					saw_scattered_operand = true;
+				}
+			}
+		}
+		assert!(saw_scattered_operand, "some wire operand must be scattered");
 	}
 }
