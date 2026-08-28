@@ -387,6 +387,9 @@ pub fn scaffold(
 	let mut nm = Names::new(rng);
 	let fc = nm.take(); // entry machine
 	let init = nm.take(); // initializer
+	let xl = nm.take(); // sub-dispatcher (FC -> XL -> CPS loop)
+	let init2 = nm.take(); // extra machine initializer (sample D/J/K + KL/M/zL family)
+	let init3 = nm.take();
 	let mul = nm.take(); // mul32 assistant
 	let modulo = nm.take(); // mod 2^32 assistant
 	let loop_name = nm.take(); // CPS loop
@@ -471,6 +474,22 @@ pub fn scaffold(
 		parse_expr(&format!(
 			"function(b,...) return true,{},nil,nil,nil,nil,nil,nil,nil,nil,nil,nil end",
 			states[0]
+		)),
+	));
+	// extra machine initializers (sample KL/M/zL family -- the other
+	// top machines' entry points; start IDs past the dispatch range)
+	fields.push(named(
+		init2.clone(),
+		parse_expr(&format!(
+			"function(b,...) return true,{},nil,nil,nil,nil,nil,nil,nil,nil end",
+			sdone + 1
+		)),
+	));
+	fields.push(named(
+		init3.clone(),
+		parse_expr(&format!(
+			"function(b,...) return true,{},nil,nil,nil,nil,nil,nil,nil,nil,nil,nil,nil,nil,nil,nil end",
+			sdone + 2
 		)),
 	));
 
@@ -676,14 +695,29 @@ pub fn scaffold(
 		fields.push(named(loop_name.clone(), parse_expr(&src)));
 	}
 
-	// ---- top machine (sample FC shape)
+	// ---- sub-dispatcher between the top machine and the CPS loop
+	// (sample's second dispatch layer: while-flag + range tree; both
+	// ranges converge into the state-driven CPS loop, so routing any
+	// state to it is correct)
+	{
+		let mid = states[(nsteps as usize) / 2];
+		let src = format!(
+			"function(b,C,V,f1,f2,f3) while true do if V<={} then \
+			 return b:{}(C,V,f1,f2,f3) else return b:{}(C,V,f1,f2,f3) end end end",
+			mid, loop_name, loop_name
+		);
+		fields.push(named(xl.clone(), parse_expr(&src)));
+	}
+
+	// ---- top machine (sample FC shape): initializer -> while-flag loop
+	// -> sub-dispatcher -> control-code return
 	{
 		let src = format!(
 			"function(b,...) local u,z,Z,o,w,K,G,q,M,F,H,E=b:{}(); \
 			 local V,f1,f2,f3,C=z,Z,o,w,{{}}; C[{}]=0; \
 			 while u do local h2,B=b:{}(C,V,f1,f2,f3); \
 			 if h2==2 then return B end end end",
-			init, sumslot, loop_name
+			init, sumslot, xl
 		);
 		fields.push(named(fc.clone(), parse_expr(&src)));
 	}
