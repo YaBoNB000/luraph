@@ -401,6 +401,14 @@ pub fn scaffold(
 	let n = carriers.len();
 	const CHUNKS: usize = 3;
 
+	// P4 carrier keystream: each chunk's bytes are XORed at build time
+	// with a positional key (K1*i + K2) % 256 and the chunk handlers
+	// reverse it at runtime via bit32.bxor -- the stored literals are no
+	// longer directly base-94 readable (fingerprint F16: bit32.bxor +
+	// %256 both present in the decode path). K1/K2 are per-build random.
+	let ks1: i64 = rng.int(1, 255);
+	let ks2: i64 = rng.int(0, 255);
+
 	// Split every carrier into CHUNKS literals (the entry builder
 	// concats them back when calling the VM).
 	let chunked: Vec<Vec<Vec<u8>>> = carriers
@@ -541,11 +549,25 @@ pub fn scaffold(
 			let (ra, rb, rc) = (fillers[0], fillers[1], fillers[2]);
 			let (st, ret) = step(&mut state_i);
 			let name = nm.take();
+			// P4: XOR the chunk bytes with the positional keystream so the
+			// stored literal is opaque; the handler reverses it at runtime.
+			let xored: Vec<u8> = chunk
+				.iter()
+				.enumerate()
+				.map(|(i, &c)| {
+					let key = ((ks1 * (i as i64 + 1) + ks2) % 256) as u8;
+					c ^ key
+				})
+				.collect();
 			let src = format!(
-				"function(b,C,{ra},{rb},{rc}) C[{idx}]={lit}; \
+				"function(b,C,{ra},{rb},{rc}) local seg={lit}; local t={{}}; \
+				 for i=1,#seg do t[i]=string.char(bit32.bxor(string.byte(seg,i),({k1}*i+{k2})%256)) end; \
+				 C[{idx}]=table.concat(t); \
 				 return {ret},C,{rc},{ra},{rb} end",
 				idx = k * CHUNKS + j + 1,
-				lit = lua_bytes_lit(chunk),
+				lit = lua_bytes_lit(&xored),
+				k1 = ks1,
+				k2 = ks2,
 				ret = ret,
 				ra = ra,
 				rb = rb,
