@@ -620,6 +620,56 @@ pub fn generate(
 	rng.shuffle(&mut helpers);
 	let helpers = format!("{}\n  {}\n  {}", al_lines, tk_lines, helpers.join("\n  "));
 
+	// v15 Phase C (redo on TCO foundation): CPS execution dispatch. Each
+	// opcode is a handler in H, called from the loop. The Return handler
+	// returns a signal {out, total}; the loop unpacks it via a TAIL call
+	// `return U(r[1], 1, r[2])` so run still returns unpacked results
+	// (consistent with real TCO). With real TCO the closure->run frame is
+	// reused, reducing per-recursion-level stack growth.
+	let handler_defs = if v15 {
+		let mut hdefs = String::from("local H = {}\n");
+		for (name, _wire) in &items {
+			let body = if name == "Nop" || name == "NopA" {
+				nop.clone()
+			} else if name == "Return" {
+				// CPS: return the signal {out, total}; the loop unpacks
+				branch_code(name).replace("return U(out, 1, total)", "return {out, total}")
+			} else {
+				branch_code(name)
+			};
+			hdefs.push_str("H[OC.");
+			hdefs.push_str(name);
+			hdefs.push_str("] = function(a,b,c,d) ");
+			hdefs.push_str(&body);
+			hdefs.push_str(" end\n");
+		}
+		hdefs
+	} else {
+		String::new()
+	};
+	let (fetch, branches) = if v15 {
+		// Inline the Call-family opcodes (Call/CallE/CallM/CallT) directly in
+		// the CPS loop instead of dispatching them through H[]. Real TCO makes
+		// the closure->run call a tail call, but CPS would still add an H[Call]
+		// frame per call; inlining removes that frame so deep tail recursion
+		// does not overflow the stack. Non-call opcodes still dispatch via H.
+		let sa = stream_names[operand_stream[0] as usize];
+		let sb = stream_names[operand_stream[1] as usize];
+		let sc = stream_names[operand_stream[2] as usize];
+		let sd = stream_names[operand_stream[3] as usize];
+		let cps_fetch = format!(
+			"local oc = W[pc]\nlocal a = {sa}[pc]\nlocal b = {sb}[pc]\nlocal c = {sc}[pc]\nlocal d = {sd}[pc]\npc = pc + 1\nif oc == OC.Call then {call} elseif oc == OC.CallE then {calle} elseif oc == OC.CallM then {callm} elseif oc == OC.CallT then {callt} else local r = H[oc](a,b,c,d); if r then return U(r[1], 1, r[2]) end end",
+			sa = sa, sb = sb, sc = sc, sd = sd,
+			call = branch_code("Call"),
+			calle = branch_code("CallE"),
+			callm = branch_code("CallM"),
+			callt = branch_code("CallT"),
+		);
+		(cps_fetch, String::new())
+	} else {
+		(fetch, branches)
+	};
+
 	format!(
 		r#"local VM = function({params})
   {oc_table}
@@ -695,6 +745,7 @@ pub fn generate(
     local pc = 1
     local lastn = 0
     local lastbase = 0
+    {handler_defs}
     while true do
       {fetch}
       {branches}
@@ -713,6 +764,7 @@ end
 		hub_decl = hub_decl,
 		run_unpack = run_unpack,
 		run_soa = run_soa,
+		handler_defs = handler_defs,
 		fetch = fetch,
 		branches = branches,
 		v15_selfmod = v15_selfmod,

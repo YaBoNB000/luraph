@@ -57,7 +57,7 @@
 | **M4（L6 VM：私有字节码 + 生成混淆解释器，`--vm`）** | ✅ **完成 + 续期加固（2026-08-25）：矩阵 204/204 全绿（语料 21→29，新增 8 个 stress_*）+ 多种子回归（5 seeds）0 失败；upvalue 单 cell 别名模型 / 循环变量 per-iteration 共享 cell / 5.1 构造器存储序 / 全变长展开等 9 类语义修复；实现笔记 `docs/vm-l6-implementation.md` §8** |
 | **M5（VM 完整随机面）** | ✅ **完成（2026-08-25）**：SoA 平行数组 + 完整 7/14/21-bit + base-94 载体/token + 解码枢纽/状态元组随机 + 帧入场原语解包 + `luac51 -l` 抽查；矩阵 204/204 + 多种子 0 失败 |
 | **M6（产品化）** | ✅ **完成（2026-08-25）**：`--preset low\|medium\|high\|vm\|max`（默认 ≡ high；vm ≡ `--vm`；max = vm，v2 预留）+ 产品 README + `docs/performance.md`；预设矩阵 405/405 |
-| **v15 结构同族（路线 A）** | 🟡 **进行中**：结构侧增量 1–6 ✅（指纹 16/32）；安全增量 S1 ✅；阶段 C 首尝试回滚后用户选方案 ②，**第一步真 TCO 已落地 ✅**（2026-08-28：`makefn` 闭包对 `run` 真尾调用，Lua 原生 TCO 复用栈帧，`tail(5000)` 通过；30 语料+多 seed+204+405 全绿）；**下一步：在 TCO 地基上重做 CPS 分发**。详见 `docs/v15-pipeline-rewrite.md` 阶段 C 注记 |
+| **v15 结构同族（路线 A）** | 🟡 **进行中**：结构侧增量 1–6 ✅ + 安全增量 S1 ✅ + **阶段 C ✅ 执行 CPS 化完成**（2026-08-28：真 TCO（`makefn`→`run` 真尾调用）+ CPS 分发（每指令 `H[OC.*]` handler）+ **Call 系内联**（关键：真 TCO 只省闭包→run 层，`H[Call]()` 仍叠帧致 `tail(5000)` 溢栈，内联 Call 系后解决）；`tail(5000)` 通过，全量回归绿，指纹 F4 90→133）；**下一步：F11/F5 等指纹收尾打磨（多段 fetch/状态返回量级）**。详见 `docs/v15-pipeline-rewrite.md` 阶段 C 注记 |
 
 **M5 清单**（对照 `docs/vm-l6-implementation.md` §7，全部勾完）：
 
