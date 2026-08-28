@@ -71,6 +71,10 @@ pub struct VmProgram {
 	/// function blob so the interpreter embeds one decoder.
 	pub carrier: Carrier,
 	pub fns: Vec<Vec<u8>>,
+	/// Nop instruction indexes per function (0-based, parallel to
+	/// `fns`). Consumed by the v15 template to emit literal-constant
+	/// self-modification writes (sample `J[Q]=12` shape, F14/F27).
+	pub nop_sites: Vec<Vec<u16>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -234,7 +238,7 @@ impl<'a> Ctx<'a> {
 		self.scopes.pop();
 	}
 
-	fn finish(mut self, nregs: u16) -> Vec<u8> {
+	fn finish(mut self, nregs: u16) -> (Vec<u8>, Vec<u16>) {
 		// implicit trailing return (a chunk/function without an explicit
 		// return returns nothing — the code must terminate)
 		let needs_return = self
@@ -283,6 +287,14 @@ impl<'a> Ctx<'a> {
 		}
 		let map = &self.program.opmap;
 		let perm = &self.program.slot_perm;
+		// Nop sites are final here (no more insertions after this point)
+		let nops: Vec<u16> = self
+			.code
+			.iter()
+			.enumerate()
+			.filter(|(_, i)| i.op == Op::Nop)
+			.map(|(p, _)| p as u16)
+			.collect();
 		let mut out = Vec::with_capacity(self.code.len() * 6 + 64);
 		isa::push_u16(&mut out, nregs);
 		isa::push_u16(&mut out, self.nparams);
@@ -296,7 +308,7 @@ impl<'a> Ctx<'a> {
 			c.encode(&mut out);
 		}
 		isa::encode_soa(&self.code, map, perm, &mut out);
-		out
+		(out, nops)
 	}
 }
 
@@ -738,13 +750,15 @@ fn compile_chunk(
 		// is compiled last and becomes slot `total` (PF[#FN] in the
 		// template)
 		fns: vec![Vec::new(); total],
+		nop_sites: vec![Vec::new(); total],
 	};
 	{
 		let mut ctx = Ctx::new_main(&mut program, rng, table, lua51);
 		ctx.compile_block(block);
 		let nregs = ctx.next_reg;
-		let bytes = ctx.finish(nregs);
+		let (bytes, nops) = ctx.finish(nregs);
 		program.fns.push(bytes);
+		program.nop_sites.push(nops);
 	}
 	program
 }
@@ -1952,10 +1966,11 @@ impl<'a> Ctx<'a> {
 		child.pop_scope();
 		let slot_end = child.next_fn_slot;
 		let nregs = child.next_reg;
-		let bytes = child.finish(nregs);
+		let (bytes, nops) = child.finish(nregs);
 		self.next_fn_slot = slot_end;
 		if child_index >= self.program.fns.len() { panic!("slot overflow: child_index={} len={} next={}", child_index, self.program.fns.len(), self.next_fn_slot); }
 		self.program.fns[child_index] = bytes;
+		self.program.nop_sites[child_index] = nops;
 
 		self.emit(Instr::ab(Op::Closure, dst, child_index as u16));
 	}

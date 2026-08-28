@@ -218,6 +218,7 @@ pub fn generate(
 	rng: &mut Rng,
 	n_fns: usize,
 	v15: bool,
+	nop_sites: &[Vec<u16>],
 ) -> String {
 	let mut oc_items = Vec::new();
 	for (i, name) in OP_NAMES.iter().enumerate() {
@@ -249,16 +250,34 @@ pub fn generate(
 	let branches = gen_dispatch_tree(&items, &body_of, rng, 0);
 
 	// v15 (P3-B): bytecode self-modification + dead dispatch segment.
-	//   self-mod: every even-indexed Nop site is rewritten from the
-	//   primary wire value to the alias at load time -- opcode encoding
-	//   is unstable within the stream, and OC.Nop/OC.NopA are both
-	//   live (frequency analysis can't settle on one mapping).
+	//   self-mod: the compiler reports every Nop site; at load time each
+	//   is rewritten to the Nop-alias wire value via a LITERAL constant
+	//   write (sample `J[Q]=12` shape, fingerprints F14/F27). The
+	//   primary Nop wire becomes dead (decoy), the alias carries every
+	//   dead instruction, and opcode encoding is unstable within the
+	//   stream. Both writes and semantics are neutral (Nop -> Nop).
 	//   dead segment: a site1-shaped fetch tree (sample's never-hit
 	//   decode path) guarded by an always-false flag.
 	let v15_selfmod = if v15 {
-		String::from(
-			"  local NW = OC.Nop\n  local NA = OC.NopA\n  for i = 1, #PF do\n    local W = PF[i].W\n    for j = 1, #W do\n      if W[j] == NW and j % 2 == 0 then W[j] = NA end\n    end\n  end\n  local DA = {}\n  local DP = 1\n  local DF = 0\n  while DF > 0 do\n    local f = DA[DP]\n    if f >= 4 then\n      if f < 6 then\n        if f ~= 5 then DF = 0 else DF = 0 end\n      else DF = 0 end\n    elseif f < 2 then DF = 0\n    else DF = 0 end\n    DP = DP + 1\n  end\n",
-		)
+		let mut sm = String::new();
+		for (fi, sites) in nop_sites.iter().enumerate() {
+			if sites.is_empty() {
+				continue;
+			}
+			// bind the opcode array to a local and write through it
+			// (sample shape: direct array constant writes, F14)
+			sm.push_str(&format!("  local ZW{} = PF[{}].W\n", fi + 1, fi + 1));
+			for &p in sites {
+				sm.push_str(&format!(
+					"  ZW{}[{}] = {}\n",
+					fi + 1,
+					p as usize + 1,
+					map.nop_alias
+				));
+			}
+		}
+		sm.push_str("  local DA = {}\n  local DP = 1\n  local DF = 0\n  while DF > 0 do\n    local f = DA[DP]\n    if f >= 4 then\n      if f < 6 then\n        if f ~= 5 then DF = 0 else DF = 0 end\n      else DF = 0 end\n    elseif f < 2 then DF = 0\n    else DF = 0 end\n    DP = DP + 1\n  end\n");
+		sm
 	} else {
 		String::new()
 	};

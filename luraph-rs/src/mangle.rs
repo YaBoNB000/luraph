@@ -64,7 +64,25 @@ pub fn gen_name(rng: &mut Rng, reserved: &HashSet<String>) -> String {
 	}
 }
 
-pub fn mangle(table: &mut SymTable, rng: &mut Rng) {
+/// v15 naming scheme (sample style): 1-2 char names from the 53-base
+/// alphabet (A-Z / `_` / a-z). Used for the v15 profile so mangled
+/// locals match the sample's name lengths (fingerprints F14/F21).
+fn gen_name_v15(rng: &mut Rng, reserved: &HashSet<String>) -> String {
+	const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
+	loop {
+		// sample names are overwhelmingly 1 char; keep 80/20
+		let len = if rng.int(0, 99) < 80 { 1 } else { 2 };
+		let mut s = String::new();
+		for _ in 0..len {
+			s.push(ALPHA[rng.int(0, 52) as usize] as char);
+		}
+		if !reserved.contains(&s) {
+			return s;
+		}
+	}
+}
+
+pub fn mangle(table: &mut SymTable, rng: &mut Rng, v15: bool) {
 	let mut reserved =
 		reserved_set(&table.globals.iter().cloned().collect::<HashSet<_>>());
 	let n = table.syms.len();
@@ -72,6 +90,10 @@ pub fn mangle(table: &mut SymTable, rng: &mut Rng) {
 	for sym in table.syms.iter() {
 		if sym.keep_name {
 			names.push(None); // fixed name (implicit self) — do not rename
+		} else if v15 {
+			let name = gen_name_v15(rng, &reserved);
+			reserved.insert(name.clone());
+			names.push(Some(name));
 		} else {
 			let name = gen_name(rng, &reserved);
 			reserved.insert(name.clone());

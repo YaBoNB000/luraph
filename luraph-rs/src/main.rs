@@ -131,7 +131,10 @@ fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
 			opts.do_strings = false;
 			opts.do_flatten = true;
 			opts.do_junk = true;
-			opts.do_numbers = true;
+			// numbers OFF: self-mod writes and dispatch constants must
+			// stay raw literals (F5/F14 shape; splitting rewrote the
+			// alias writes and state constants)
+			opts.do_numbers = false;
 			opts.do_body = false;
 			opts.do_antidbg = false;
 			opts.do_vm = true;
@@ -338,6 +341,7 @@ fn main() -> ExitCode {
 				&mut rng,
 				n,
 				opts.do_v15,
+				&program.nop_sites,
 			);
 			if std::env::var("LURAPH_VM_TSRC").is_ok() {
 				std::fs::write("/tmp/vm_tsrc.lua", &tsrc).unwrap();
@@ -385,7 +389,16 @@ fn main() -> ExitCode {
 					junk::inject(&mut tblock, &mut ttable, &mut rng, 2);
 				}
 				if opts.do_mangle {
-					mangle::mangle(&mut ttable, &mut rng);
+					// scaffold param names used inside the wrapper
+					// functions must never be shadowed by mangled
+					// interpreter locals (they share the def-runner
+					// scope after wrapping)
+					reserved.extend(
+						["b", "C", "p1", "p2", "p3", "E", "V"]
+							.iter()
+							.map(|s| s.to_string()),
+					);
+					mangle::mangle(&mut ttable, &mut rng, true);
 				}
 				if opts.do_strings {
 					strings::apply_strings(
@@ -496,7 +509,7 @@ fn main() -> ExitCode {
 				tlog("junk");
 			}
 			if opts.do_mangle {
-				mangle::mangle(&mut table, &mut rng);
+				mangle::mangle(&mut table, &mut rng, false);
 				tlog("mangle");
 			}
 			reserved = mangle::reserved_set(

@@ -54,7 +54,10 @@ impl<'a> Printer<'a> {
 		for (i, s) in b.stmts.iter().enumerate() {
 			self.print_stmt(s);
 			if i + 1 < b.stmts.len() {
-				self.out.push('\n');
+				// explicit statement separator: survives minify's
+				// re-lexing and gives v15-family outputs the sample's
+				// `stmt;stmt` shape (fingerprint F11 needs `...;if ...`)
+				self.out.push_str(";\n");
 			}
 		}
 	}

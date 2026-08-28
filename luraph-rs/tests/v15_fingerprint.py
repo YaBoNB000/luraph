@@ -337,7 +337,7 @@ def analyze(path):
     F.append(check("F10", "短字符串字面量数", nstr, 28, 10 <= nstr <= 60))
 
     # ---- F11 fetch 循环 local X=T[Y];if X
-    fetch = len(re.findall(r"local (\w)=(\w)\[(\w)\];if \1", code))
+    fetch = len(re.findall(r"local (\w{1,2})=(\w{1,2})\[(\w{1,2})\];if \1", code))
     F.append(check("F11", "fetch 循环数", fetch, 19, fetch >= 4))
 
     # ---- F12 pcall 包帧 + 包装闭包
@@ -353,7 +353,7 @@ def analyze(path):
                    (264, 136), mb >= 50 and base >= 20))
 
     # ---- F14 SoA 常量自写回
-    sow = re.findall(r";(\w)\[(\w+)\]=(\d+);", code)
+    sow = re.findall(r";(\w{1,2})\[(\w+)\]=(\d+);", code)
     F.append(check("F14", "SoA 常量写回数", len(sow), 18, len(sow) >= 3))
 
     # ---- F15 LCG 形态 + 嵌套槽状态写

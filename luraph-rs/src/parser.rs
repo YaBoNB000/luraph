@@ -1196,3 +1196,4 @@ pub fn parse(src: &str, luau: bool) -> Result<Block, ParseError> {
 	}
 	Ok(block)
 }
+
