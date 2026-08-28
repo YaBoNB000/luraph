@@ -230,11 +230,37 @@ pub fn generate(
 	let oc_table = format!("local OC = {{{}}}", oc_items.join(", "));
 
 	let nop = nop_body(rng);
+	// v15 (A1 execution inlining): each dispatch leaf reads its operands
+	// from the SoA streams and advances pc itself, so the loop head is the
+	// sample's `local oc = W[pc]; if oc ...` shape (fingerprint F11).
+	// Stream holding operand `op` is [SA,SB,SC,SD][operand_stream[op]],
+	// where operand_stream[op] = the stream slot with slot_perm[sl]==op.
+	let stream_names = ["SA", "SB", "SC", "SD"];
+	let mut operand_stream = [0u8; 4];
+	for (sl, &op_idx) in slot_perm.iter().enumerate() {
+		operand_stream[op_idx as usize] = sl as u8;
+	}
+	let op_prefix = format!(
+		"local a = {}[pc]; local b = {}[pc]; local c = {}[pc]; local d = {}[pc]; pc = pc + 1;",
+		stream_names[operand_stream[0] as usize],
+		stream_names[operand_stream[1] as usize],
+		stream_names[operand_stream[2] as usize],
+		stream_names[operand_stream[3] as usize],
+	);
 	let body_of = |name: &str| -> String {
-		if name == "Nop" || name == "NopA" {
+		let core = if name == "Nop" || name == "NopA" {
 			nop.clone()
 		} else {
 			branch_code(name)
+		};
+		if v15 {
+			if core.is_empty() {
+				op_prefix.clone()
+			} else {
+				format!("{} {}", op_prefix, core)
+			}
+		} else {
+			core
 		}
 	};
 	let mut items: Vec<(String, u8)> = (0..N_OPS)
@@ -374,7 +400,13 @@ pub fn generate(
 		"local function hub(W, SA, SB, SC, SD, pc)\n    return {}\n  end",
 		hub_ret.join(", ")
 	);
-	let (hub_decl, fetch) = if use_hub {
+	// v15 (A1): inline sample-shape fetch — `local oc = W[pc]` with no
+	// pc-advance / operand-bind (each dispatch leaf does that via
+	// op_prefix), giving the loop head the sample's F11 shape. The hub
+	// machinery stays for the legacy profile only.
+	let (hub_decl, fetch) = if v15 {
+		(String::new(), "local oc = W[pc]".to_string())
+	} else if use_hub {
 		(
 			hub_fn,
 			format!(
