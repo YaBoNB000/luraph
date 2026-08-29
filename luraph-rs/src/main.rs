@@ -547,7 +547,13 @@ fn main() -> ExitCode {
 			}
 		}
 		tlog("pre-print");
-		let out = printer::print_chunk(&table, &block);
+		// Luau targets print with compound-assignment folding (F24
+		// sample shape); 5.1 keeps plain assignments
+		let out = if luau {
+			printer::print_chunk_luau(&table, &block)
+		} else {
+			printer::print_chunk(&table, &block)
+		};
 		tlog("print");
 		if opts.do_minify {
 			let m = minify::minify(&out, luau).map_err(|e| format!("minify: {}", e))?;

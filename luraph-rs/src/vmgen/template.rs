@@ -749,8 +749,9 @@ pub fn generate(
 		let sb = stream_names[operand_stream[1] as usize];
 		let sc = stream_names[operand_stream[2] as usize];
 		let sd = stream_names[operand_stream[3] as usize];
+		// F11 fetch shape: `local oc=W[pc];if oc then ... end`
 		let cps_fetch = format!(
-			"local oc = W[pc]\nlocal a = {sa}[pc]\nlocal b = {sb}[pc]\nlocal c = {sc}[pc]\nlocal d = {sd}[pc]\npc = pc + 1\nif oc == OC.Call then {call} elseif oc == OC.CallE then {calle} elseif oc == OC.CallM then {callm} elseif oc == OC.CallT then {callt} else local r = H[oc](a,b,c,d); if r then return U(r[1], 1, r[2]) end end",
+			"local oc = W[pc];if oc then local a = {sa}[pc];local b = {sb}[pc];local c = {sc}[pc];local d = {sd}[pc];pc = pc + 1;if oc == OC.Call then {call} elseif oc == OC.CallE then {calle} elseif oc == OC.CallM then {callm} elseif oc == OC.CallT then {callt} else local r = H[oc](a,b,c,d); if r then return U(r[1], 1, r[2]) end end end",
 			sa = sa, sb = sb, sc = sc, sd = sd,
 			call = branch_code_v15("Call"),
 			calle = branch_code_v15("CallE"),

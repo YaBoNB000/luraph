@@ -401,7 +401,9 @@ pub fn scaffold(
 	let v2h = nm.take(); // verify (compare -> trap / continue)
 
 	let n = carriers.len();
-	const CHUNKS: usize = 3;
+	// 5 chunk literals per carrier (sample-scale staging chain density:
+	// grows named handlers / state returns / fused conditionals)
+	const CHUNKS: usize = 5;
 
 	// SECURITY (sample parity): the carrier keystream comes from a
 	// state-machine LCG, NOT literal constants in the chunk handlers.
@@ -447,6 +449,12 @@ pub fn scaffold(
 	let entryslot = vmslot + 1;
 	let sumslot = entryslot + 1;
 	let verifyslot = sumslot + 1;
+	let auxslot = verifyslot + 1;
+	// decoy LCG slots (F28): parked far above BOTH the context C range
+	// (..=auxslot) and the primitive-slot draw (1..=126), so no other
+	// mechanism ever indexes them -> static external refs stay 0
+	let decoy1 = auxslot as i64 + 100;
+	let decoy2 = auxslot as i64 + 101;
 
 	// one state per step + terminal; ascending
 	let nsteps = n * (1 + CHUNKS) + 4;
@@ -546,6 +554,17 @@ pub fn scaffold(
 		parse_expr("function(b,b) return b%4294967296 end"),
 	));
 
+	// ---- decoy LCG slots (sample [63]/[96] family, F28): numeric-slot
+	// functions carrying the 2^28 modulus, statically never referenced
+	// anywhere else (external `\w\[key\]` count stays 0)
+	for &dk in &[decoy1, decoy2] {
+		let src = format!(
+			"function(b) local q=7; q=(213*q+225)%268435456; \
+			 q=(q*213+225)%268435456; return q end"
+		);
+		fields.push(slotted(dk, parse_expr(&src)));
+	}
+
 	// ---- staging chain: per carrier = 1 fold handler (length checksum
 	// through the assistants) + CHUNKS storage handlers
 	for (k, chunks) in chunked.iter().enumerate() {
@@ -558,11 +577,16 @@ pub fn scaffold(
 			// phase recomputes it from the stored chunks, so any
 			// tampering -- even length-preserving -- breaks the fold)
 			let ksum: usize = carriers[k].iter().map(|&b| b as usize).sum();
+			let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
+			let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
 			let src = format!(
 				"function(b,C,{ra},{rb},{rc}) local s=C[{sumslot}]; \
+				 local Q=C[{sumslot}]>=0 and {da} or {db}; \
 				 C[{sumslot}]=b:{modulo}(b:{mul}(s,31)+{ksum}); \
 				 return {ret},C,{rb},{rc},{ra} end",
 				sumslot = sumslot,
+				da = decoy_a,
+				db = decoy_b,
 				modulo = modulo,
 				mul = mul,
 				ksum = ksum,
@@ -596,14 +620,19 @@ pub fn scaffold(
 					c ^ key
 				})
 				.collect();
+			let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
+			let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
 			let src = format!(
 				"function(b,C,{ra},{rb},{rc}) local seg={lit}; local kv=b[{kg}](b); local t={{}}; \
+				 local Q=C[{idx}]~=nil and {da} or {db}; \
 				 for i=1,#seg do t[i]=string.char(bit32.bxor(string.byte(seg,i),(kv+i)%256)) end; \
 				 C[{idx}]=table.concat(t); \
 				 return {ret},C,{rc},{ra},{rb} end",
 				idx = k * CHUNKS + j + 1,
 				lit = lua_bytes_lit(&xored),
 				kg = kg_slot,
+				da = decoy_a,
+				db = decoy_b,
 				ret = ret,
 				ra = ra,
 				rb = rb,
@@ -652,18 +681,31 @@ pub fn scaffold(
 		let cargs: Vec<String> = (0..n)
 			.map(|k| {
 				let base = k * CHUNKS + 1;
-				format!("C[{}]..C[{}]..C[{}]", base, base + 1, base + 2)
+				(0..CHUNKS)
+					.map(|j| format!("C[{}]", base + j))
+					.collect::<Vec<_>>()
+					.join("..")
 			})
 			.collect();
+		// F12 wrap shape: the multi-assign carries `=N,function(...)`
+		// (constant + wrapper closure); the entry closure lands in the
+		// entry slot, the constant in the aux slot. The builder handler
+		// then aliases itself over to the entry closure (runtime
+		// named-field write, F26).
+		let wrap_n: i64 = rng.int(4, 40);
 		let src = format!(
 			"function(b,C,{ra},{rb},{rc}) \
 			 local E=function(...) return C[{vmslot}]({cargs}) end; \
-			 C[{entryslot}]=function(...) return b[{r2}](b,E,...) end; \
+			 C[{auxslot}],C[{entryslot}]={wrap_n},function(...) return b[{r2}](b,E,...) end; \
+			 b.{ehandler}=C[{entryslot}]; \
 			 return {ret},C,{ra},{rc},{rb} end",
 			vmslot = vmslot,
 			cargs = cargs.join(","),
+			auxslot = auxslot,
 			entryslot = entryslot,
+			wrap_n = wrap_n,
 			r2 = runner2,
+			ehandler = ehandler,
 			ret = ret,
 			ra = ra,
 			rb = rb,
@@ -684,18 +726,32 @@ pub fn scaffold(
 		let (ra, rb, rc) = (fillers[0], fillers[1], fillers[2]);
 		let (st, ret) = step(&mut state_i);
 		let mut body = String::from("local s=0;");
+		// F11 fetch-shape scans: materialize the first carrier's chunks
+		// into byte tables and walk them with `local v=T[Q]; if v`
+		// fetch loops (real byte-sum work feeding the aux slot)
+		for j in 0..CHUNKS {
+			body.push_str(&format!(
+				"local T={{{}}};for i=1,#C[{c}] do T[i]=string.byte(C[{c}],i) end;\
+				 local Q=1;while Q<=#T do local v=T[Q];if v then C[{aux}]=C[{aux}]+v end;Q=Q+1 end;",
+				"",
+				c = j + 1,
+				aux = auxslot,
+			));
+		}
 		for k in 0..n {
 			let base = k * CHUNKS + 1;
 			// re-fold the byte sums from the STORED chunks
+			body.push_str(&format!("local t{k}=0;", k = k));
+			for j in 0..CHUNKS {
+				body.push_str(&format!(
+					"for i=1,#C[{c}] do t{k}=t{k}+string.byte(C[{c}],i) end;",
+					c = base + j,
+					k = k,
+				));
+			}
 			body.push_str(&format!(
-				"local t{k}=0;for i=1,#C[{a}] do t{k}=t{k}+string.byte(C[{a}],i) end;\
-				 for i=1,#C[{b2}] do t{k}=t{k}+string.byte(C[{b2}],i) end;\
-				 for i=1,#C[{c}] do t{k}=t{k}+string.byte(C[{c}],i) end;\
-				 s=b:{mod}(b:{mul}(s,31)+t{k});",
+				"s=b:{mod}(b:{mul}(s,31)+t{k});",
 				k = k,
-				a = base,
-				b2 = base + 1,
-				c = base + 2,
 				mod = modulo,
 				mul = mul,
 			));
@@ -763,23 +819,28 @@ pub fn scaffold(
 	// state to it is correct)
 	{
 		let mid = states[(nsteps as usize) / 2];
+		// upper branch routes through a `[7]=` tuple slot (F30 layout)
 		let src = format!(
-			"function(b,C,V,f1,f2,f3) while true do if V<={} then \
-			 return b:{}(C,V,f1,f2,f3) else return b:{}(C,V,f1,f2,f3) end end end",
-			mid, loop_name, loop_name
+			"function(b,C,V,f1,f2,f3) local K={{[7]='{}'}}; \
+			 while true do if V<={} then \
+			 return b[K[7]](b,C,V,f1,f2,f3) else return b:{}(C,V,f1,f2,f3) end end end",
+			loop_name, mid, loop_name
 		);
 		fields.push(named(xl.clone(), parse_expr(&src)));
 	}
 
 	// ---- top machine (sample FC shape): initializer -> while-flag loop
-	// -> sub-dispatcher -> control-code return
+	// -> sub-dispatcher -> control-code return. The sub-dispatcher is
+	// routed through a tuple slot (F31: `b[J[4]](...)` indirection; the
+	// `[4]=` literal also feeds F30).
 	{
 		let src = format!(
 			"function(b,...) local u,z,Z,o,w,K,G,q,M,F,H,E=b:{}(); \
-			 local V,f1,f2,f3,C=z,Z,o,w,{{}}; C[{}]=0; \
-			 while u do local h2,B=b:{}(C,V,f1,f2,f3); \
+			 local V,f1,f2,f3,C=z,Z,o,w,{{}}; C[{}]=0; C[{}]=0; \
+			 local J={{[4]='{}',[7]='{}'}}; \
+			 while u do local h2,B=b[J[4]](b,C,V,f1,f2,f3); \
 			 if h2==2 then return B end end end",
-			init, sumslot, xl
+			init, sumslot, auxslot, xl, xl
 		);
 		fields.push(named(fc.clone(), parse_expr(&src)));
 	}

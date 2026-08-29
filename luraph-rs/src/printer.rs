@@ -17,6 +17,10 @@ pub struct Printer<'a> {
 	pub table: &'a SymTable,
 	pub out: String,
 	pub indent: usize,
+	/// Luau target: fold `x = x op y` into compound `x op= y` (F24
+	/// sample shape). Only pure targets (ident / dot / index chains
+	/// without calls) fold, so lvalue evaluation counts never change.
+	pub luau_fold: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,6 +47,17 @@ impl<'a> Printer<'a> {
 			table,
 			out: String::new(),
 			indent: 0,
+			luau_fold: false,
+		}
+	}
+
+	/// Luau-target printer: enables compound-assignment folding.
+	pub fn new_luau(table: &'a SymTable) -> Printer<'a> {
+		Printer {
+			table,
+			out: String::new(),
+			indent: 0,
+			luau_fold: true,
 		}
 	}
 
@@ -120,6 +135,21 @@ impl<'a> Printer<'a> {
 			}
 			Stmt::Assign { targets, values } => {
 				self.out.push_str(&self.ind());
+				// Luau compound fold: `x = x op y` -> `x op= y`
+				if self.luau_fold && targets.len() == 1 && values.len() == 1 {
+					if let Expr::Bin { op, l, r } = &values[0] {
+						if let Some(sym) = compound_sym(op) {
+							if foldable_target(&targets[0]) && expr_same(&targets[0], l) {
+								self.print_expr(&targets[0], Ctx::Top);
+								self.out.push(' ');
+								self.out.push_str(sym);
+								self.out.push(' ');
+								self.print_expr(r, Ctx::Top);
+								return;
+							}
+						}
+					}
+				}
 				for (i, t) in targets.iter().enumerate() {
 					if i > 0 {
 						self.out.push_str(", ");
@@ -621,9 +651,59 @@ pub fn print_string_bytes(bytes: &[u8], is_binary: bool) -> String {
 	}
 }
 
+/// Compound-fold operator text (Luau). Idiv excluded: it prints as
+/// math.floor(l / r), and Concat has no `..=`.
+fn compound_sym(op: &BinOp) -> Option<&'static str> {
+	match op {
+		BinOp::Add => Some("+="),
+		BinOp::Sub => Some("-="),
+		BinOp::Mul => Some("*="),
+		BinOp::Div => Some("/="),
+		BinOp::Mod => Some("%="),
+		BinOp::Pow => Some("^="),
+		_ => None,
+	}
+}
+
+/// Pure lvalue: identifier / dot / index chains without calls or other
+/// side effects — folding keeps the lvalue evaluation count identical.
+fn foldable_target(e: &Expr) -> bool {
+	match e {
+		Expr::Ident { .. } => true,
+		Expr::Dot { obj, .. } => foldable_target(obj),
+		Expr::Index { obj, idx } => foldable_target(obj) && foldable_target(idx),
+		_ => false,
+	}
+}
+
+/// Structural equality for the compound fold (`x = x op y` detection).
+fn expr_same(a: &Expr, b: &Expr) -> bool {
+	match (a, b) {
+		(Expr::Ident { sym: sa, .. }, Expr::Ident { sym: sb, .. }) => sa == sb,
+		(Expr::Dot { obj: oa, name: na }, Expr::Dot { obj: ob, name: nb }) => {
+			na == nb && expr_same(oa, ob)
+		}
+		(
+			Expr::Index { obj: oa, idx: ia },
+			Expr::Index { obj: ob, idx: ib },
+		) => expr_same(oa, ob) && expr_same(ia, ib),
+		(Expr::Num { value: va, .. }, Expr::Num { value: vb, .. }) => va == vb,
+		(Expr::Str { bytes: ba, .. }, Expr::Str { bytes: bb, .. }) => ba == bb,
+		_ => false,
+	}
+}
+
 /// Public entry: print a whole chunk.
 pub fn print_chunk(table: &SymTable, block: &Block) -> String {
 	let mut p = Printer::new(table);
+	p.print_block(block);
+	p.out.push('\n');
+	p.out
+}
+
+/// Luau-target entry: compound-assignment folding enabled.
+pub fn print_chunk_luau(table: &SymTable, block: &Block) -> String {
+	let mut p = Printer::new_luau(table);
 	p.print_block(block);
 	p.out.push('\n');
 	p.out
