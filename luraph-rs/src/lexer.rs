@@ -39,6 +39,12 @@ pub struct Token {
 	pub parts: Vec<InterpPart>,
 	/// Interp: raw source of each Expr part, in order.
 	pub interp_srcs: Vec<String>,
+	/// Str/Interp: the literal used numeric/hex escapes producing bytes
+	/// >= 0x80 (ciphertext/bytecode blob shape) — the parser lifts this
+	/// into `Expr::Str.is_binary` so the printer re-escapes every high
+	/// byte instead of UTF-8 passthrough (which would emit CJK garbage
+	/// from arbitrary blob bytes; see examples purity rule).
+	pub high_bytes: bool,
 	pub line: usize,
 	pub kind: TokKind,
 }
@@ -329,6 +335,7 @@ impl Lexer {
 		let start = self.pos;
 		self.advance(1); // opening quote
 		let mut out: Vec<u8> = Vec::new();
+		let mut high = false;
 		loop {
 			let c = self.peek(0);
 			if c == 0 {
@@ -342,7 +349,11 @@ impl Lexer {
 				return Err(self.err("unterminated string (newline)"));
 			}
 			if c == b'\\' {
+				let pre = out.len();
 				let skip = self.decode_escape(&mut out)?;
+				if out[pre..].iter().any(|&b| b >= 0x80) {
+					high = true;
+				}
 				if !skip {
 					self.advance(2);
 				}
@@ -358,6 +369,7 @@ impl Lexer {
 			false,
 		);
 		t.bytes = out;
+		t.high_bytes = high;
 		t.line = line;
 		Ok(t)
 	}
@@ -421,6 +433,7 @@ impl Lexer {
 		let mut texts: Vec<Vec<u8>> = Vec::new();
 		let mut cur: Vec<u8> = Vec::new();
 		let mut has_expr = false;
+		let mut high = false;
 
 		macro_rules! flush_text {
 			() => {
@@ -444,7 +457,11 @@ impl Lexer {
 				break;
 			}
 			if c == b'\\' {
+				let pre = cur.len();
 				let skip = self.decode_escape(&mut cur)?;
+				if cur[pre..].iter().any(|&b| b >= 0x80) {
+					high = true;
+				}
 				if !skip {
 					self.advance(2);
 				}
@@ -554,6 +571,7 @@ impl Lexer {
 
 		let mut t = self.mktok(TokKind::Str, String::new(), 0.0, false);
 		t.line = line;
+		t.high_bytes = high;
 		if !has_expr {
 			t.bytes = cur;
 			return Ok(t);
@@ -594,6 +612,7 @@ impl Lexer {
 			bytes: Vec::new(),
 			parts: Vec::new(),
 			interp_srcs: Vec::new(),
+			high_bytes: false,
 			line: self.line,
 			kind,
 		}
@@ -748,6 +767,32 @@ mod tests {
 		let t = toks("local x = [[ab\ncd]] local y = [==[ef]==]", false);
 		assert_eq!(t[3].bytes, b"ab\ncd");
 		assert_eq!(t[7].bytes, b"ef");
+	}
+
+	/// 2026-08-29 regression: v15 carrier blobs (escaped >= 0x80 bytes)
+	/// re-printed as UTF-8 passthrough leaked CJK/special characters into
+	/// the output. Escaped high bytes must mark the literal binary so the
+	/// printer re-escapes everything; raw source UTF-8 keeps passing
+	/// through readable.
+	#[test]
+	fn high_escape_binary_flag() {
+		let t = toks(r#""\229\190\160\72\65""#, true);
+		assert!(t[0].high_bytes, "escaped high bytes => binary");
+		let t2 = toks(r#""abc\65\10""#, true);
+		assert!(!t2[0].high_bytes, "low escapes stay non-binary");
+		let t3 = toks("\"你好\"", true);
+		assert!(!t3[0].high_bytes, "raw UTF-8 stays non-binary");
+
+		// end-to-end: parse + print
+		let mut b1 = crate::parser::parse(r#"local s = "\229\190\160\72\65""#, true).unwrap();
+		let tab1 = crate::symtab::resolve(&mut b1);
+		let out1 = crate::printer::print_chunk(&tab1, &b1);
+		assert!(out1.is_ascii(), "blob literal must reprint pure ASCII: {out1}");
+
+		let mut b2 = crate::parser::parse("local s = \"你好\"", true).unwrap();
+		let tab2 = crate::symtab::resolve(&mut b2);
+		let out2 = crate::printer::print_chunk(&tab2, &b2);
+		assert!(out2.contains("你好"), "raw UTF-8 must pass through: {out2}");
 	}
 
 	#[test]

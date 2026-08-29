@@ -775,7 +775,7 @@ impl Parser {
 			}
 			TokKind::Str => {
 				self.next();
-				Ok(Expr::Str { bytes: t.bytes, is_binary: false })
+				Ok(Expr::Str { bytes: t.bytes, is_binary: t.high_bytes })
 			}
 			TokKind::Interp => {
 				self.next();
@@ -855,7 +855,7 @@ impl Parser {
 			}
 		}
 		if args.is_empty() {
-			return Ok(Expr::Str { bytes: fmt, is_binary: false });
+			return Ok(Expr::Str { bytes: fmt, is_binary: t.high_bytes });
 		}
 		let func = Expr::Dot {
 			obj: Box::new(Expr::Ident {
@@ -864,7 +864,7 @@ impl Parser {
 			}),
 			name: "format".to_string(),
 		};
-		let mut all = vec![Expr::Str { bytes: fmt, is_binary: false }];
+		let mut all = vec![Expr::Str { bytes: fmt, is_binary: t.high_bytes }];
 		all.extend(args);
 		Ok(Expr::Call {
 			func: Box::new(func),
