@@ -418,7 +418,6 @@ pub fn scaffold(
 	decoy2: i64,
 	carrier: &crate::vmgen::isa::Carrier,
 ) -> (Vec<TableField>, String) {
-	let carrier_reserved = carrier.reserved;
 	let carrier_tokens: &[String] = &carrier.tokens;
 	let mut nm = Names::new(rng);
 	let fc = nm.take(); // entry machine
@@ -452,26 +451,8 @@ pub fn scaffold(
 	let (km3, kc3) = (lcm(rng), lcc(rng));
 	let mut ks_state: i64 = ks_seed;
 
-	// ---- RC blob (F8): one giant LONG STRING holding every carrier's
-	// base-94 text back to back (padded to >= 10.5 KB with a plain
-	// alphabet glyph). The verify handler re-encodes the decoded
-	// chunks through the reverse token table RT and compares each
-	// carrier's RC slice -- a real cross-layer integrity check, sample
-	// RC-blob shape. Execution still runs off the XORed chunk literals
-	// (S1 stays intact); RC is the verification copy.
-	let rc_name = nm.take();
+	// ---- RT reverse-token table names (F8 pC shape below)
 	let rt_name = nm.take();
-	let mut rc_bytes: Vec<u8> = Vec::new();
-	let mut rc_bounds: Vec<(usize, usize)> = Vec::new(); // 1-based inclusive
-	for c in carriers {
-		let start = rc_bytes.len() + 1;
-		rc_bytes.extend_from_slice(c);
-		rc_bounds.push((start, rc_bytes.len()));
-	}
-	let pad_glyph: u8 = if carrier_reserved != b'a' { b'a' } else { b'b' };
-	while rc_bytes.len() < 10_500 {
-		rc_bytes.push(pad_glyph);
-	}
 
 	// Split every carrier into CHUNKS literals (the entry builder
 	// concats them back when calling the VM).
@@ -620,18 +601,9 @@ pub fn scaffold(
 		fields.push(slotted(dk, parse_expr(&src)));
 	}
 
-	// ---- RC blob (F8): the concatenated carrier texts live in one
-	// giant long string. The verify handler re-glues the decoded chunks
-	// and compares each carrier's RC slice (a real integrity check).
-	fields.push(named(
-		rc_name.clone(),
-		Expr::LongStr { bytes: rc_bytes.clone() },
-	));
-
 	// ---- RT reverse-token table (F8 pC shape: 1-char key -> 5-char
 	// value). Maps each carrier special byte to its 5-byte token, the
-	// inverse of the interpreter's TK; used by the re-encode integrity
-	// fold below.
+	// inverse of the interpreter's TK (sample pC escape-table shape).
 	{
 		let mut entries: Vec<TableField> = Vec::new();
 		for (i, tok) in carrier_tokens.iter().enumerate() {
@@ -679,6 +651,17 @@ pub fn scaffold(
 			}
 			hb_bounds.push((hs, hb_bytes.len()));
 		}
+	}
+	// F8 size floor: pad the hex blob with random hex chars (even
+	// count). XORed data + random hex carry no visible structure --
+	// unlike the dropped plain-carrier RC blob, whose raw zero-byte
+	// runs surfaced as conspicuous same-char streaks (user report
+	// 2026-08-29; the sample's blob is keystream-random too). Padding
+	// sits after the last chunk slice, invisible to the handlers.
+	while hb_bytes.len() < 10_500 {
+		let n = rng.int(0, 255) as u8;
+		hb_bytes.push(HEX[(n >> 4) as usize]);
+		hb_bytes.push(HEX[(n & 15) as usize]);
 	}
 	fields.push(named(
 		hb_name.clone(),
@@ -917,23 +900,11 @@ pub fn scaffold(
 				mod = modulo,
 				mul = mul,
 			));
-			// RC integrity: re-glue the decoded chunks and compare the
-			// carrier's RC slice byte-for-byte. Any tamper of the XORed
-			// chunks / LCG key / RC breaks the match -> silent trap.
-			// (RT stays the pC-shaped reverse-token table; a re-encode
-			// walk over single chars was wrong whenever the reserved
-			// glyph is itself a carrier special -- seed-dependent trap.)
-			let (rs, re_) = rc_bounds[k];
-			let concat: Vec<String> = (0..CHUNKS)
-				.map(|j| format!("C[{}]", base + j))
-				.collect();
-			body.push_str(&format!(
-				"if {cc}~=string.sub(b.{rc},{rs},{re}) then while true do end end;",
-				cc = concat.join(".."),
-				rc = rc_name,
-				rs = rs,
-				re = re_,
-			));
+			// Integrity here = the double fold: the staging phase folded
+			// each carrier's byte SUM from the XORed chunks (into
+			// sumslot); this handler re-folds from the DECODED chunks.
+			// The two are compared at v2 (mismatch -> silent trap), so
+			// any tamper of HB / LCG key / decode breaks the fold.
 		}
 		let src = format!(
 			"function(b,C,{ra},{rb},{rc},{rd},{re}) {body} C[{verifyslot}]=s; \
