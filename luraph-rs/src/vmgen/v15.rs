@@ -24,6 +24,7 @@
 use crate::ast::{self, Expr, TableField};
 use crate::parser;
 use crate::rng::Rng;
+use crate::vmgen::isa::CARRIER_SPECIALS;
 
 /// (value source, is_dot) primitives. Dots = `lib.name`, bare = global.
 const PRIM_DOTS: &[&str] = &[
@@ -376,6 +377,34 @@ fn dispatch_tree(
 /// `vm_name` local); `carriers` are the encoded bytecode strings.
 /// Returns module-table fields (as parsed expressions) + the entry
 /// machine's field name.
+/// Chunk literals per carrier (sample-scale staging chain density:
+/// grows named handlers / state returns / fused conditionals).
+pub const CHUNKS: usize = 5;
+
+/// Decoy LCG slots (F28): parked far above BOTH the context C range
+/// (..=auxslot) and the primitive-slot draw (1..=126), and shifted off
+/// any reserved runner/keystream slot, so no other mechanism ever
+/// indexes them -> static external refs stay 0 and no slot collision
+/// can shadow a runner (2026-08-29 seed-42 tables.lua regression).
+/// Decoy LCG slots (F28). Slot numbers must clear every numeric-index
+/// mechanism in the output: module-field draw (1..126), runner/keystream
+/// slots, primitive slots (1..80), AL alphabet keys (byte values 32..126),
+/// context C slots (..=auxslot) -- and, critically, the Nop self-mod
+/// literal writes `ZW[pos] = alias` whose positions reach the per-function
+/// instruction counts (bounded by the carrier byte lengths). Parking the
+/// decoys above max carrier length + margin clears all of them.
+pub fn decoy_slots(max_carrier_len: usize, avoid: &[i64]) -> (i64, i64) {
+	let mut d1 = max_carrier_len as i64 + 500;
+	let mut d2 = d1 + 1;
+	while avoid.contains(&d1) {
+		d1 += 2;
+	}
+	while avoid.contains(&d2) || d2 == d1 {
+		d2 += 2;
+	}
+	(d1, d2)
+}
+
 pub fn scaffold(
 	rng: &mut Rng,
 	interp_src: &str,
@@ -385,7 +414,12 @@ pub fn scaffold(
 	runner2: i64,
 	ks_slot: i64,
 	kg_slot: i64,
+	decoy1: i64,
+	decoy2: i64,
+	carrier: &crate::vmgen::isa::Carrier,
 ) -> (Vec<TableField>, String) {
+	let carrier_reserved = carrier.reserved;
+	let carrier_tokens: &[String] = &carrier.tokens;
 	let mut nm = Names::new(rng);
 	let fc = nm.take(); // entry machine
 	let init = nm.take(); // initializer
@@ -401,9 +435,6 @@ pub fn scaffold(
 	let v2h = nm.take(); // verify (compare -> trap / continue)
 
 	let n = carriers.len();
-	// 5 chunk literals per carrier (sample-scale staging chain density:
-	// grows named handlers / state returns / fused conditionals)
-	const CHUNKS: usize = 5;
 
 	// SECURITY (sample parity): the carrier keystream comes from a
 	// state-machine LCG, NOT literal constants in the chunk handlers.
@@ -420,6 +451,27 @@ pub fn scaffold(
 	let (km2, kc2) = (lcm(rng), lcc(rng));
 	let (km3, kc3) = (lcm(rng), lcc(rng));
 	let mut ks_state: i64 = ks_seed;
+
+	// ---- RC blob (F8): one giant LONG STRING holding every carrier's
+	// base-94 text back to back (padded to >= 10.5 KB with a plain
+	// alphabet glyph). The verify handler re-encodes the decoded
+	// chunks through the reverse token table RT and compares each
+	// carrier's RC slice -- a real cross-layer integrity check, sample
+	// RC-blob shape. Execution still runs off the XORed chunk literals
+	// (S1 stays intact); RC is the verification copy.
+	let rc_name = nm.take();
+	let rt_name = nm.take();
+	let mut rc_bytes: Vec<u8> = Vec::new();
+	let mut rc_bounds: Vec<(usize, usize)> = Vec::new(); // 1-based inclusive
+	for c in carriers {
+		let start = rc_bytes.len() + 1;
+		rc_bytes.extend_from_slice(c);
+		rc_bounds.push((start, rc_bytes.len()));
+	}
+	let pad_glyph: u8 = if carrier_reserved != b'a' { b'a' } else { b'b' };
+	while rc_bytes.len() < 10_500 {
+		rc_bytes.push(pad_glyph);
+	}
 
 	// Split every carrier into CHUNKS literals (the entry builder
 	// concats them back when calling the VM).
@@ -450,14 +502,16 @@ pub fn scaffold(
 	let sumslot = entryslot + 1;
 	let verifyslot = sumslot + 1;
 	let auxslot = verifyslot + 1;
-	// decoy LCG slots (F28): parked far above BOTH the context C range
-	// (..=auxslot) and the primitive-slot draw (1..=126), so no other
-	// mechanism ever indexes them -> static external refs stay 0
-	let decoy1 = auxslot as i64 + 100;
-	let decoy2 = auxslot as i64 + 101;
 
+	// Scale floor (F4/F5/F6/F21/F23): small source programs yield few
+	// staging handlers; pad the chain with real state-advancing
+	// handlers up to sample-scale density so every output carries the
+	// full fingerprint magnitude.
+	const MIN_STAGING: usize = 100;
+	let natural = n * (1 + CHUNKS);
+	let filler = if natural < MIN_STAGING { MIN_STAGING - natural } else { 0 };
 	// one state per step + terminal; ascending
-	let nsteps = n * (1 + CHUNKS) + 4;
+	let nsteps = natural + filler + 4;
 	let need = (nsteps + 1) as i64;
 	let mut ids: Vec<i64> = (3..=236).collect();
 	if (ids.len() as i64) < need {
@@ -566,8 +620,83 @@ pub fn scaffold(
 		fields.push(slotted(dk, parse_expr(&src)));
 	}
 
+	// ---- RC blob (F8): the concatenated carrier texts live in one
+	// giant long string. The verify handler re-glues the decoded chunks
+	// and compares each carrier's RC slice (a real integrity check).
+	fields.push(named(
+		rc_name.clone(),
+		Expr::LongStr { bytes: rc_bytes.clone() },
+	));
+
+	// ---- RT reverse-token table (F8 pC shape: 1-char key -> 5-char
+	// value). Maps each carrier special byte to its 5-byte token, the
+	// inverse of the interpreter's TK; used by the re-encode integrity
+	// fold below.
+	{
+		let mut entries: Vec<TableField> = Vec::new();
+		for (i, tok) in carrier_tokens.iter().enumerate() {
+			entries.push(TableField::Key {
+				key: Expr::Str {
+					bytes: vec![CARRIER_SPECIALS[i]],
+					is_binary: false,
+				},
+				value: Expr::Str {
+					bytes: tok.as_bytes().to_vec(),
+					is_binary: false,
+				},
+			});
+		}
+		fields.push(named(
+			rt_name.clone(),
+			Expr::Table { fields: entries },
+		));
+	}
+
 	// ---- staging chain: per carrier = 1 fold handler (length checksum
 	// through the assistants) + CHUNKS storage handlers
+	// ---- HB blob (F10): the XORed chunk literals move into ONE long
+	// string, hex-encoded (2 lowercase hex chars per byte). Chunk
+	// handlers slice + dehex at runtime -- no per-chunk short string
+	// literals left in the output. Precompute here so the staging loop
+	// below consumes identical key material (same LCG advance order).
+	const HEX: &[u8; 16] = b"0123456789abcdef";
+	let hb_name = nm.take();
+	let dh_name = nm.take();
+	let mut hb_bytes: Vec<u8> = Vec::new();
+	let mut hb_bounds: Vec<(usize, usize)> = Vec::new(); // 1-based hex range
+	for chunks in chunked.iter() {
+		for chunk in chunks.iter() {
+			ks_state = (km1 * ks_state + kc1) % 268435456;
+			ks_state = (km2 * ks_state + kc2) % 268435456;
+			ks_state = (km3 * ks_state + kc3) % 268435456;
+			let ks_const: i64 = ks_state;
+			let hs = hb_bytes.len() + 1;
+			for (i, &c) in chunk.iter().enumerate() {
+				let key = ((ks_const + (i as i64 + 1)) % 256) as u8;
+				let x = c ^ key;
+				hb_bytes.push(HEX[(x >> 4) as usize]);
+				hb_bytes.push(HEX[(x & 15) as usize]);
+			}
+			hb_bounds.push((hs, hb_bytes.len()));
+		}
+	}
+	fields.push(named(
+		hb_name.clone(),
+		Expr::LongStr { bytes: hb_bytes.clone() },
+	));
+	// hex decoder (scaffold-level helper field): pure arithmetic nibble
+	// fold, Luau if-expression shape
+	fields.push(named(
+		dh_name.clone(),
+		parse_expr(
+			"function(b,h) local t={} for i=1,#h,2 do \
+			 local x=string.byte(h,i);local y=string.byte(h,i+1); \
+			 local a=if x>=97 then x-87 else x-48; \
+			 local c=if y>=97 then y-87 else y-48; \
+			 t[#t+1]=string.char(a*16+c) end; return table.concat(t) end",
+		),
+	));
+
 	for (k, chunks) in chunked.iter().enumerate() {
 		{
 			rng.shuffle(&mut fillers);
@@ -609,30 +738,24 @@ pub fn scaffold(
 			let (ra, rb, rc, rd, re) = (fillers[0], fillers[1], fillers[2], fillers[3], fillers[4]);
 			let (st, ret) = step(&mut state_i);
 			let name = nm.take();
-			// Advance the LCG by three steps (matching the runtime KG
-			// generator) to obtain this chunk's key constant, then XOR.
-			ks_state = (km1 * ks_state + kc1) % 268435456;
-			ks_state = (km2 * ks_state + kc2) % 268435456;
-			ks_state = (km3 * ks_state + kc3) % 268435456;
-			let ks_const: i64 = ks_state;
-			let xored: Vec<u8> = chunk
-				.iter()
-				.enumerate()
-				.map(|(i, &c)| {
-					let key = ((ks_const + (i as i64 + 1)) % 256) as u8;
-					c ^ key
-				})
-				.collect();
+			// XORed bytes live in the HB long string (hex); the handler
+			// slices its precomputed range and dehexes at runtime. Key
+			// material was consumed by the HB precompute pass above.
+			let _ = chunk;
+			let (hs, he) = hb_bounds[k * CHUNKS + j];
 			let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
 			let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
 			let src = format!(
-				"function(b,C,{ra},{rb},{rc},{rd},{re}) local seg={lit}; local kv=b[{kg}](b); local t={{}}; \
+				"function(b,C,{ra},{rb},{rc},{rd},{re}) local seg=b:{dh}(string.sub(b.{hb},{hs},{he})); local kv=b[{kg}](b); local t={{}}; \
 				 local Q=C[{idx}]~=nil and {da} or {db}; \
 				 for i=1,#seg do t[i]=string.char(bit32.bxor(string.byte(seg,i),(kv+i)%256)) end; \
 				 C[{idx}]=table.concat(t); \
 				 return {ret},C,{rc},{ra},{rd},{re},{rb} end",
 				idx = k * CHUNKS + j + 1,
-				lit = lua_bytes_lit(&xored),
+				dh = dh_name,
+				hb = hb_name,
+				hs = hs,
+				he = he,
 				kg = kg_slot,
 				da = decoy_a,
 				db = decoy_b,
@@ -649,6 +772,36 @@ pub fn scaffold(
 				format!("V,C,f1,f2,f3,f4,f5=b:{}(C,f1,f2,f3,f4,f5);continue;", name),
 			));
 		}
+	}
+
+	// ---- scale-floor filler handlers: genuine state transitions
+	// (advance the machine, fused-conditional decoy local) that only
+	// exist when the source program is too small to fill the chain
+	for _ in 0..filler {
+		rng.shuffle(&mut fillers);
+		let (ra, rb, rc, rd, re) = (fillers[0], fillers[1], fillers[2], fillers[3], fillers[4]);
+		let (st, ret) = step(&mut state_i);
+		let name = nm.take();
+		let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
+		let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
+		let src = format!(
+			"function(b,C,{ra},{rb},{rc},{rd},{re}) local Q=C[{ss}]~=nil and {da} or {db}; \
+			 return {ret},C,{rb},{rc},{rd},{re},{ra} end",
+			ss = sumslot,
+			da = decoy_a,
+			db = decoy_b,
+			ret = ret,
+			ra = ra,
+			rb = rb,
+			rc = rc,
+			rd = rd,
+			re = re,
+		);
+		fields.push(named(name.clone(), parse_expr(&src)));
+		leaves.push((
+			st,
+			format!("V,C,f1,f2,f3,f4,f5=b:{}(C,f1,f2,f3,f4,f5);continue;", name),
+		));
 	}
 
 	// ---- interpreter-definition runner: lives in a numeric slot
@@ -763,6 +916,23 @@ pub fn scaffold(
 				k = k,
 				mod = modulo,
 				mul = mul,
+			));
+			// RC integrity: re-glue the decoded chunks and compare the
+			// carrier's RC slice byte-for-byte. Any tamper of the XORed
+			// chunks / LCG key / RC breaks the match -> silent trap.
+			// (RT stays the pC-shaped reverse-token table; a re-encode
+			// walk over single chars was wrong whenever the reserved
+			// glyph is itself a carrier special -- seed-dependent trap.)
+			let (rs, re_) = rc_bounds[k];
+			let concat: Vec<String> = (0..CHUNKS)
+				.map(|j| format!("C[{}]", base + j))
+				.collect();
+			body.push_str(&format!(
+				"if {cc}~=string.sub(b.{rc},{rs},{re}) then while true do end end;",
+				cc = concat.join(".."),
+				rc = rc_name,
+				rs = rs,
+				re = re_,
 			));
 		}
 		let src = format!(

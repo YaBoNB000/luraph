@@ -45,6 +45,9 @@ pub struct Token {
 	/// byte instead of UTF-8 passthrough (which would emit CJK garbage
 	/// from arbitrary blob bytes; see examples purity rule).
 	pub high_bytes: bool,
+	/// Str: source form was a long string `[[...]]` (parser maps it to
+	/// `Expr::LongStr` so the printer/minify keep the long-bracket form).
+	pub long_str: bool,
 	pub line: usize,
 	pub kind: TokKind,
 }
@@ -415,6 +418,7 @@ impl Lexer {
 					false,
 				);
 				t.bytes = body;
+				t.long_str = true;
 				t.line = line;
 				Ok(t)
 			}
@@ -613,6 +617,7 @@ impl Lexer {
 			parts: Vec::new(),
 			interp_srcs: Vec::new(),
 			high_bytes: false,
+			long_str: false,
 			line: self.line,
 			kind,
 		}

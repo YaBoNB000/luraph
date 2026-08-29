@@ -342,6 +342,7 @@ fn main() -> ExitCode {
 				n,
 				opts.do_v15,
 				&program.nop_sites,
+				&program.operand_sums,
 			);
 			if std::env::var("LURAPH_VM_TSRC").is_ok() {
 				std::fs::write("/tmp/vm_tsrc.lua", &tsrc).unwrap();
@@ -434,6 +435,11 @@ fn main() -> ExitCode {
 				let r2 = slot_pool[1];
 				let ks = slot_pool[2]; // LCG keystream state slot
 				let kg = slot_pool[3]; // LCG keystream generator slot
+				// decoy LCG slots (F28): clear of every other slot
+				// mechanism (runners/keystream/primitives/AL/context
+				// slots AND the Nop self-mod instruction positions)
+				let max_len = carrier_bytes.iter().map(|c| c.len()).max().unwrap_or(0);
+				let (d1, d2) = vmgen::v15::decoy_slots(max_len, &[r1, r2, ks, kg]);
 				let (scaffold_fields, fc) = vmgen::v15::scaffold(
 					&mut rng,
 					&interp_src,
@@ -443,8 +449,12 @@ fn main() -> ExitCode {
 					r2,
 					ks,
 					kg,
+					d1,
+					d2,
+					&program.carrier,
 				);
-				let mut fields = vmgen::v15::module_fields(&mut rng, &[r1, r2, ks, kg]);
+				let mut fields =
+					vmgen::v15::module_fields(&mut rng, &[r1, r2, ks, kg, d1, d2]);
 				fields.extend(scaffold_fields);
 				rng.shuffle(&mut fields);
 				let module = ast::Expr::Table { fields };

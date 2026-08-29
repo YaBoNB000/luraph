@@ -354,6 +354,32 @@ impl<'a> Printer<'a> {
 				self.out.push_str(&print_string_bytes(bytes, *is_binary));
 				self.out.push('"');
 			}
+			Expr::LongStr { bytes } => {
+				// clash-free bracket level: content must not contain the
+				// matching `]=*]` closer (finite content -> a level
+				// exists). Lua 5.1 additionally rejects a bare `[[`
+				// nested inside a level-0 long string ("nesting of
+				// [[...]] is deprecated"), so bump to >= 1 when the
+				// content contains `[[`.
+				let mut lvl = 0usize;
+				loop {
+					let closer = format!("]{}]", "=".repeat(lvl));
+					let closer_ok =
+						!bytes.windows(closer.len()).any(|w| w == closer.as_bytes());
+					let opener_ok = lvl > 0 || !bytes.windows(2).any(|w| w == b"[[");
+					if closer_ok && opener_ok {
+						break;
+					}
+					lvl += 1;
+				}
+				let pad = if bytes.first() == Some(&b'\n') { "\n" } else { "" };
+				self.out.push_str(&format!(
+					"[{o}[{pad}{c}]{o}]",
+					o = "=".repeat(lvl),
+					pad = pad,
+					c = String::from_utf8_lossy(bytes)
+				));
+			}
 			Expr::Bool { value } => {
 				self.out.push_str(if *value { "true" } else { "false" });
 			}

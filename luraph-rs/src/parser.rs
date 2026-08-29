@@ -775,7 +775,11 @@ impl Parser {
 			}
 			TokKind::Str => {
 				self.next();
-				Ok(Expr::Str { bytes: t.bytes, is_binary: t.high_bytes })
+				if t.long_str {
+					Ok(Expr::LongStr { bytes: t.bytes })
+				} else {
+					Ok(Expr::Str { bytes: t.bytes, is_binary: t.high_bytes })
+				}
 			}
 			TokKind::Interp => {
 				self.next();
@@ -1047,6 +1051,7 @@ fn clone_expr(e: &Expr) -> Expr {
 			isfloat: *isfloat,
 		},
 		Expr::Str { bytes, is_binary } => Expr::Str { bytes: bytes.clone(), is_binary: *is_binary },
+		Expr::LongStr { bytes } => Expr::LongStr { bytes: bytes.clone() },
 		Expr::IfExpr { arms, elseb } => Expr::IfExpr {
 			arms: arms
 				.iter()

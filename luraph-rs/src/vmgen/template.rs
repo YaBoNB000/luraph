@@ -49,10 +49,46 @@ const PRIM_NAME: [&str; 15] = [
 	"RSET", "SMT", "SEL", "PCAL", "TONUM",
 ];
 
+/// v15 stage E5 (F10): string pool. Legacy profiles inline quoted
+/// literals; v15 routes every meta/type/error/select literal through
+/// the boot-time MS table built from numeric char codes, so the
+/// visible output keeps almost no short string literals.
+struct StrPool {
+	use_ms: bool,
+	entries: Vec<String>,
+	index: std::collections::HashMap<String, usize>,
+}
+
+impl StrPool {
+	fn new(use_ms: bool) -> StrPool {
+		StrPool { use_ms, entries: Vec::new(), index: std::collections::HashMap::new() }
+	}
+	fn lit(&mut self, s: &str) -> String {
+		if !self.use_ms {
+			return format!("'{s}'");
+		}
+		let n = self.entries.len();
+		let e = *self.index.entry(s.to_string()).or_insert(n);
+		if e == n {
+			self.entries.push(s.to_string());
+		}
+		format!("MS[{e}]", e = e + 1)
+	}
+	/// Boot table emission: `MS[k] = CHAR(...)` from numeric codes.
+	fn boot_block(&self) -> String {
+		let mut s = String::from("local MS = {}\n");
+		for (i, e) in self.entries.iter().enumerate() {
+			let codes: Vec<String> = e.bytes().map(|b| b.to_string()).collect();
+			s.push_str(&format!("  MS[{}] = CHAR({})\n", i + 1, codes.join(", ")));
+		}
+		s
+	}
+}
+
 /// The dispatch body of each opcode (referencing locals: oc, a, b, c, d,
 /// pc, V, C, lastn, vargs, vargc, plus helpers mget/makefn and locals
 /// G/U/FLOOR / TYP/ERR/GMT/RGET/RSET).
-fn branch_code(name: &str) -> String {
+fn branch_code(name: &str, p: &mut StrPool) -> String {
 	match name {
 		"Jmp" => "pc = b".to_string(),
 		"Jf" => "if not V[a + 1] then pc = b end".to_string(),
@@ -60,26 +96,70 @@ fn branch_code(name: &str) -> String {
 		"LoadNil" => "for i = 1, b do V[a + i] = nil end".to_string(),
 		"LoadK" => "V[a + 1] = C[b + 1]".to_string(),
 		"Move" => "V[a + 1] = V[b + 1]".to_string(),
-		"Add" => bin_op_code("__add", "arithmetic", "x + y"),
-		"Sub" => bin_op_code("__sub", "arithmetic", "x - y"),
-		"Mul" => bin_op_code("__mul", "arithmetic", "x * y"),
-		"Div" => bin_op_code("__div", "arithmetic", "x / y"),
-		"Mod" => bin_op_code("__mod", "arithmetic", "x % y"),
-		"Pow" => bin_op_code("__pow", "arithmetic", "x ^ y"),
-		"Concat" => "local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); if (tx == 'number' or tx == 'string') and (ty == 'number' or ty == 'string') then V[a + 1] = x .. y else local f = mget(x, '__concat') or mget(y, '__concat'); if f then V[a + 1] = f(x, y) else ERR('attempt to perform concatenation on a ' .. tx .. ' value', 0) end end".to_string(),
-		"Unm" => "local x = V[b + 1]; if TYP(x) == 'number' then V[a + 1] = -x else local f = mget(x, '__unm'); if f then V[a + 1] = f(x) else ERR('attempt to perform arithmetic on a ' .. TYP(x) .. ' value', 0) end end".to_string(),
+		"Add" => bin_op_code("__add", "x + y", p),
+		"Sub" => bin_op_code("__sub", "x - y", p),
+		"Mul" => bin_op_code("__mul", "x * y", p),
+		"Div" => bin_op_code("__div", "x / y", p),
+		"Mod" => bin_op_code("__mod", "x % y", p),
+		"Pow" => bin_op_code("__pow", "x ^ y", p),
+		"Concat" => {
+			let number = p.lit("number");
+			let string = p.lit("string");
+			let concat = p.lit("__concat");
+			let msg = p.lit("attempt to perform concatenation on a ");
+			let value = p.lit(" value");
+			format!("local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); if (tx == {number} or tx == {string}) and (ty == {number} or ty == {string}) then V[a + 1] = x .. y else local f = mget(x, {concat}) or mget(y, {concat}); if f then V[a + 1] = f(x, y) else ERR({msg} .. tx .. {value}, 0) end end")
+		}
+		"Unm" => {
+			let number = p.lit("number");
+			let unm = p.lit("__unm");
+			let msg = p.lit("attempt to perform arithmetic on a ");
+			let value = p.lit(" value");
+			format!("local x = V[b + 1]; if TYP(x) == {number} then V[a + 1] = -x else local f = mget(x, {unm}); if f then V[a + 1] = f(x) else ERR({msg} .. TYP(x) .. {value}, 0) end end")
+		}
 		"Not" => "V[a + 1] = not V[b + 1]".to_string(),
-		"Len" => "local x = V[b + 1]; local f = HAS_LEN_META and mget(x, '__len'); if f then V[a + 1] = f(x) else V[a + 1] = #x end".to_string(),
-		"Lt" => cmp_code("x < y", "__lt", false),
-		"Le" => cmp_code("x <= y", "__le", false),
-		"Gt" => cmp_code("x > y", "__lt", true),
-		"Ge" => cmp_code("x >= y", "__le", true),
-		"Eq" => "local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); if tx == ty and (tx == 'number' or tx == 'string' or tx == 'boolean' or tx == 'nil') then V[a + 1] = x == y else local f = mget(x, '__eq') or mget(y, '__eq'); if f then V[a + 1] = f(x, y) else V[a + 1] = x == y end end".to_string(),
-		"Ne" => "local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); local eqv; if tx == ty and (tx == 'number' or tx == 'string' or tx == 'boolean' or tx == 'nil') then eqv = x == y else local f = mget(x, '__eq') or mget(y, '__eq'); if f then eqv = f(x, y) else eqv = x == y end end; V[a + 1] = not eqv".to_string(),
+		"Len" => {
+			let len = p.lit("__len");
+			format!("local x = V[b + 1]; local f = HAS_LEN_META and mget(x, {len}); if f then V[a + 1] = f(x) else V[a + 1] = #x end")
+		}
+		"Lt" => cmp_code("x < y", "__lt", false, p),
+		"Le" => cmp_code("x <= y", "__le", false, p),
+		"Gt" => cmp_code("x > y", "__lt", true, p),
+		"Ge" => cmp_code("x >= y", "__le", true, p),
+		"Eq" => {
+			let number = p.lit("number");
+			let string = p.lit("string");
+			let boolean = p.lit("boolean");
+			let nil = p.lit("nil");
+			let eq = p.lit("__eq");
+			format!("local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); if tx == ty and (tx == {number} or tx == {string} or tx == {boolean} or tx == {nil}) then V[a + 1] = x == y else local f = mget(x, {eq}) or mget(y, {eq}); if f then V[a + 1] = f(x, y) else V[a + 1] = x == y end end")
+		}
+		"Ne" => {
+			let number = p.lit("number");
+			let string = p.lit("string");
+			let boolean = p.lit("boolean");
+			let nil = p.lit("nil");
+			let eq = p.lit("__eq");
+			format!("local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); local eqv; if tx == ty and (tx == {number} or tx == {string} or tx == {boolean} or tx == {nil}) then eqv = x == y else local f = mget(x, {eq}) or mget(y, {eq}); if f then eqv = f(x, y) else eqv = x == y end end; V[a + 1] = not eqv")
+		}
 		"Idiv" => "V[a + 1] = FLOOR(V[b + 1] / V[c + 1])".to_string(),
 		"NewTab" => "V[a + 1] = {}".to_string(),
-		"GetTab" => "local t = V[b + 1]; local k = V[c + 1]; local r; if TYP(t) == 'table' then r = RGET(t, k); if r == nil then local f = mget(t, '__index'); if TYP(f) == 'function' then r = f(t, k) elseif f ~= nil then r = f[k] end end else local mt = GMT(t); if mt and mt['__index'] ~= nil then local f = mt['__index']; if TYP(f) == 'function' then r = f(t, k) else r = f[k] end else ERR('attempt to index a ' .. TYP(t) .. ' value', 0) end end; V[a + 1] = r".to_string(),
-		"SetTab" => "local t = V[a + 1]; local k = V[b + 1]; local v = V[c + 1]; if TYP(t) ~= 'table' then local mt = GMT(t); local f = mt and mt['__newindex']; if TYP(f) == 'function' then f(t, k, v) elseif f ~= nil then RSET(f, k, v) else ERR('attempt to index a ' .. TYP(t) .. ' value', 0) end else if RGET(t, k) == nil then local f = mget(t, '__newindex'); if TYP(f) == 'function' then f(t, k, v) elseif f ~= nil then RSET(f, k, v) else RSET(t, k, v) end else RSET(t, k, v) end end".to_string(),
+		"GetTab" => {
+			let table = p.lit("table");
+			let index = p.lit("__index");
+			let function = p.lit("function");
+			let msg = p.lit("attempt to index a ");
+			let value = p.lit(" value");
+			format!("local t = V[b + 1]; local k = V[c + 1]; local r; if TYP(t) == {table} then r = RGET(t, k); if r == nil then local f = mget(t, {index}); if TYP(f) == {function} then r = f(t, k) elseif f ~= nil then r = f[k] end end else local mt = GMT(t); if mt and mt[{index}] ~= nil then local f = mt[{index}]; if TYP(f) == {function} then r = f(t, k) else r = f[k] end else ERR({msg} .. TYP(t) .. {value}, 0) end end; V[a + 1] = r")
+		}
+		"SetTab" => {
+			let table = p.lit("table");
+			let newindex = p.lit("__newindex");
+			let function = p.lit("function");
+			let msg = p.lit("attempt to index a ");
+			let value = p.lit(" value");
+			format!("local t = V[a + 1]; local k = V[b + 1]; local v = V[c + 1]; if TYP(t) ~= {table} then local mt = GMT(t); local f = mt and mt[{newindex}]; if TYP(f) == {function} then f(t, k, v) elseif f ~= nil then RSET(f, k, v) else ERR({msg} .. TYP(t) .. {value}, 0) end else if RGET(t, k) == nil then local f = mget(t, {newindex}); if TYP(f) == {function} then f(t, k, v) elseif f ~= nil then RSET(f, k, v) else RSET(t, k, v) end else RSET(t, k, v) end end")
+		}
 		"TabN" => "local t = V[a + 1]; local n = V[b + 1]; t[n + 1] = V[c + 1]; V[b + 1] = n + 1".to_string(),
 		"CallT" => "local f = V[a + 1]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nfixed = FLOOR(d / 2); local tail = d % 2 == 1; local ntail = tail and V[a + nfixed + 2] or 0; local nargs = nfixed + off + ntail; local args = {}; if off == 1 then args[1] = f end; for i = 1, nfixed + ntail do if tail and i > nfixed then args[off + i] = V[a + i + 2] else args[off + i] = V[a + i + 1] end end; local t = V[b + 1]; local n = V[c + 1]; local out, nout = callcap(fn, args, nargs); for i = 1, nout do t[n + i] = out[i] end; V[c + 1] = n + nout".to_string(),
 		"Closure" => "V[a + 1] = makefn(b + 1, V, ups)".to_string(),
@@ -106,7 +186,7 @@ fn branch_code(name: &str) -> String {
 /// keep a logical base and translate every step through the per-
 /// function slot table S. Closure passes S into makefn so upvalue
 /// descriptors resolve against the parent's scattered frame.
-fn branch_code_v15(name: &str) -> String {
+fn branch_code_v15(name: &str, p: &mut StrPool) -> String {
 	match name {
 		"LoadNil" => "for i = 1, b do V[S[a + i]] = nil end".to_string(),
 		"Call" => "local base = a + 1; local f = V[S[base]]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nargs = b + off; local args = {}; if off == 1 then args[1] = f end; for i = 1, b do args[off + i] = V[S[base + i]] end; if d == 1 then for i = 1, vargc do args[nargs + i] = vargs[i] end; nargs = nargs + vargc end; local out, nout = callcap(fn, args, nargs); local nres = c; lastbase = a + 1; lastn = nout; local wn = nout; if nres ~= 255 and nres > wn then wn = nres end; for i = 1, wn do local s = S[base + i]; if s then V[s] = out[i] else O[base + i] = out[i] end end".to_string(),
@@ -115,20 +195,29 @@ fn branch_code_v15(name: &str) -> String {
 		"CallT" => "local f = V[S[a + 1]]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nfixed = FLOOR(d / 2); local tail = d % 2 == 1; local ntail = tail and V[S[a + nfixed + 2]] or 0; local nargs = nfixed + off + ntail; local args = {}; if off == 1 then args[1] = f end; for i = 1, nfixed + ntail do if tail and i > nfixed then local x = a + i + 2; local s = S[x]; if s then args[off + i] = V[s] else args[off + i] = O[x] end else args[off + i] = V[S[a + i + 1]] end end; local t = V[b + 1]; local n = V[c + 1]; local out, nout = callcap(fn, args, nargs); for i = 1, nout do t[n + i] = out[i] end; V[c + 1] = n + nout".to_string(),
 		"Return" => "local out = {}; local n = b; local total; if n == 255 then local pre = d; for i = 1, pre do out[i] = V[S[a + i]] end; if c == 1 then for i = 1, vargc do out[pre + i] = vargs[i] end; total = pre + vargc else for i = 1, lastn do local s = S[lastbase + i]; if s then out[pre + i] = V[s] else out[pre + i] = O[lastbase + i] end end; total = pre + lastn end else for i = 1, n do out[i] = V[S[a + i]] end; total = n end; return U(out, 1, total)".to_string(),
 		"Closure" => "V[a + 1] = makefn(b + 1, V, ups, S)".to_string(),
-		_ => branch_code(name),
+		_ => branch_code(name, p),
 	}
 }
 
-fn bin_op_code(mm: &str, what: &str, expr: &str) -> String {
+fn bin_op_code(mm: &str, expr: &str, p: &mut StrPool) -> String {
+	let number = p.lit("number");
+	let meta = p.lit(mm);
+	let msg = p.lit("attempt to perform arithmetic on a ");
+	let value = p.lit(" value");
 	format!(
-		"local x = V[b + 1]; local y = V[c + 1]; if TYP(x) == 'number' and TYP(y) == 'number' then V[a + 1] = {expr} else local f = mget(x, '{mm}') or mget(y, '{mm}'); if f then V[a + 1] = f(x, y) else ERR('attempt to perform {what} on a ' .. TYP(x) .. ' value', 0) end end"
+		"local x = V[b + 1]; local y = V[c + 1]; if TYP(x) == {number} and TYP(y) == {number} then V[a + 1] = {expr} else local f = mget(x, {meta}) or mget(y, {meta}); if f then V[a + 1] = f(x, y) else ERR({msg} .. TYP(x) .. {value}, 0) end end"
 	)
 }
 
-fn cmp_code(native: &str, mm: &str, swapped: bool) -> String {
+fn cmp_code(native: &str, mm: &str, swapped: bool, p: &mut StrPool) -> String {
+	let number = p.lit("number");
+	let string = p.lit("string");
+	let meta = p.lit(mm);
+	let msg = p.lit("attempt to compare ");
+	let with = p.lit(" with ");
 	let call = if swapped { "f(y, x)" } else { "f(x, y)" };
 	format!(
-		"local x = V[b + 1]; local y = V[c + 1]; if TYP(x) == 'number' and TYP(y) == 'number' then V[a + 1] = {native} elseif TYP(x) == 'string' and TYP(y) == 'string' then V[a + 1] = {native} else local f = mget(x, '{mm}') or mget(y, '{mm}'); if f then V[a + 1] = {call} else ERR('attempt to compare ' .. TYP(x) .. ' with ' .. TYP(y), 0) end end"
+		"local x = V[b + 1]; local y = V[c + 1]; if TYP(x) == {number} and TYP(y) == {number} then V[a + 1] = {native} elseif TYP(x) == {string} and TYP(y) == {string} then V[a + 1] = {native} else local f = mget(x, {meta}) or mget(y, {meta}); if f then V[a + 1] = {call} else ERR({msg} .. TYP(x) .. {with} .. TYP(y), 0) end end"
 	)
 }
 
@@ -146,7 +235,7 @@ fn nop_body(rng: &mut Rng) -> String {
 /// visible nesting stays in the 2~4 layer band. Per-build shape.
 fn gen_dispatch_tree(
 	items: &[(String, u8)],
-	body_of: &dyn Fn(&str) -> String,
+	body_of: &mut dyn FnMut(&str) -> String,
 	rng: &mut Rng,
 	depth: u32,
 ) -> String {
@@ -239,6 +328,7 @@ pub fn generate(
 	n_fns: usize,
 	v15: bool,
 	nop_sites: &[Vec<u16>],
+	operand_sums: &[u64],
 ) -> String {
 	let mut oc_items = Vec::new();
 	for (i, name) in OP_NAMES.iter().enumerate() {
@@ -250,6 +340,9 @@ pub fn generate(
 	let oc_table = format!("local OC = {{{}}}", oc_items.join(", "));
 
 	let nop = nop_body(rng);
+	// v15 stage E5: meta/type/error literals routed through the MS boot
+	// table (numeric char codes); legacy keeps quoted literals verbatim
+	let mut pool = StrPool::new(v15);
 	// v15 (A1 execution inlining): each dispatch leaf reads its operands
 	// from the SoA streams and advances pc itself, so the loop head is the
 	// sample's `local oc = W[pc]; if oc ...` shape (fingerprint F11).
@@ -267,11 +360,11 @@ pub fn generate(
 		stream_names[operand_stream[2] as usize],
 		stream_names[operand_stream[3] as usize],
 	);
-	let body_of = |name: &str| -> String {
+	let mut body_of = |name: &str| -> String {
 		let core = if name == "Nop" || name == "NopA" {
 			nop.clone()
 		} else {
-			branch_code(name)
+			branch_code(name, &mut pool)
 		};
 		if v15 {
 			if core.is_empty() {
@@ -293,7 +386,52 @@ pub fn generate(
 		// to Nop, so semantics are unchanged).
 		items.push(("NopA".to_string(), map.nop_alias));
 	}
-	let branches = gen_dispatch_tree(&items, &body_of, rng, 0);
+	let branches = gen_dispatch_tree(&items, &mut body_of, rng, 0);
+
+	// v15 stage E3 (F13 + operand integrity): per-stream inline 7-bit
+	// ladders. The sink closure maps the reconstructed value to its
+	// destination (stream slot write, or the verify checksum fold).
+	let ladder = |assign: &dyn Fn(&str) -> String| -> String {
+		format!(
+			"local b1 = BYTE(s, p)
+          if b1 < 128 then {a1}; p = p + 1 else
+            local b2 = BYTE(s, p + 1)
+            if b2 < 128 then {a2}; p = p + 2 else
+              local b3 = BYTE(s, p + 2)
+              if b3 < 128 then local v = (b1 - 128) + (b2 - 128) * 128 + b3 * 16384; if v >= 2147483648 then v = v - 4294967296 end; {a3}; p = p + 3 else
+                local b4 = BYTE(s, p + 3); local v = (b1 - 128) + (b2 - 128) * 128 + (b3 - 128) * 16384 + b4 * 2097152; if v >= 2147483648 then v = v - 4294967296 end; {a4}; p = p + 4
+              end
+            end
+          end",
+			a1 = assign("b1"),
+			a2 = assign("(b1 - 128) + b2 * 128"),
+			a3 = assign("v"),
+			a4 = assign("v"),
+		)
+	};
+	let stream_read = |name: &str| -> String {
+		let sink: Box<dyn Fn(&str) -> String> =
+			Box::new(move |x: &str| format!("{}[i] = {}", name, x));
+		format!(
+			"{} = {{}}
+        for i = 1, ncode do
+          {}
+        end",
+			name,
+			ladder(&sink)
+		)
+	};
+	let fold_read = || -> String {
+		let sink: Box<dyn Fn(&str) -> String> = Box::new(|x: &str| {
+			format!("ck = (ck + {}) % 4294967296", x)
+		});
+		format!(
+			"for i = 1, ncode do
+          {}
+        end",
+			ladder(&sink)
+		)
+	};
 
 	// parse function: non-v15 keeps the original monolithic decode
 	// byte-for-byte; v15 emits it as an explicit state-machine decode
@@ -304,7 +442,7 @@ pub fn generate(
     s = decarrier(s)
     local p = 1
     local st = 1
-    local nregs, nparams, vararg, nups, upsrc, nconst, C, S, ncode, W, SA, SB, SC, SD
+    local nregs, nparams, vararg, nups, upsrc, nconst, C, S, ncode, W, SA, SB, SC, SD, CK
     while st <= 5 do
       if st == 1 then
         nregs = u16(s, p); p = p + 2
@@ -341,19 +479,37 @@ pub fn generate(
         for i = 1, ncode do W[i] = BYTE(s, p); p = p + 1 end
         st = 5
       else
-        local function rstream()
-          local T = {}
-          for i = 1, ncode do
-            local v, np = r16(s, p); p = np; T[i] = v
-          end
-          return T
-        end
-        SA, SB, SC, SD = rstream(), rstream(), rstream(), rstream()
+        local p0 = p
+        __STREAMS__
+        p = p0
+        local ck = 0
+        __FOLDS__
+        CK = ck
         st = 6
       end
     end
-    return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, S = S, W = W, SA = SA, SB = SB, SC = SC, SD = SD }
-  end"#,
+    return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, S = S, ck = CK, W = W, SA = SA, SB = SB, SC = SC, SD = SD }
+  end"#
+            .replace(
+                "__STREAMS__",
+                &format!(
+                    "{}\n        {}\n        {}\n        {}",
+                    stream_read("SA"),
+                    stream_read("SB"),
+                    stream_read("SC"),
+                    stream_read("SD")
+                ),
+            )
+            .replace(
+                "__FOLDS__",
+                &format!(
+                    "{}\n        {}\n        {}\n        {}",
+                    fold_read(),
+                    fold_read(),
+                    fold_read(),
+                    fold_read()
+                ),
+            ),
 		)
 	} else {
 		String::from(
@@ -401,8 +557,18 @@ pub fn generate(
 	// shared `for` loop, establishing the separated decode stage that the
 	// CPS pipeline builds on. Non-v15 keeps the original `for` byte-for-byte.
 	let decode_seg = if v15 {
-		String::from(
-			"local di = 1\n  while di <= #FN do\n    PF[di] = parse(FN[di])\n    di = di + 1\n  end",
+		// stage E3: per-prototype operand-stream checksum table (a
+		// build-time fold of every wire operand); parse re-reads the
+		// streams through the inline ladders and re-folds -- a mismatch
+		// means tamper -> silent trap (no os.clock, F18 safe)
+		let os_list = operand_sums
+			.iter()
+			.map(|s| s.to_string())
+			.collect::<Vec<_>>()
+			.join(", ");
+		format!(
+			"local OS = {{{}}}\n  local di = 1\n  while di <= #FN do\n    PF[di] = parse(FN[di])\n    if PF[di].ck ~= OS[di] then while true do end end\n    di = di + 1\n  end",
+			os_list
 		)
 	} else {
 		String::from("for i = 1, #FN do PF[i] = parse(FN[i]) end")
@@ -489,11 +655,23 @@ pub fn generate(
 	}
 	let mut tk_lines = String::from("local TK = {}\n");
 	for i in 0..10 {
-		tk_lines.push_str(&format!(
-			"  TK[{}] = {}\n",
-			lua_dstr(carrier.tokens[i].as_bytes()),
-			lua_dstr(&[CARRIER_SPECIALS[i]])
-		));
+		if v15 {
+			// stage E5 (F10): build token/special from numeric char
+			// codes -- no visible string literals
+			let codes: Vec<String> =
+				carrier.tokens[i].bytes().map(|b| b.to_string()).collect();
+			tk_lines.push_str(&format!(
+				"  TK[CHAR({})] = CHAR({})\n",
+				codes.join(", "),
+				CARRIER_SPECIALS[i]
+			));
+		} else {
+			tk_lines.push_str(&format!(
+				"  TK[{}] = {}\n",
+				lua_dstr(carrier.tokens[i].as_bytes()),
+				lua_dstr(&[CARRIER_SPECIALS[i]])
+			));
+		}
 	}
 
 	// decode-hub / fetch: two styles, return-tuple order shuffled
@@ -725,9 +903,10 @@ pub fn generate(
 				nop.clone()
 			} else if name == "Return" {
 				// CPS: return the signal {out, total}; the loop unpacks
-				branch_code_v15(name).replace("return U(out, 1, total)", "return {out, total}")
+				branch_code_v15(name, &mut pool)
+					.replace("return U(out, 1, total)", "return {out, total}")
 			} else {
-				branch_code_v15(name)
+				branch_code_v15(name, &mut pool)
 			};
 			hdefs.push_str("H[OC.");
 			hdefs.push_str(name);
@@ -753,15 +932,50 @@ pub fn generate(
 		let cps_fetch = format!(
 			"local oc = W[pc];if oc then local a = {sa}[pc];local b = {sb}[pc];local c = {sc}[pc];local d = {sd}[pc];pc = pc + 1;if oc == OC.Call then {call} elseif oc == OC.CallE then {calle} elseif oc == OC.CallM then {callm} elseif oc == OC.CallT then {callt} else local r = H[oc](a,b,c,d); if r then return U(r[1], 1, r[2]) end end end",
 			sa = sa, sb = sb, sc = sc, sd = sd,
-			call = branch_code_v15("Call"),
-			calle = branch_code_v15("CallE"),
-			callm = branch_code_v15("CallM"),
-			callt = branch_code_v15("CallT"),
+			call = branch_code_v15("Call", &mut pool),
+			calle = branch_code_v15("CallE", &mut pool),
+			callm = branch_code_v15("CallM", &mut pool),
+			callt = branch_code_v15("CallT", &mut pool),
 		);
 		(cps_fetch, String::new())
 	} else {
 		(fetch, branches)
 	};
+
+	// runtime helpers with pool-routed literals (resolve_call's type/
+	// meta names, callcap's '#' vararg selector)
+	let rt_helpers = format!(
+		"local function mget(x, k)
+    local mt = GMT(x)
+    if mt then return mt[k] end
+    return nil
+  end
+  local function resolve_call(f)
+    if TYP(f) == {function} then return f, false end
+    local mt = GMT(f)
+    local cc = mt and mt[{call}]
+    if TYP(cc) == {function} then return cc, true end
+    if TYP(cc) == {table} then
+      local cf = cc[f]
+      if TYP(cf) == {function} then return cf, false end
+    end
+    ERR({callmsg} .. TYP(f) .. {value}, 0)
+  end
+  local function callcap(f, args, nargs)
+    local w = function(...)
+      local t = {{ ... }}
+      return t, SEL({hash}, ...)
+    end
+    return w(f(U(args, 1, nargs)))
+  end",
+		function = pool.lit("function"),
+		call = pool.lit("__call"),
+		table = pool.lit("table"),
+		callmsg = pool.lit("attempt to call a "),
+		value = pool.lit(" value"),
+		hash = pool.lit("#"),
+	);
+	let ms_block = if v15 { pool.boot_block() } else { String::new() };
 
 	format!(
 		r#"local VM = function({params})
@@ -769,7 +983,7 @@ pub fn generate(
   local FN = {{{params}}}
   local PF = {{}}
   {p_fill}  {prim_unpack}
-  {helpers}
+  {ms_block}{helpers}
   {parse_fn}
   {decode_seg}
 {v15_selfmod}  local G = GFE(0)
@@ -781,29 +995,7 @@ pub fn generate(
     local okp, vp = PCAL(function() return #_probe end)
     HAS_LEN_META = okp and vp == 99
   end
-  local function mget(x, k)
-    local mt = GMT(x)
-    if mt then return mt[k] end
-    return nil
-  end
-  local function resolve_call(f)
-    if TYP(f) == 'function' then return f, false end
-    local mt = GMT(f)
-    local cc = mt and mt['__call']
-    if TYP(cc) == 'function' then return cc, true end
-    if TYP(cc) == 'table' then
-      local cf = cc[f]
-      if TYP(cf) == 'function' then return cf, false end
-    end
-    ERR('attempt to call a ' .. TYP(f) .. ' value', 0)
-  end
-  local function callcap(f, args, nargs)
-    local w = function(...)
-      local t = {{ ... }}
-      return t, SEL('#', ...)
-    end
-    return w(f(U(args, 1, nargs)))
-  end
+  {rt_helpers}
   {hub_decl}
   local run
   {makefn_decl}
@@ -839,6 +1031,8 @@ end
 		decode_seg = decode_seg,
 		parse_fn = parse_fn,
 		makefn_decl = makefn_decl,
+		rt_helpers = rt_helpers,
+		ms_block = ms_block,
 		o_decl = if v15 {
 			// stage A: overflow table for nres=255 results spilling past
 			// the scattered register allocation

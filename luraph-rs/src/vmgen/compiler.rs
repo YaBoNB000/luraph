@@ -85,6 +85,11 @@ pub struct VmProgram {
 	/// `fns`). Consumed by the v15 template to emit literal-constant
 	/// self-modification writes (sample `J[Q]=12` shape, F14/F27).
 	pub nop_sites: Vec<Vec<u16>>,
+	/// v15 stage E3: per-function sum of ALL wire operands (mod 2^32),
+	/// parallel to `fns`. The v15 interpreter re-reads every operand
+	/// stream with inline 7-bit ladders and folds the same checksum
+	/// (F13 shape); a mismatch traps the decode loop.
+	pub operand_sums: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -375,7 +380,7 @@ impl<'a> Ctx<'a> {
 		sigma
 	}
 
-	fn finish(mut self, nregs: u16) -> (Vec<u8>, Vec<u16>) {
+	fn finish(mut self, nregs: u16) -> (Vec<u8>, Vec<u16>, u64) {
 		// implicit trailing return (a chunk/function without an explicit
 		// return returns nothing — the code must terminate)
 		let needs_return = self
@@ -457,8 +462,16 @@ impl<'a> Ctx<'a> {
 				isa::push_u16(&mut out, *s);
 			}
 		}
+		// v15 stage E3: fold the sum of ALL wire operands (post-scatter,
+		// mod 2^32). The v15 interpreter re-reads every operand stream via
+		// inline 7-bit ladders and re-folds the same checksum (F13 shape);
+		// any tamper breaks it.
+		let mut osum: u64 = 0;
+		for ins in &self.code {
+			osum = (osum + ins.a as u64 + ins.b as u64 + ins.c as u64 + ins.d as u64) % 4294967296;
+		}
 		isa::encode_soa(&self.code, map, perm, &mut out);
-		(out, nops)
+		(out, nops, osum)
 	}
 }
 
@@ -902,14 +915,16 @@ fn compile_chunk(
 		// template)
 		fns: vec![Vec::new(); total],
 		nop_sites: vec![Vec::new(); total],
+		operand_sums: vec![0; total],
 	};
 	{
 		let mut ctx = Ctx::new_main(&mut program, rng, table, lua51, scatter);
 		ctx.compile_block(block);
 		let nregs = ctx.next_reg;
-		let (bytes, nops) = ctx.finish(nregs);
+		let (bytes, nops, osum) = ctx.finish(nregs);
 		program.fns.push(bytes);
 		program.nop_sites.push(nops);
+		program.operand_sums.push(osum);
 	}
 	program
 }
@@ -1614,7 +1629,7 @@ impl<'a> Ctx<'a> {
 				let k = self.kidx(Const::Num(*value));
 				self.emit(Instr::ab(Op::LoadK, dst, k));
 			}
-			Expr::Str { bytes, .. } => {
+			Expr::Str { bytes, .. } | Expr::LongStr { bytes } => {
 				let k = self.kidx(Const::Str(bytes.clone()));
 				self.emit(Instr::ab(Op::LoadK, dst, k));
 			}
@@ -2134,11 +2149,12 @@ impl<'a> Ctx<'a> {
 		child.pop_scope();
 		let slot_end = child.next_fn_slot;
 		let nregs = child.next_reg;
-		let (bytes, nops) = child.finish(nregs);
+		let (bytes, nops, osum) = child.finish(nregs);
 		self.next_fn_slot = slot_end;
 		if child_index >= self.program.fns.len() { panic!("slot overflow: child_index={} len={} next={}", child_index, self.program.fns.len(), self.next_fn_slot); }
 		self.program.fns[child_index] = bytes;
 		self.program.nop_sites[child_index] = nops;
+		self.program.operand_sums[child_index] = osum;
 
 		self.emit(Instr::ab(Op::Closure, dst, child_index as u16));
 	}

@@ -1,5 +1,11 @@
 # v15 结构 100% 还原计划
 
+> ✅ **战役收官（2026-08-29）**：本文 §0.2 的 **32 条指纹已 32/32 全部
+> 达成**，且对全部 30 语料 × 5 种子稳定成立（150/150 运行时 + 30/30
+> 指纹，矩阵 204/204 + 预设 405/405 + 多 seed 全绿）。落地路径 = 结构
+> 战役增量 E1–E5，详见 `docs/implementation-plan.md` §4 更新日志与
+> `PROGRESS.md`。
+>
 > 样本：`origin/main:luraph15.txt` ≡ `samples/luraph15.txt`（171 753 字节，已逐字节核对）
 > 头部：`-- This file was protected using Luraph Obfuscator v15.0 [https://lura.ph/]`
 > 对照输出：本仓库 `--preset vm`（`luraph-rs/examples/basics.vm.5.1.lua`）
