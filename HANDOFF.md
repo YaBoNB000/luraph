@@ -206,6 +206,7 @@ luraph/
     │   ├── flatten.rs / junk.rs                                 # L3（flatten 内含
     │   │                       #   循环降级 make_loop —— ForGen 单迭代器语义在这）
     │   ├── numbers.rs / body.rs / antidbg.rs                    # L4 / L5 / L7
+    │   ├── guard.rs                                             # 反调试环境完整性 guard 前奏（2026-08-29，用户设计；标准管线默认开，--no-guard 关；v15 暂未注入）
     │   ├── desugar.rs        # ⚠️ 孤儿文件（main.rs 未声明 mod，死代码，勿改勿依赖）
     │   └── vmgen/            # ★ L6 VM
     │       ├── isa.rs        #   41 条 Op + OpMap + SoA + 完整 7-bit + Carrier

@@ -139,6 +139,24 @@
 
 ## 4. 更新日志
 
+- **2026-08-29（新防护层：反调试环境完整性 guard，用户设计）**
+  用户提供完整环境完整性 guard，落地为 `guard.rs`：以自包含 IIFE
+  （`local _guard = (function()...end)()`）形式注入**标准管线输出**
+  载荷之前（high/vm/max 预设 + 默认全开档，`--no-guard` 可关）。检查
+  项：核心全局必须为真函数（type/pcall/xpcall/error/raw*/setmetatable
+  等）、getfenv 环境健全、负键读写回环、`pcall(error)` 必须失败、
+  `debug.info` 行号探针（探针函数自报行号必须等于其错误消息里的行号，
+  `error` 的 source 必须仍是 `[C]`）、newproxy + 表 canary（`__tostring/
+  __concat/__call/__iter` 绊线、`__metatable` 锁）、`unpack({},0,64)`、
+  env 中 print/warn 同一性。任一失败 → `abort()`：`_ENV` 污染循环挂起
+  （原设计里的 `print("ddddddddddetect")` 调试打印按项目静默陷阱约定
+  移除）。注入前经 parse→mangle→print→minify，内部名全部构建随机。
+  **v15 暂不注入**：其字面量会顶破 F10 上限（≤60）毁掉 32/32 结构
+  指纹；CHAR 编码版 v15 guard 留作后续增量。验证：矩阵 204/204 +
+  预设 405/405 + 多 seed 全绿（干净环境零误报）；篡改负测：5.1 下
+  劫持 `pcall`/`error` → 输出 124（陷阱挂起）、载荷不执行；干净环境
+  输出一致。64 示例重生（非 v15 示例含 guard，v15 示例逐字节不变，
+  print6 对确定性复现），纯度 0 非 ASCII。
 - **2026-08-29（用户报告修复：输出中的长串连续 `a`）**
   现象：所有 v15 示例含一条显眼的 `aaaa…`（最长 7500+）。两层根因：
   ① E4 的 RC 长串为够 F8 ≥10KB 门槛，用常量 `'a'` 填充；② 改随机填充

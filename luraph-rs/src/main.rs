@@ -4,6 +4,7 @@
 //! (later: numbers/body/antidbg/vmgen)
 
 mod antidbg;
+mod guard;
 mod ast;
 mod body;
 mod flatten;
@@ -33,6 +34,12 @@ struct Options {
 	do_numbers: bool,
 	do_body: bool,
 	do_antidbg: bool,
+	/// Anti-debug / environment-integrity guard prelude (2026-08-29):
+	/// self-contained IIFE injected ahead of the payload; aborts on
+	/// hooked/stripped/debugged environments. Standard pipeline only —
+	/// v15 keeps its 3-line sample form (a CHAR-encoded v15 variant is
+	/// a future increment).
+	do_guard: bool,
 	do_vm: bool,
 	/// v15 structural-parity profile (Route A, 2026-08-25): Luau/Roblox-only
 	/// output shaped like a Luraph v15 sample (module table + FC entry).
@@ -59,6 +66,7 @@ fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
 	opts.do_numbers = false;
 	opts.do_body = false;
 	opts.do_antidbg = false;
+	opts.do_guard = false;
 	opts.do_vm = false;
 	opts.do_v15 = false;
 	opts.junk_n = 2;
@@ -87,6 +95,7 @@ fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
 			opts.do_numbers = true;
 			opts.do_body = true;
 			opts.do_antidbg = true;
+			opts.do_guard = true;
 		}
 		"vm" => {
 			// high + L6
@@ -98,6 +107,7 @@ fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
 			opts.do_numbers = true;
 			opts.do_body = true;
 			opts.do_antidbg = true;
+			opts.do_guard = true;
 			opts.do_vm = true;
 		}
 		"max" => {
@@ -112,6 +122,7 @@ fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
 			opts.do_numbers = true;
 			opts.do_body = true;
 			opts.do_antidbg = true;
+			opts.do_guard = true;
 			opts.do_vm = true;
 			opts.junk_n = 2;
 		}
@@ -173,6 +184,8 @@ Options:
   --no-numbers           disable L4 numeric literal rewriting (default: enabled)
   --no-body              disable L5 whole-program encryption (default: enabled)
   --no-antidbg           disable L7 anti-tamper (default: enabled)
+  --no-guard             disable the anti-debug environment guard prelude
+                         (default: enabled for the standard pipeline)
   --vm                   L6: compile the program to private bytecode and
                          run it through a generated obfuscated interpreter
   --no-mangle            disable L1 name mangling (default: enabled)
@@ -198,6 +211,7 @@ fn main() -> ExitCode {
 		do_numbers: true,
 		do_body: true,
 		do_antidbg: true,
+		do_guard: true,
 		do_vm: false,
 		do_v15: false,
 		do_strings: true,
@@ -271,6 +285,7 @@ fn main() -> ExitCode {
 		"--no-numbers" => opts.do_numbers = false,
 		"--no-body" => opts.do_body = false,
 		"--no-antidbg" => opts.do_antidbg = false,
+		"--no-guard" => opts.do_guard = false,
 		"--vm" => opts.do_vm = true,
 			"--no-strings" => opts.do_strings = false,
 			"--no-flatten" => opts.do_flatten = false,
@@ -576,9 +591,14 @@ fn main() -> ExitCode {
 					VERSION,
 					m.trim_end_matches('\n')
 				))
+			} else if opts.do_guard {
+				// anti-debug guard prelude ahead of the payload
+				Ok(format!("{}\n{}", guard::guard_prelude(&mut rng, luau), m))
 			} else {
 				Ok(m)
 			}
+		} else if opts.do_guard && !opts.do_v15 {
+			Ok(format!("{}\n{}", guard::guard_prelude(&mut rng, luau), out))
 		} else {
 			Ok(out)
 		}
