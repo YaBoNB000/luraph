@@ -1618,6 +1618,22 @@ impl<'a> Ctx<'a> {
 				let k = self.kidx(Const::Str(bytes.clone()));
 				self.emit(Instr::ab(Op::LoadK, dst, k));
 			}
+			Expr::IfExpr { arms, elseb } => {
+				// per-arm cascade: test cond, fall into the value on
+				// truth, jump over the rest otherwise
+				let l_end = self.new_label();
+				for (cond, val) in arms {
+					let l_next = self.new_label();
+					let t = self.tmp();
+					self.compile_expr(cond, t);
+					self.jmp(Op::Jf, t, &l_next);
+					self.compile_expr(val, dst);
+					self.jmp(Op::Jmp, 0, &l_end);
+					self.here(&l_next);
+				}
+				self.compile_expr(elseb, dst);
+				self.here(&l_end);
+			}
 			Expr::Bool { value } => {
 				let k = self.kidx(Const::Bool(*value));
 				self.emit(Instr::ab(Op::LoadK, dst, k));

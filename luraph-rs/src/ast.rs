@@ -128,6 +128,10 @@ pub enum Expr {
 	Method { obj: Box<Expr>, name: String, args: Vec<Expr> },
 	Un { op: UnOp, e: Box<Expr> },
 	Bin { op: BinOp, l: Box<Expr>, r: Box<Expr> },
+	/// Luau if-expression: `if c1 then v1 [elseif c then v]* else e`
+	/// (no `end`). Arms = (condition, value) pairs; the else branch is
+	/// mandatory. Only produced/emitted for Luau targets (F22 shape).
+	IfExpr { arms: Vec<(Expr, Expr)>, elseb: Box<Expr> },
 	Table { fields: Vec<TableField> },
 	Function {
 		params: Vec<String>,

@@ -358,6 +358,25 @@ impl<'a> Printer<'a> {
 				self.out.push_str(if *value { "true" } else { "false" });
 			}
 			Expr::Nil => self.out.push_str("nil"),
+			Expr::IfExpr { arms, elseb } => {
+				// Luau restricts bare if-expressions in operand position;
+				// parenthesize everywhere except statement-level Top
+				let par = !matches!(ctx, Ctx::Top);
+				if par {
+					self.out.push('(');
+				}
+				for (i, (c, v)) in arms.iter().enumerate() {
+					self.out.push_str(if i == 0 { "if " } else { " elseif " });
+					self.print_expr(c, Ctx::Top);
+					self.out.push_str(" then ");
+					self.print_expr(v, Ctx::Top);
+				}
+				self.out.push_str(" else ");
+				self.print_expr(elseb, Ctx::Top);
+				if par {
+					self.out.push(')');
+				}
+			}
 			Expr::Vararg => self.out.push_str("..."),
 			Expr::Ident { name, sym } => match sym {
 				Some(id) => self.out.push_str(self.table.name_of(*id)),
