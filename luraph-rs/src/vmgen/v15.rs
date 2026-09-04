@@ -417,6 +417,7 @@ pub fn scaffold(
 	decoy1: i64,
 	decoy2: i64,
 	carrier: &crate::vmgen::isa::Carrier,
+	guard: bool,
 ) -> (Vec<TableField>, String) {
 	let carrier_tokens: &[String] = &carrier.tokens;
 	let mut nm = Names::new(rng);
@@ -985,14 +986,26 @@ pub fn scaffold(
 	// -> sub-dispatcher -> control-code return. The sub-dispatcher is
 	// routed through a tuple slot (F31: `b[J[4]](...)` indirection; the
 	// `[4]=` literal also feeds F30).
+	// Anti-debug guard (2026-08-29): the CHAR-encoded environment-
+	// integrity guard runs at the head of the entry machine, before the
+	// boot loop -- zero visible string literals, fingerprints intact.
+	let guard_src = if guard {
+		format!("{} ", crate::guard::v15_guard_source())
+	} else {
+		String::new()
+	};
 	{
 		let src = format!(
-			"function(b,...) local u,z,Z,o,w,K,G,q,M,F,H,E=b:{}(); \
-			 local V,f1,f2,f3,f4,f5,C=z,Z,o,w,K,G,{{}}; C[{}]=0; C[{}]=0; \
-			 local J={{[4]='{}',[7]='{}'}}; \
+			"function(b,...) {guard}local u,z,Z,o,w,K,G,q,M,F,H,E=b:{init}(); \
+			 local V,f1,f2,f3,f4,f5,C=z,Z,o,w,K,G,{{}}; C[{ss}]=0; C[{ax}]=0; \
+			 local J={{[4]='{xl}',[7]='{xl}'}}; \
 			 while u do local h2,B=b[J[4]](b,C,V,f1,f2,f3,f4,f5); \
 			 if h2==2 then return B end end end",
-			init, sumslot, auxslot, xl, xl
+			guard = guard_src,
+			init = init,
+			ss = sumslot,
+			ax = auxslot,
+			xl = xl,
 		);
 		fields.push(named(fc.clone(), parse_expr(&src)));
 	}

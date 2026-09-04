@@ -148,6 +148,10 @@ fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
 			opts.do_numbers = false;
 			opts.do_body = false;
 			opts.do_antidbg = false;
+			// anti-debug guard: injected INSIDE the FC entry machine
+			// (CHAR-encoded, zero visible strings; the standard prelude
+			// form would break the 3-line sample shape)
+			opts.do_guard = true;
 			opts.do_vm = true;
 			opts.do_v15 = true;
 		}
@@ -467,6 +471,7 @@ fn main() -> ExitCode {
 					d1,
 					d2,
 					&program.carrier,
+					opts.do_guard,
 				);
 				let mut fields =
 					vmgen::v15::module_fields(&mut rng, &[r1, r2, ks, kg, d1, d2]);

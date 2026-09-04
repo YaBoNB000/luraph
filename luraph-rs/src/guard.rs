@@ -226,6 +226,79 @@ const GUARD_SRC: &str = r###"local _guard = (function()
 	return canaries
 end)()"###;
 
+/// Extract the unique double-quoted string literals of a Lua source,
+/// in order of first appearance (the guard sources contain no escaped
+/// quotes, so a plain quote scan is exact).
+fn lua_string_literals(src: &str) -> Vec<String> {
+	let b = src.as_bytes();
+	let mut out: Vec<String> = Vec::new();
+	let mut i = 0usize;
+	while i < b.len() {
+		if b[i] == b'"' {
+			let start = i + 1;
+			let mut j = start;
+			while j < b.len() && b[j] != b'"' {
+				j += 1;
+			}
+			let s = std::str::from_utf8(&b[start..j]).unwrap_or("").to_string();
+			if !out.contains(&s) {
+				out.push(s);
+			}
+			i = j + 1;
+		} else {
+			i += 1;
+		}
+	}
+	out
+}
+
+/// Replace every double-quoted literal with `GS[k]` (k = index in the
+/// dedup list). ASCII source -> byte walk is exact.
+fn replace_literals_with_table(src: &str, strings: &[String]) -> String {
+	let b = src.as_bytes();
+	let mut out = String::with_capacity(src.len());
+	let mut i = 0usize;
+	while i < b.len() {
+		if b[i] == b'"' {
+			let start = i + 1;
+			let mut j = start;
+			while j < b.len() && b[j] != b'"' {
+				j += 1;
+			}
+			let s = std::str::from_utf8(&b[start..j]).unwrap_or("");
+			let k = strings.iter().position(|x| x == s).unwrap_or(0) + 1;
+			out.push_str(&format!("GS[{k}]"));
+			i = j + 1;
+		} else {
+			out.push(b[i] as char);
+			i += 1;
+		}
+	}
+	out
+}
+
+/// v15 variant of the guard (F10-safe): every string literal is
+/// rebuilt from numeric char codes into a local `GS` table inside the
+/// IIFE, so the injected guard contributes ZERO visible string
+/// literals to the v15 output (32/32 fingerprints stay intact). If
+/// `string.char` is unavailable (hooked env), the GS table stays empty
+/// and every integrity comparison fails -> abort() fires naturally.
+/// The result is a `local _guard=(function()...end)()` statement ready
+/// to prepend to the FC entry-machine body.
+pub fn v15_guard_source() -> String {
+	let strings = lua_string_literals(GUARD_SRC);
+	let mut gs = String::from("\nlocal GS={}\nlocal schar=string and string.char\nif schar then\n");
+	for (k, s) in strings.iter().enumerate() {
+		let codes: Vec<String> = s.bytes().map(|c| c.to_string()).collect();
+		gs.push_str(&format!("GS[{}]=schar({})\n", k + 1, codes.join(",")));
+	}
+	gs.push_str("end\n");
+	let replaced = replace_literals_with_table(GUARD_SRC, &strings);
+	let marker = "(function()";
+	let pos = replaced.find(marker).expect("guard IIFE marker") + marker.len();
+	format!("{}{}{}", &replaced[..pos], gs, &replaced[pos..])
+}
+
 /// Build the guard prelude: parse -> mangle -> print -> minify, so the
 /// guard ships with build-random local names and compact form. Returns
 /// the ready-to-prepend statement text (single line, no trailing
