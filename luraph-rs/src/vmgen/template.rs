@@ -329,28 +329,37 @@ pub fn generate(
 	// P1 (致命缺点③): constant decode = LCG unmask (KM/KC per build,
 	// cks = per-function seed in the blob header) + dyadic number
 	// rebuild (type 4: m·2^k exact, no digit text in the blob).
-	let const_loop = r#"for i = 1, nconst do
-      local t = BYTE(s, p); p = p + 1
+	// 增量⑨ (防静态): the whole constant block is keystream-masked —
+	// type byte, string length and payload all advance the LCG, so the
+	// section has no cleartext structure. `mb()` = one masked byte read
+	// (advance LCG + unmask), exactly mirroring the encoder byte order.
+	// Numbers stay dyadic (type 4: m·2^k exact, no digit text in blob).
+	let const_loop = r#"local function mb()
+      cks = (CKM * cks + CKC) % 268435456
+      local b = (BYTE(s, p) - cks % 256) % 256
+      p = p + 1
+      return b
+    end
+    for i = 1, nconst do
+      local t = mb()
       if t == 0 then
         C[i] = nil
       elseif t == 1 then
-        cks = (CKM * cks + CKC) % 268435456
-        C[i] = (BYTE(s, p) - cks % 256) % 256 == 1; p = p + 1
+        C[i] = mb() == 1
       elseif t == 3 then
-        local l = u16(s, p); p = p + 2
+        local lo = mb()
+        local hi = mb()
+        local l = lo + hi * 256
         local xs = ""
         for j = 1, l do
-          cks = (CKM * cks + CKC) % 268435456
-          xs = xs .. CHAR((BYTE(s, p + j - 1) - cks % 256) % 256)
+          xs = xs .. CHAR(mb())
         end
-        p = p + l
         C[i] = xs
       else
         local m = 0
         local sh = 1
         while true do
-          cks = (CKM * cks + CKC) % 268435456
-          local bb = (BYTE(s, p) - cks % 256) % 256; p = p + 1
+          local bb = mb()
           if bb < 128 then m = m + bb * sh; break end
           m = m + (bb - 128) * sh
           sh = sh * 128
@@ -358,8 +367,7 @@ pub fn generate(
         local kp = 0
         local sh2 = 1
         while true do
-          cks = (CKM * cks + CKC) % 268435456
-          local bb = (BYTE(s, p) - cks % 256) % 256; p = p + 1
+          local bb = mb()
           if bb < 128 then kp = kp + bb * sh2; break end
           kp = kp + (bb - 128) * sh2
           sh2 = sh2 * 128

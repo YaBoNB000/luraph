@@ -446,19 +446,21 @@ pub fn encode_varint64(out: &mut Vec<u8>, mut v: u64) {
 }
 
 impl Const {
-	/// P1: encrypted constant serialization. Type byte stays clear
-	/// (parse must branch on it) and string LENGTH stays clear
-	/// (delimiter); every payload byte is keystream-masked. Numbers
-	/// are dyadic pairs (type 4) — no ASCII digit text in the blob.
+	/// 增量⑨ (防静态): the ENTIRE constant block is keystream-masked —
+	/// type byte, string length AND payload all advance the LCG, so the
+	/// constant section has no cleartext structure (the attack read the
+	/// type byte in cleartext as its structural foothold). Parse mirrors
+	/// byte-for-byte with one masked-read per byte. Numbers stay dyadic
+	/// pairs (type 4) — no ASCII digit text in the blob.
 	pub fn encode(&self, out: &mut Vec<u8>, lcg: &mut ConstLcg) {
 		match self {
-			Const::Nil => out.push(0),
+			Const::Nil => out.push(lcg.mask(0)),
 			Const::Bool(b) => {
-				out.push(1);
+				out.push(lcg.mask(1));
 				out.push(lcg.mask(*b as u8));
 			}
 			Const::Num(v) => {
-				out.push(4);
+				out.push(lcg.mask(4));
 				let (neg, m, k) = num_to_dyadic(*v);
 				let mut mbytes: Vec<u8> = Vec::new();
 				encode_varint64(&mut mbytes, m);
@@ -473,8 +475,10 @@ impl Const {
 				}
 			}
 			Const::Str(b) => {
-				out.push(3);
-				push_u16(out, b.len() as u16);
+				out.push(lcg.mask(3));
+				let l = b.len() as u16;
+				out.push(lcg.mask((l & 0xFF) as u8));
+				out.push(lcg.mask((l >> 8) as u8));
 				for byte in b {
 					out.push(lcg.mask(*byte));
 				}
