@@ -342,10 +342,10 @@ pub fn decode_varint(src: &[u8], p: usize) -> Option<(u32, usize)> {
 	Some((v, p + 4))
 }
 
-/// SoA instruction stream: opcode array, then four parallel operand streams.
-/// `slot_perm[i]` = which operand (0=a 1=b 2=c 3=d) occupies stream i.
+/// SoA instruction stream: opcode array, then four parallel operand
+/// streams. `slot_perm[i]` = which operand (0=a 1=b 2=c 3=d) occupies
+/// stream i. The ncode prefix is written by the caller (P2: varint).
 pub fn encode_soa(code: &[Instr], map: &OpMap, slot_perm: &[u8; 4], out: &mut Vec<u8>) {
-	push_u16(out, code.len() as u16);
 	for ins in code {
 		out.push(map.code(ins.op));
 	}
@@ -354,6 +354,27 @@ pub fn encode_soa(code: &[Instr], map: &OpMap, slot_perm: &[u8; 4], out: &mut Ve
 		for ins in code {
 			encode_u16var(out, ins.operands()[which]);
 		}
+	}
+}
+
+/// P2 (instruction-stream noise): which operands each opcode IGNORES.
+/// finish() fills them with per-build random values so the four SoA
+/// streams carry no recognizable zero-padding alignment.
+#[rustfmt::skip]
+pub fn unused_operands(op: Op) -> [bool; 4] {
+	match op {
+		Op::Jmp => [true, false, true, true],
+		Op::Jf | Op::Jt | Op::LoadNil | Op::LoadK | Op::Move
+		| Op::Unm | Op::Not | Op::Len | Op::Closure
+		| Op::VarArgTabN | Op::GetGlobal | Op::SetGlobal
+		| Op::GetUp | Op::SetUp => [false, false, true, true],
+		Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::Pow
+		| Op::Concat | Op::Lt | Op::Le | Op::Gt | Op::Ge | Op::Eq
+		| Op::Ne | Op::Idiv | Op::GetTab | Op::SetTab | Op::TabN => [false, false, false, true],
+		Op::NewTab | Op::VarArgTab | Op::VarArgC => [false, true, true, true],
+		Op::CallT | Op::Call | Op::CallM | Op::Return | Op::MkStr => [false, false, false, false],
+		Op::CallE => [false, false, true, false],
+		Op::Nop => [true, true, true, true],
 	}
 }
 

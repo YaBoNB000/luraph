@@ -199,10 +199,11 @@ def words_to_bytes(words):
 def parse_blob(b):
     """按文档化规整布局解析。返回 (consts, fully_parsed)。
 
-    P1 之后的布局：[nregs][nparams][vararg][ckseed u16][nups][upsrc]
-    [nconst][常量…]，常量类型 0/1/3(加密载荷)/4(dyadic 双 varint, 加密)。
-    加密载荷攻击者无法还原（密钥在解释器层）——此处按格式跳过，
-    恢复出的字符串/数字值是掩码后的乱码，对照源常量必然 0 命中。
+    P2 之后的布局：函数 blob = 每构建随机序的带 tag 节（HEAD/CKSEED/
+    UPS/CONSTS/SLOTS/CODE/DECOY）+ 全 blob 位置掩码流。tag 身份与掩码
+    密钥都在解释器层（S3/S4 域），blob 层攻击者既无 tag 表也无密钥——
+    头部不再处于固定偏移，本函数在掩码字节上必然失配（这是 P2 的
+    防御成果）。保留旧格式解析路径以对照早期构建。
     """
     p = 0
 

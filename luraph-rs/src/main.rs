@@ -365,6 +365,13 @@ fn main() -> ExitCode {
 				&program.operand_sums,
 				(program.ck_km, program.ck_kc),
 				(program.mk1, program.mk2),
+				(
+					program.blob_km,
+					program.blob_kc,
+					program.blob_seed,
+					program.blob_step,
+				),
+				program.section_tags,
 			);
 			if std::env::var("LURAPH_VM_TSRC").is_ok() {
 				std::fs::write("/tmp/vm_tsrc.lua", &tsrc).unwrap();

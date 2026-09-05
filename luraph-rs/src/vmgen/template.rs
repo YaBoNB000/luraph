@@ -159,6 +159,8 @@ pub fn generate(
 	operand_sums: &[u64],
 	ck: (u32, u32),
 	mk: (u16, u16),
+	blobk: (u32, u32, u32, u32),
+	tags: [u8; 7],
 ) -> String {
 	let mut oc_items = Vec::new();
 	for (i, name) in OP_NAMES.iter().enumerate() {
@@ -324,55 +326,98 @@ pub fn generate(
         C[i] = v
       end
     end"#;
-	let ck_consts =
-		format!("local CKM = {}\n  local CKC = {}\n  ", ck.0, ck.1);
+	let ck_consts = format!(
+		"local CKM = {}\n  local CKC = {}\n  local BKM = {}\n  local BKC = {}\n  local BSEED = {}\n  local BSTEP = {}\n  ",
+		ck.0, ck.1, blobk.0, blobk.1, blobk.2, blobk.3
+	);
+	// P2 section tags (per-build identity bytes) + walk preamble:
+	// position-unmask the whole blob, then tag-walk the sections in
+	// blob order. Constant decoding is deferred to AFTER the walk
+	// (the CKSEED section may follow CONSTS in the permutation).
+	let tag_defs = format!(
+		"local TH = {}\n    local TCK = {}\n    local TU = {}\n    local TC = {}\n    local TS = {}\n    local TDC = {}\n    local NSECT = {}\n    ",
+		tags[0], tags[1], tags[2], tags[3], tags[4], tags[6], if v15 { 6 } else { 5 }
+	);
+	let unmask_pre = r#"s = decarrier(s)
+    local g = (BSEED + (fi - 1) * BSTEP) % 268435456
+    local um = {}
+    for i = 1, #s do
+      g = (BKM * g + BKC) % 268435456
+      um[i] = CHAR((BYTE(s, i) - g % 256) % 256)
+    end
+    s = table.concat(um)
+    __TAGS__local p = 1
+    local got = 0
+    local cstart = 0"#;
+	let walk_head = r#"local tag = BYTE(s, p); p = p + 1
+        if tag == TH then
+          local v
+          v, p = r16(s, p); nregs = v
+          v, p = r16(s, p); nparams = v
+          v, p = r16(s, p); vararg = v
+          got = got + 1
+        elseif tag == TCK then
+          local v; v, p = r16(s, p); cks = v
+          got = got + 1
+        elseif tag == TU then
+          local nu; nu, p = r16(s, p)
+          upsrc = {}
+          for i = 1, nu do local v; v, p = r16(s, p); upsrc[i] = v end
+          got = got + 1
+        elseif tag == TC then
+          local v
+          v, p = r16(s, p); nconst = v
+          v, p = r16(s, p); csl = v
+          cstart = p
+          p = p + csl
+          got = got + 1
+        elseif tag == TS then
+          local ns; ns, p = r16(s, p)
+          S = {}
+          for i = 1, ns do local v; v, p = r16(s, p); S[i] = v end
+          got = got + 1
+        elseif tag == TDC then
+          local dl; dl, p = r16(s, p)
+          p = p + dl
+        else
+          local v; v, p = r16(s, p); ncode = v
+          W = {}
+          for i = 1, ncode do W[i] = BYTE(s, p); p = p + 1 end
+          __CODE_EXTRA__
+          got = got + 1
+        end"#;
 	let parse_fn = if v15 {
+		let code_extra = r#"local p0 = p
+          __STREAMS__
+          local pend = p
+          p = p0
+          local ck = 0
+          __FOLDS__
+          CK = ck
+          p = pend"#;
 		String::from(
-			r#"local function parse(s)
-    s = decarrier(s)
-    local p = 1
+			r#"local function parse(s, fi)
+    __UNMASK__
     local st = 1
-    local nregs, nparams, vararg, cks, nups, upsrc, nconst, csl, C, S, ncode, W, SA, SB, SC, SD, CK
-    while st <= 5 do
+    local nregs, nparams, vararg, cks, csl, upsrc, nconst, C, S, ncode, W, SA, SB, SC, SD, CK
+    while st <= 2 do
       if st == 1 then
-        nregs = u16(s, p); p = p + 2
-        nparams = u16(s, p); p = p + 2
-        vararg = BYTE(s, p); p = p + 1
-        cks = u16(s, p); p = p + 2
-        nups = u16(s, p); p = p + 2
-        upsrc = {}
-        st = 2
-      elseif st == 2 then
-        for i = 1, nups do upsrc[i] = u16(s, p); p = p + 2 end
-        nconst = u16(s, p); p = p + 2
-        csl = u16(s, p); p = p + 2
-        C = {}
-        st = 3
-      elseif st == 3 then
-        local pe = p + csl
-        __CONSTS__
-        if p ~= pe then while true do end end
-        local ns = u16(s, p); p = p + 2
-        S = {}
-        for i = 1, ns do S[i] = u16(s, p); p = p + 2 end
-        ncode = u16(s, p); p = p + 2
-        W = {}
-        st = 4
-      elseif st == 4 then
-        for i = 1, ncode do W[i] = BYTE(s, p); p = p + 1 end
-        st = 5
+        __WALK__
+        if got >= NSECT then st = 2 end
       else
-        local p0 = p
-        __STREAMS__
-        p = p0
-        local ck = 0
-        __FOLDS__
-        CK = ck
-        st = 6
+        p = cstart
+        C = {}
+        __CONSTS__
+        if p ~= cstart + csl then while true do end end
+        st = 3
       end
     end
     return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, S = S, ck = CK, W = W, SA = SA, SB = SB, SC = SC, SD = SD }
   end"#
+            .replace("__UNMASK__", unmask_pre)
+            .replace("__TAGS__", &tag_defs)
+            .replace("__WALK__", walk_head)
+            .replace("__CODE_EXTRA__", code_extra)
             .replace("__CONSTS__", const_loop)
             .replace(
                 "__STREAMS__",
@@ -396,26 +441,12 @@ pub fn generate(
             ),
 		)
 	} else {
+		let code_extra =
+			r#"SA, SB, SC, SD = rstream(), rstream(), rstream(), rstream()"#;
 		String::from(
-			r#"local function parse(s)
-    s = decarrier(s)
-    local p = 1
-    local nregs = u16(s, p); p = p + 2
-    local nparams = u16(s, p); p = p + 2
-    local vararg = BYTE(s, p); p = p + 1
-    local cks = u16(s, p); p = p + 2
-    local nups = u16(s, p); p = p + 2
-    local upsrc = {}
-    for i = 1, nups do upsrc[i] = u16(s, p); p = p + 2 end
-    local nconst = u16(s, p); p = p + 2
-    local csl = u16(s, p); p = p + 2
-    local C = {}
-    local pe = p + csl
-    __CONSTS__
-    if p ~= pe then while true do end end
-    local ncode = u16(s, p); p = p + 2
-    local W = {}
-    for i = 1, ncode do W[i] = BYTE(s, p); p = p + 1 end
+			r#"local function parse(s, fi)
+    __UNMASK__
+    local nregs, nparams, vararg, cks, csl, upsrc, nconst, C, ncode, W, SA, SB, SC, SD
     local function rstream()
       local T = {}
       for i = 1, ncode do
@@ -423,10 +454,20 @@ pub fn generate(
       end
       return T
     end
-    local SA, SB, SC, SD = rstream(), rstream(), rstream(), rstream()
+    while got < NSECT do
+      __WALK__
+    end
+    p = cstart
+    C = {}
+    __CONSTS__
+    if p ~= cstart + csl then while true do end end
     return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, W = W, SA = SA, SB = SB, SC = SC, SD = SD }
   end"#,
 		)
+		.replace("__UNMASK__", unmask_pre)
+		.replace("__TAGS__", &tag_defs)
+		.replace("__WALK__", walk_head)
+		.replace("__CODE_EXTRA__", code_extra)
 		.replace("__CONSTS__", const_loop)
 	};
 
@@ -445,11 +486,11 @@ pub fn generate(
 			.collect::<Vec<_>>()
 			.join(", ");
 		format!(
-			"local OS = {{{}}}\n  local di = 1\n  while di <= #FN do\n    PF[di] = parse(FN[di])\n    if PF[di].ck ~= OS[di] then while true do end end\n    di = di + 1\n  end",
+			"local OS = {{{}}}\n  local di = 1\n  while di <= #FN do\n    PF[di] = parse(FN[di], di)\n    if PF[di].ck ~= OS[di] then while true do end end\n    di = di + 1\n  end",
 			os_list
 		)
 	} else {
-		String::from("for i = 1, #FN do PF[i] = parse(FN[i]) end")
+		String::from("for i = 1, #FN do PF[i] = parse(FN[i], i) end")
 	};
 
 	// v15 (P3-B): bytecode self-modification + dead dispatch segment.

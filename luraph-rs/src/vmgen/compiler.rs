@@ -95,6 +95,17 @@ pub struct VmProgram {
 	/// index (post Nop-padding). Emitted into the MkStr handler.
 	pub mk1: u16,
 	pub mk2: u16,
+	/// P2 (字节码不规则): blob position-mask keystream (mod 2^28) —
+	/// per-function seed = (blob_seed + fi * blob_step) % 2^28, then
+	/// byte j masked with (state_j % 256). Mirrored by parse.
+	pub blob_km: u32,
+	pub blob_kc: u32,
+	pub blob_seed: u32,
+	pub blob_step: u32,
+	/// P2: section tag bytes, index = section ID:
+	/// 0=HEAD 1=CKSEED 2=UPS 3=CONSTS 4=SLOTS 5=CODE 6=DECOY.
+	/// Per-build random distinct values (no fixed section identity).
+	pub section_tags: [u8; 7],
 	/// v15 stage E3: per-function sum of ALL wire operands (mod 2^32),
 	/// parallel to `fns`. The v15 interpreter re-reads every operand
 	/// stream with inline 7-bit ladders and folds the same checksum
@@ -393,7 +404,7 @@ impl<'a> Ctx<'a> {
 		sigma
 	}
 
-	fn finish(mut self, nregs: u16) -> (Vec<u8>, Vec<u16>, u64) {
+	fn finish(mut self, nregs: u16, fn_index: usize) -> (Vec<u8>, Vec<u16>, u64) {
 		// implicit trailing return (a chunk/function without an explicit
 		// return returns nothing — the code must terminate)
 		let needs_return = self
@@ -493,47 +504,117 @@ impl<'a> Ctx<'a> {
 			.filter(|(_, i)| i.op == Op::Nop)
 			.map(|(p, _)| p as u16)
 			.collect();
-		let mut out = Vec::with_capacity(self.code.len() * 6 + 64);
-		isa::push_u16(&mut out, nregs);
-		isa::push_u16(&mut out, self.nparams);
-		out.push(self.vararg as u8);
-		// P1: per-function constant-keystream seed (LCG state start);
-		// parse mirrors the LCG (KM/KC are per-build, embedded in the
-		// template) to unmask each constant payload byte.
-		let ckseed = self.rng.int(0, 65535) as u16;
-		isa::push_u16(&mut out, ckseed);
-		isa::push_u16(&mut out, self.upsrc.len() as u16);
-		for s in &self.upsrc {
-			isa::push_u16(&mut out, *s);
+		// P2 (instruction-stream noise): fill every operand slot the
+		// opcode IGNORES with per-build random values — the SoA streams
+		// lose their zero-padding alignment (osum below folds the final
+		// wire values, so the v15 checksum stays consistent).
+		for ins in self.code.iter_mut() {
+			let m = isa::unused_operands(ins.op);
+			if m[0] {
+				ins.a = self.rng.int(0, 65535) as u16;
+			}
+			if m[1] {
+				ins.b = self.rng.int(0, 65535) as u16;
+			}
+			if m[2] {
+				ins.c = self.rng.int(0, 65535) as u16;
+			}
+			if m[3] {
+				ins.d = self.rng.int(0, 65535) as u16;
+			}
 		}
-		isa::push_u16(&mut out, self.consts.len() as u16);
-		// P1: the constant SECTION length prefixes the items — masked
-		// type-4 varints lose self-delimiting, so the walker needs one
-		// alignment anchor; parse also folds it as an integrity check.
+		// v15 stage E3: fold the sum of ALL wire operands (post-scatter,
+		// post-noise, mod 2^32). The v15 interpreter re-reads every operand
+		// stream via inline 7-bit ladders and re-folds the same checksum
+		// (F13 shape); any tamper breaks it.
+		let mut osum: u64 = 0;
+		for ins in &self.code {
+			osum = (osum + ins.a as u64 + ins.b as u64 + ins.c as u64 + ins.d as u64) % 4294967296;
+		}
+		// ---------------------------------------------------------------
+		// P2 (字节码不规则): section assembly. No fixed field order —
+		// every build permutes the sections, tags their identity with
+		// per-build random bytes, varints every count, sprinkles decoy
+		// sections, then masks the whole blob with a per-function
+		// position keystream. Layout knowledge alone parses nothing.
+		// Section IDs: 0=HEAD 1=CKSEED 2=UPS 3=CONSTS 4=SLOTS 5=CODE.
+		let mut secs: Vec<(usize, Vec<u8>)> = Vec::new();
+		// HEAD
+		let mut head = Vec::new();
+		isa::encode_u16var(&mut head, nregs);
+		isa::encode_u16var(&mut head, self.nparams);
+		isa::encode_u16var(&mut head, self.vararg as u16);
+		secs.push((0, head));
+		// CKSEED (P1 constant keystream seed)
+		let ckseed = self.rng.int(0, 65535) as u16;
+		let mut cksec = Vec::new();
+		isa::encode_u16var(&mut cksec, ckseed);
+		secs.push((1, cksec));
+		// UPS
+		let mut ups = Vec::new();
+		isa::encode_u16var(&mut ups, self.upsrc.len() as u16);
+		for s in &self.upsrc {
+			isa::encode_u16var(&mut ups, *s);
+		}
+		secs.push((2, ups));
+		// CONSTS (P1: encrypted items; csl = alignment anchor +
+		// integrity check on the parse side)
 		let mut csec: Vec<u8> = Vec::new();
 		let mut lcg =
 			isa::ConstLcg::new(ckseed as u32, self.program.ck_km, self.program.ck_kc);
 		for c in &self.consts {
 			c.encode(&mut csec, &mut lcg);
 		}
-		isa::push_u16(&mut out, csec.len() as u16);
-		out.extend_from_slice(&csec);
+		let mut consts_sec = Vec::new();
+		isa::encode_u16var(&mut consts_sec, self.consts.len() as u16);
+		isa::encode_u16var(&mut consts_sec, csec.len() as u16);
+		consts_sec.extend_from_slice(&csec);
+		secs.push((3, consts_sec));
+		// SLOTS (v15 scatter table only)
 		if let Some(s_tab) = &s_tab {
-			isa::push_u16(&mut out, s_tab.len() as u16);
+			let mut slots = Vec::new();
+			isa::encode_u16var(&mut slots, s_tab.len() as u16);
 			for s in s_tab {
-				isa::push_u16(&mut out, *s);
+				isa::encode_u16var(&mut slots, *s);
 			}
+			secs.push((4, slots));
 		}
-		// v15 stage E3: fold the sum of ALL wire operands (post-scatter,
-		// mod 2^32). The v15 interpreter re-reads every operand stream via
-		// inline 7-bit ladders and re-folds the same checksum (F13 shape);
-		// any tamper breaks it.
-		let mut osum: u64 = 0;
-		for ins in &self.code {
-			osum = (osum + ins.a as u64 + ins.b as u64 + ins.c as u64 + ins.d as u64) % 4294967296;
+		// CODE (ncode + W + SoA streams)
+		let mut code = Vec::new();
+		isa::encode_u16var(&mut code, self.code.len() as u16);
+		isa::encode_soa(&self.code, map, perm, &mut code);
+		secs.push((5, code));
+		// decoy sections: seed-derived garbage runs
+		let ndecoys = self.rng.int(0, 2);
+		for _ in 0..ndecoys {
+			let len = self.rng.int(8, 48);
+			let mut g = Vec::with_capacity(len as usize);
+			for _ in 0..len {
+				g.push(self.rng.int(0, 255) as u8);
+			}
+			secs.push((6, g));
 		}
-		isa::encode_soa(&self.code, map, perm, &mut out);
-		(out, nops, osum)
+		self.rng.shuffle(&mut secs);
+		let tags = &self.program.section_tags;
+		let mut blob: Vec<u8> = Vec::with_capacity(self.code.len() * 6 + 96);
+		for (id, body) in &secs {
+			blob.push(tags[*id]);
+			if *id == 6 {
+				isa::encode_u16var(&mut blob, body.len() as u16);
+			}
+			blob.extend_from_slice(body);
+		}
+		// position mask: per-function keystream over the WHOLE blob
+		let mut state = ((self.program.blob_seed as u64
+			+ fn_index as u64 * self.program.blob_step as u64)
+			% 268_435_456) as u64;
+		let km = self.program.blob_km as u64;
+		let kc = self.program.blob_kc as u64;
+		for byte in blob.iter_mut() {
+			state = (km * state + kc) % 268_435_456;
+			*byte = byte.wrapping_add((state % 256) as u8);
+		}
+		(blob, nops, osum)
 	}
 }
 
@@ -976,6 +1057,15 @@ fn compile_chunk(
 	let ck_kc = (rng.int(1_000_000, 268_000_000) | 1) as u32;
 	let mk1 = rng.int(1, 65535) as u16;
 	let mk2 = rng.int(0, 65535) as u16;
+	// P2 (字节码不规则): blob position-mask keystream + per-function
+	// seed derivation + section tag identity (all per build).
+	let blob_km = (rng.int(100_001, 1_100_001) | 1) as u32;
+	let blob_kc = (rng.int(1_000_000, 268_000_000) | 1) as u32;
+	let blob_seed = rng.int(0, 268_435_455) as u32;
+	let blob_step = rng.int(1, 268_435_455) as u32;
+	let mut tag_pool: Vec<u8> = (1..=250).collect();
+	rng.shuffle(&mut tag_pool);
+	let section_tags: [u8; 7] = tag_pool[..7].try_into().unwrap();
 	let mut program = VmProgram {
 		opmap: OpMap::new(rng),
 		slot_perm,
@@ -990,12 +1080,19 @@ fn compile_chunk(
 		ck_kc,
 		mk1,
 		mk2,
+		blob_km,
+		blob_kc,
+		blob_seed,
+		blob_step,
+		section_tags,
 	};
 	{
+		// main chunk index = slot count (children fill 0..total-1)
+		let main_index = program.fns.len();
 		let mut ctx = Ctx::new_main(&mut program, rng, table, lua51, scatter);
 		ctx.compile_block(block);
 		let nregs = ctx.next_reg;
-		let (bytes, nops, osum) = ctx.finish(nregs);
+		let (bytes, nops, osum) = ctx.finish(nregs, main_index);
 		program.fns.push(bytes);
 		program.nop_sites.push(nops);
 		program.operand_sums.push(osum);
@@ -2223,7 +2320,7 @@ impl<'a> Ctx<'a> {
 		child.pop_scope();
 		let slot_end = child.next_fn_slot;
 		let nregs = child.next_reg;
-		let (bytes, nops, osum) = child.finish(nregs);
+		let (bytes, nops, osum) = child.finish(nregs, child_index);
 		self.next_fn_slot = slot_end;
 		if child_index >= self.program.fns.len() { panic!("slot overflow: child_index={} len={} next={}", child_index, self.program.fns.len(), self.next_fn_slot); }
 		self.program.fns[child_index] = bytes;
@@ -2457,25 +2554,95 @@ mod dbg {
 		let mut rng = crate::rng::Rng::new(7);
 		let prog = compile_chunk(&block, &table, &mut rng, false, true);
 		let mut saw_scattered_operand = false;
-		for b in &prog.fns {
-			let u16 = |p: usize| (b[p] as u16) | ((b[p + 1] as u16) << 8);
-			let mut p = 0;
-			let nregs = u16(p) as usize; p += 2;
-			p += 2; // nparams
-			p += 1; // vararg
-			p += 2; // P1: ckseed (常量密钥流种子)
-			let nups = u16(p) as usize; p += 2 + 2 * nups;
-			let _nconst = u16(p) as usize; p += 2;
-			// P1: constant section length anchor (masked type-4 items
-			// are not self-delimiting)
-			let seclen = u16(p) as usize; p += 2 + seclen;
-			let ns = u16(p) as usize; p += 2;
-			assert_eq!(ns, nregs, "S table length must equal nregs");
+		let tags = &prog.section_tags;
+		for (fi, b) in prog.fns.iter().enumerate() {
+			// P2: unmask the whole blob, then tag-walk the sections
+			let mut buf: Vec<u8> = b.clone();
+			let mut state = ((prog.blob_seed as u64
+				+ fi as u64 * prog.blob_step as u64)
+				% 268_435_456) as u64;
+			for byte in buf.iter_mut() {
+				state = (prog.blob_km as u64 * state + prog.blob_kc as u64) % 268_435_456;
+				*byte = byte.wrapping_sub((state % 256) as u8);
+			}
+			let mut p = 0usize;
+			let mut nregs = 0usize;
 			let mut slots: Vec<u16> = Vec::new();
-			for _ in 0..ns { slots.push(u16(p)); p += 2; }
+			let mut ncode = 0usize;
+			let mut streams = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+			let mut got = 0;
+			while got < 6 {
+				let tag = buf[p];
+				p += 1;
+				if tag == tags[0] {
+					let (v, np) = isa::decode_varint(&buf, p).unwrap();
+					nregs = v as usize;
+					p = np;
+					let (_, np) = isa::decode_varint(&buf, p).unwrap();
+					p = np; // nparams
+					let (_, np) = isa::decode_varint(&buf, p).unwrap();
+					p = np; // vararg
+					got += 1;
+				} else if tag == tags[1] {
+					let (_, np) = isa::decode_varint(&buf, p).unwrap();
+					p = np; // ckseed
+					got += 1;
+				} else if tag == tags[2] {
+					let (mut nu, np) = isa::decode_varint(&buf, p).unwrap();
+					p = np;
+					while nu > 0 {
+						let (_, n2) = isa::decode_varint(&buf, p).unwrap();
+						p = n2;
+						nu -= 1;
+					}
+					got += 1;
+				} else if tag == tags[3] {
+					let (_, np) = isa::decode_varint(&buf, p).unwrap();
+					p = np; // nconst
+					let (csl, np) = isa::decode_varint(&buf, p).unwrap();
+					p = np + csl as usize;
+					got += 1;
+				} else if tag == tags[4] {
+					let (mut ns, np) = isa::decode_varint(&buf, p).unwrap();
+					p = np;
+					slots.clear();
+					while ns > 0 {
+						let (v, n2) = isa::decode_varint(&buf, p).unwrap();
+						slots.push(v as u16);
+						p = n2;
+						ns -= 1;
+					}
+					got += 1;
+				} else if tag == tags[6] {
+					let (dl, np) = isa::decode_varint(&buf, p).unwrap();
+					p = np + dl as usize;
+				} else {
+					if tag != tags[5] {
+						panic!(
+							"unknown section tag {tag} at p={} got={} tags={:?}",
+							p, got, tags
+						);
+					}
+					let (v, np) = isa::decode_varint(&buf, p).unwrap();
+					ncode = v as usize;
+					p = np;
+					p += ncode; // W array
+					// consume the four operand streams in place (the
+					// walk must land on the next section tag)
+					for s in 0..4 {
+						for _ in 0..ncode {
+							let (sv, n2) = isa::decode_varint(&buf, p).unwrap();
+							streams[s].push(sv as u16);
+							p = n2;
+						}
+					}
+					got += 1;
+				}
+			}
+			assert_eq!(slots.len(), nregs, "S table length must equal nregs");
 			let mut sorted = slots.clone();
 			sorted.sort_unstable(); sorted.dedup();
-			assert_eq!(sorted.len(), ns, "S slots must be distinct");
+			assert_eq!(sorted.len(), nregs, "S slots must be distinct");
 			let smax = nregs + (nregs / 2).min(64).max(8);
 			for &s in &slots {
 				assert!((1..=smax as u16).contains(&s), "slot in range");
@@ -2486,19 +2653,9 @@ mod dbg {
 					"slots must be spread beyond the dense range"
 				);
 			}
-			// wire operands: decode streams; single-register operands
-			// of arithmetic ops must reach beyond nregs somewhere
-			let ncode = u16(p) as usize; p += 2;
-			p += ncode; // skip the opcode array
+			// wire operands: single-register operands of arithmetic ops
+			// must reach beyond nregs somewhere
 			let perm = &prog.slot_perm;
-			let mut streams = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
-			for s in 0..4 {
-				for _ in 0..ncode {
-					let (v, np) = isa::decode_varint(b, p).expect("varint");
-					streams[s].push(v as u16);
-					p = np;
-				}
-			}
 			for i in 0..ncode {
 				let mut vals = [0u16; 4];
 				for s in 0..4 {
