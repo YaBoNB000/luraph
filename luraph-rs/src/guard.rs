@@ -1,7 +1,14 @@
 //! Anti-debug / environment-integrity guard (user-provided design,
 //! 2026-08-29): injected as a prelude in front of the obfuscated
-//! payload on the standard pipeline (v15 keeps its 3-line form; a
-//! CHAR-encoded v15 variant is a future increment).
+//! payload on the standard pipeline; v15 injects a CHAR-encoded copy at
+//! the head of the FC entry machine (keeps the 3-line form).
+//!
+//! Suggestion 2 (2026-09-05): the guard's five check stages live in
+//! `src/anti/mod.rs` as independent stage modules (anti1/anti3 style).
+//! `assemble_guard` composes all five stages in a RANDOM ORDER per
+//! build (all stages always present, only ordering varies), so the
+//! anti-debug sequence differs build-to-build and a fixed single-step
+//! bypass cannot be reused.
 //!
 //! The guard is a self-contained IIFE assigned to a fresh local. It
 //! verifies the runtime environment before the payload executes:
@@ -13,8 +20,9 @@
 //!   - debug.info line probe: a probe function's reported line must
 //!     equal the line extracted from its own raised error message;
 //!     debug info source of `error` must stay "[C]"
-//!   - loader hook integrity (suggestion 3, 2026-08-29): loadstring /
-//!     load present but non-native (debug source ~= "[C]") => hooked
+//!   - loader hook integrity (suggestion 3): loadstring / load present
+//!     but non-native (debug source ~= "[C]") => hooked; re-checked
+//!     mid-staging in the verify handler too
 //!   - newproxy metatable canaries (__tostring/__concat/__call
 //!     tripwires) + table canaries with locked __metatable
 //!   - unpack({}, 0, 64) must succeed
@@ -25,6 +33,7 @@
 //! The prelude goes through mangle + minify so its internals carry
 //! build-random names; globals it references are untouched by mangle.
 
+use crate::anti;
 use crate::mangle;
 use crate::minify;
 use crate::parser;
@@ -33,7 +42,7 @@ use crate::rng::Rng;
 
 /// The guard IIFE (verbatim user design; the trailing `print(255)`
 /// test harness is NOT included — only `local _guard = (...)`).
-const GUARD_SRC: &str = r###"local _guard = (function()
+const GUARD_PREAMBLE: &str = r###"local _guard = (function()
 	local type = type
 	local pcall = pcall
 	local xpcall = xpcall
@@ -72,202 +81,41 @@ const GUARD_SRC: &str = r###"local _guard = (function()
 
 	local canaries = {}
 
-	local function stage_core()
-		if
-			type(type) ~= "function"
-			or type(pcall) ~= "function"
-			or type(xpcall) ~= "function"
-			or type(error) ~= "function"
-			or type(rawget) ~= "function"
-			or type(rawset) ~= "function"
-			or type(getmetatable) ~= "function"
-			or type(setmetatable) ~= "function"
-		then
-			abort()
-		end
-	end
-
 	local env
 
-	local function stage_env()
-		if type(getfenv) == "function" then
-			local ok, value = pcall(getfenv)
+"###;
 
-			if ok then
-				env = value
-			end
-		end
-
-		if env == nil then
-			env = _G
-		end
-
-		if type(env) ~= "table" or type(print) ~= "function" or (warn ~= nil and type(warn) ~= "function") then
-			failed = true
-		end
-
-		local slot = {}
-		local marker = function() end
-		local writeOk = pcall(rawset, slot, -271823, marker)
-
-		if not writeOk or rawget(slot, -271823) ~= marker then
-			failed = true
-		end
-
-		rawset(slot, -271823, nil)
-
-		if rawget(slot, -271823) ~= nil or pcall(error) then
-			failed = true
-		end
-	end
-
-	local function stage_debug()
-		local function lineProbe() return (nil)[1] end
-
-		if
-			type(debugInfo) == "function"
-			and type(gmatch) == "function"
-			and type(tostring) == "function"
-			and type(tonumber) == "function"
-		then
-			local lineOk, line = pcall(debugInfo, lineProbe, "l")
-			local sourceOk, source = pcall(debugInfo, lineProbe, "s")
-			local errorLine
-			local callOk = xpcall(lineProbe, function(message)
-				for digits in gmatch(tostring(message), ":(%d+):") do
-					errorLine = tonumber(digits)
-				end
-
-				return message
-			end)
-
-			if
-				callOk
-				or not lineOk
-				or type(line) ~= "number"
-				or not sourceOk
-				or type(source) ~= "string"
-				or source == "[C]"
-				or type(errorLine) ~= "number"
-				or line ~= errorLine
-			then
-				failed = true
-			end
-
-			local nativeOk, nativeSource = pcall(debugInfo, error, "s")
-
-			if nativeOk and type(nativeSource) == "string" and nativeSource ~= "[C]" then
-				failed = true
-			end
-		end
-
-		if type(debugInfo) == "function" then
-			local function isNative(f)
-				if type(f) ~= "function" then
-					return false
-				end
-				local ok, src = pcall(debugInfo, f, "s")
-				return ok and type(src) == "string" and src == "[C]"
-			end
-
-			local envTable = _G
-
-			if type(envTable) == "table" then
-				local loaderLS = rawget(envTable, "loadstring")
-				local loaderL = rawget(envTable, "load")
-
-				if type(loaderLS) == "function" and not isNative(loaderLS) then
-					failed = true
-				end
-
-				if type(loaderL) == "function" and not isNative(loaderL) then
-					failed = true
-				end
-			end
-		end
-	end
-
-	local function stage_canaries()
-		if type(newproxy) == "function" then
-			local proxyOk, proxy = pcall(newproxy, true)
-
-			if not proxyOk or proxy == nil then
-				failed = true
-			else
-				local metatableOk, metatable = pcall(getmetatable, proxy)
-
-				if not metatableOk or type(metatable) ~= "table" then
-					failed = true
-				else
-					metatable.__tostring = tripwire
-					metatable.__concat = tripwire
-					metatable.__call = tripwire
-					canaries[#canaries + 1] = proxy
-				end
-			end
-		end
-
-		local function addCanary(lock)
-			local value = {}
-			local metatable = {
-				__metatable = lock,
-				__tostring = tripwire,
-				__concat = tripwire,
-				__iter = tripwire,
-			}
-			local ok, result = pcall(setmetatable, value, metatable)
-
-			if not ok or result ~= value then
-				failed = true
-				return
-			end
-
-			local readOk, visibleMetatable = pcall(getmetatable, value)
-
-			if not readOk or visibleMetatable ~= lock then
-				failed = true
-			end
-
-			canaries[#canaries + 1] = value
-		end
-
-		addCanary("tddxhpfcpi")
-		addCanary("lsphhfstdm")
-		addCanary("vymgglkhqr")
-	end
-
-	local function stage_misc()
-		if type(unpack) == "function" then
-			local ok = pcall(unpack, {}, 0, 64)
-
-			if not ok then
-				failed = true
-			end
-		end
-
-		if type(env) == "table" then
-			if type(print) == "function" and env.print ~= print then
-				failed = true
-			end
-
-			if type(warn) == "function" and env.warn ~= warn then
-				failed = true
-			end
-		end
-	end
-
-	stage_core()
-	stage_env()
-	stage_debug()
-	stage_canaries()
-	stage_misc()
-
+const GUARD_EPILOGUE: &str = r###"
 	if failed then
 		abort()
 	end
 
 	return canaries
 end)()"###;
+
+/// Assemble the guard IIFE from the anti/ stage modules (suggestion 2,
+/// anti-folder). All five stages are always present (strong baseline
+/// protection); only their ORDER is randomized per build, so the
+/// anti-debug sequence differs build-to-build and a fixed single-step
+/// bypass cannot be reused.
+fn assemble_guard(rng: &mut Rng) -> String {
+	let mut order: Vec<usize> = (0..anti::STAGES.len()).collect();
+	rng.shuffle(&mut order);
+	let mut src = String::from(GUARD_PREAMBLE);
+	for &i in &order {
+		src.push_str(anti::STAGES[i].1);
+		src.push('\n');
+	}
+	src.push('\n');
+	for &i in &order {
+		src.push('\t');
+		src.push_str(anti::STAGES[i].2);
+		src.push('\n');
+	}
+	src.push_str(GUARD_EPILOGUE);
+	src
+}
+
 
 /// Extract the unique double-quoted string literals of a Lua source,
 /// in order of first appearance (the guard sources contain no escaped
@@ -332,7 +180,8 @@ fn replace_literals_with_table(src: &str, strings: &[String]) -> String {
 /// `local _guard=(function()...end)()` statement ready to prepend to
 /// the FC entry-machine body.
 pub fn v15_guard_source(rng: &mut Rng) -> String {
-	let strings = lua_string_literals(GUARD_SRC);
+	let guard_src = assemble_guard(rng);
+	let strings = lua_string_literals(&guard_src);
 	let mut gs = String::from("\nlocal GS={}\nlocal schar=string and string.char\nif schar then\n");
 	for (k, s) in strings.iter().enumerate() {
 		let codes: Vec<String> = s.bytes().map(|c| c.to_string()).collect();
@@ -342,13 +191,13 @@ pub fn v15_guard_source(rng: &mut Rng) -> String {
 	// mangle the guard first (build-random names), then swap the string
 	// literals for GS[k] and splice the GS table in -- mangle leaves
 	// string literals untouched, so the swap stays exact.
-	let mangled = match parser::parse(GUARD_SRC, true).ok() {
+	let mangled = match parser::parse(&guard_src, true).ok() {
 		Some(mut block) => {
 			let mut table = crate::symtab::resolve(&mut block);
 			mangle::mangle(&mut table, rng, false);
 			printer::print_chunk_luau(&table, &block)
 		}
-		None => GUARD_SRC.to_string(),
+		None => guard_src.clone(),
 	};
 	let replaced = replace_literals_with_table(&mangled, &strings);
 	let marker = "(function()";
@@ -362,7 +211,8 @@ pub fn v15_guard_source(rng: &mut Rng) -> String {
 /// newline). On any internal failure returns the verbatim source
 /// (protection must never silently disappear).
 pub fn guard_prelude(rng: &mut Rng, luau: bool) -> String {
-	let parsed = parser::parse(GUARD_SRC, luau).ok();
+	let guard_src = assemble_guard(rng);
+	let parsed = parser::parse(&guard_src, luau).ok();
 	if let Some(mut block) = parsed {
 		let mut table = crate::symtab::resolve(&mut block);
 		mangle::mangle(&mut table, rng, false);
@@ -376,5 +226,5 @@ pub fn guard_prelude(rng: &mut Rng, luau: bool) -> String {
 			Err(_) => {}
 		}
 	}
-	GUARD_SRC.to_string()
+	guard_src
 }

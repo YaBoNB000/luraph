@@ -139,6 +139,17 @@
 
 ## 4. 更新日志
 
+- **2026-09-05（虚拟机建议·增量 ⑦：建议2 组织部分 — anti/ 文件夹模块化 + 每构建随机组合）**
+  新建 `src/anti/mod.rs`：guard 的 5 个检查段拆成独立源片段
+  （`ANTI_CORE`/`ANTI_ENV`/`ANTI_DEBUG`/`ANTI_CANARY`/`ANTI_MISC`，
+  对应用户建议的 anti1/anti3 风格独立模块），`STAGES` 表导出 (名, 源,
+  调用行)。`assemble_guard()` 每构建**随机排序**组合全部 5 段——段段
+  都在（保强度基线），仅顺序随机，使反调试序列逐构建不同、固定单步
+  bypass 无法复用。`guard_prelude()`/`v15_guard_source()` 改用
+  `assemble_guard()`。验证：204/204 + 405/405 + 3 种子×30 语料
+  90/90 + 指纹抽查 6/6 个 32/32 + 双档运行一致 + 纯度 0 非 ASCII +
+  cargo test 27。**建议2（真假分支 + guard 拆函数 + 步间环境检测 +
+  anti/ 模块化）至此全部完成。**
 - **2026-09-05（虚拟机建议·增量 ⑥：建议2 收尾行为 — 解密步间环境检测）**
   verify handler（staging 解码校验步）内联**环境完整性复检**：解码
   校验中途重查 `error` 的 debug source 必须 `[C]`、`loadstring`/`load`

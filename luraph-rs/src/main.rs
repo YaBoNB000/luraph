@@ -3,6 +3,7 @@
 //! Pipeline: parse -> symtab -> [junk] -> [mangle] -> [flatten] -> [strings] -> print
 //! (later: numbers/body/antidbg/vmgen)
 
+mod anti;
 mod antidbg;
 mod guard;
 mod ast;
