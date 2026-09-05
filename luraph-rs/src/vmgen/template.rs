@@ -635,30 +635,49 @@ pub fn generate(
 	);
 
 	// carrier decoder tables
-	let mut al_lines = String::from("local AL = {}\n");
-	for (i, &ch) in carrier.alphabet.iter().enumerate() {
-		al_lines.push_str(&format!("  AL[{ch}] = {i}\n"));
-	}
-	let mut tk_lines = String::from("local TK = {}\n");
+	// 增量⑨-2 (防静态): the base-94 alphabet is NO LONGER a clean
+	// `AL[byte]=idx` table (the attack recognized the 94-entry table
+	// instantly and bootstrapped the whole decode from it). Instead the
+	// ordered alphabet is stored LCG-masked and the reverse map is built
+	// at boot, so the byte->index table never appears in the output.
+	let akm = (rng.int(100_001, 1_100_001) | 1) as u32;
+	let akc = (rng.int(1_000_000, 268_000_000) | 1) as u32;
+	let aseed = rng.int(0, 268_435_455) as u32;
+	let mut astate = aseed as u64;
+	let masked_alpha: Vec<String> = carrier
+		.alphabet
+		.iter()
+		.map(|&ch| {
+			astate = (akm as u64 * astate + akc as u64) % 268_435_456;
+			ch.wrapping_add((astate % 256) as u8).to_string()
+		})
+		.collect();
+	let al_lines = format!(
+		"local APH = {{{}}}\n  local AL = {{}}\n  do\n    local ast = {}\n    for i = 1, 94 do\n      ast = ({} * ast + {}) % 268435456\n      AL[(APH[i] - ast % 256) % 256] = i - 1\n    end\n  end\n",
+		masked_alpha.join(", "), aseed, akm, akc
+	);
+	// 增量⑨-2 (防静态): the 10-token escape table is also stored
+	// masked and rebuilt at boot (no `TK[CHAR(...)]=CHAR(...)` rows).
+	let tkm = (rng.int(100_001, 1_100_001) | 1) as u32;
+	let tkc = (rng.int(1_000_000, 268_000_000) | 1) as u32;
+	let tkseed = rng.int(0, 268_435_455) as u32;
+	let mut tkstate = tkseed as u64;
+	let mut tk_bytes: Vec<u8> = Vec::new();
 	for i in 0..10 {
-		if v15 {
-			// stage E5 (F10): build token/special from numeric char
-			// codes -- no visible string literals
-			let codes: Vec<String> =
-				carrier.tokens[i].bytes().map(|b| b.to_string()).collect();
-			tk_lines.push_str(&format!(
-				"  TK[CHAR({})] = CHAR({})\n",
-				codes.join(", "),
-				CARRIER_SPECIALS[i]
-			));
-		} else {
-			tk_lines.push_str(&format!(
-				"  TK[{}] = {}\n",
-				lua_dstr(carrier.tokens[i].as_bytes()),
-				lua_dstr(&[CARRIER_SPECIALS[i]])
-			));
-		}
+		tk_bytes.extend_from_slice(carrier.tokens[i].as_bytes());
 	}
+	tk_bytes.extend_from_slice(&CARRIER_SPECIALS);
+	let masked_tk: Vec<String> = tk_bytes
+		.iter()
+		.map(|&b| {
+			tkstate = (tkm as u64 * tkstate + tkc as u64) % 268_435_456;
+			b.wrapping_add((tkstate % 256) as u8).to_string()
+		})
+		.collect();
+	let tk_lines = format!(
+		"local TKD = {{{}}}\n  local TK = {{}}\n  do\n    local tst = {}\n    local tb = {{}}\n    for i = 1, 60 do\n      tst = ({} * tst + {}) % 268435456\n      tb[i] = (TKD[i] - tst % 256) % 256\n    end\n    for i = 0, 9 do\n      TK[CHAR(tb[i * 5 + 1], tb[i * 5 + 2], tb[i * 5 + 3], tb[i * 5 + 4], tb[i * 5 + 5])] = CHAR(tb[50 + i + 1])\n    end\n  end\n",
+		masked_tk.join(", "), tkseed, tkm, tkc
+	);
 
 	// decode-hub / fetch: two styles, return-tuple order shuffled
 	let use_hub = rng.int(0, 1) == 1;
