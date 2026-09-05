@@ -397,6 +397,11 @@ fn dispatch_tree(
 /// grows named handlers / state returns / fused conditionals).
 pub const CHUNKS: usize = 5;
 
+/// P3b: max u32 words per numeric-slot word array (kept under the
+/// attack's "large numeric literal" threshold; blends into the
+/// numeric-slot family).
+pub const BW_SLOT_WORDS: usize = 90;
+
 /// Decoy LCG slots (F28): parked far above BOTH the context C range
 /// (..=auxslot) and the primitive-slot draw (1..=126), and shifted off
 /// any reserved runner/keystream slot, so no other mechanism ever
@@ -434,6 +439,7 @@ pub fn scaffold(
 	decoy2: i64,
 	carrier: &crate::vmgen::isa::Carrier,
 	guard: bool,
+	bw_slots: &[i64],
 ) -> (Vec<TableField>, String) {
 	let carrier_tokens: &[String] = &carrier.tokens;
 	let mut nm = Names::new(rng);
@@ -549,10 +555,13 @@ pub fn scaffold(
 			isfloat: false,
 		},
 	));
+	// P3b: operand order emitted as (x*m+c) and per-step local names
+	// vary — the keystream stays runtime-derived (sample [96] family)
+	// but no fixed-shape constant triple is grep-able in one function.
 	fields.push(slotted(
 		kg_slot,
 		parse_expr(&format!(
-			"function(b) local x=b[{ks}];local u=0;while true do if u<=0 then x=({m1}*x+{c1})%268435456;u=1 elseif u<=1 then x=({m2}*x+{c2})%268435456;u=2 else x=({m3}*x+{c3})%268435456;b[{ks}]=x;return x end end end",
+			"function(b) local x=b[{ks}];local u=0;while true do if u<=0 then x=(x*{m1}+{c1})%268435456;u=1 elseif u<=1 then local y=(x*{m2}+{c2})%268435456;x=y;u=2 else local z=(x*{m3}+{c3})%268435456;b[{ks}]=z;return z end end end",
 			ks = ks_slot,
 			m1 = km1, c1 = kc1,
 			m2 = km2, c2 = kc2,
@@ -651,7 +660,6 @@ pub fn scaffold(
 	// high-entropy long string HB is kept ONLY to satisfy fingerprint F8
 	// (longest long string >= 10 KB) and carries no bytecode. Each chunk
 	// handler reads its word range, unpacks bytes, trims, de-XORs.
-	let bw_name = nm.take();
 	let hb_name = nm.take();
 	let alphabet = carrier.alphabet;
 	// Build the XORed byte stream per chunk, aligning each chunk to a
@@ -684,17 +692,43 @@ pub fn scaffold(
 			chunk_info.push((start_word, num_words, byte_len));
 		}
 	}
-	// BW field: array of u32 words (stored as plain Lua numbers; Luau
-	// doubles hold u32 exactly). Decoded with bit32 at runtime.
-	fields.push(TableField::Key {
-		key: Expr::Str { bytes: bw_name.as_bytes().to_vec(), is_binary: false },
-		value: Expr::Table {
-			fields: all_words
-				.iter()
-				.map(|&w| TableField::Array(Expr::Num { value: w as f64, isfloat: false }))
-				.collect(),
-		},
-	});
+	// P3b (自描述消除): the word table is SPLIT across numeric-slot
+	// arrays (≤ BW_SLOT_WORDS words each, blending into the numeric-slot
+	// family) and every word is additively masked with a per-position
+	// key ((bm0 + g*bc0) % 2^32, g = global word index 1-based). No
+	// giant numeric literal and no clean word values in the output; the
+	// chunk handlers unmask on the fly while unpacking.
+	let bm0 = rng.int(1, 4_294_967_295) as i64;
+	let bc0 = (rng.int(1, 4_294_967_295) | 1) as i64;
+	let n_slots_needed = (all_words.len() + BW_SLOT_WORDS - 1) / BW_SLOT_WORDS;
+	assert!(
+		n_slots_needed <= bw_slots.len(),
+		"not enough BW slots: need {} have {}",
+		n_slots_needed,
+		bw_slots.len()
+	);
+	let masked: Vec<i64> = all_words
+		.iter()
+		.enumerate()
+		.map(|(gi, &w)| {
+			let g = gi as i64 + 1;
+			let key = (bm0 + g * bc0) % 4_294_967_296;
+			((w as i64 + key) % 4_294_967_296) as i64
+		})
+		.collect();
+	for (si, slot) in bw_slots.iter().take(n_slots_needed).enumerate() {
+		let lo = si * BW_SLOT_WORDS;
+		let hi = masked.len().min(lo + BW_SLOT_WORDS);
+		fields.push(TableField::Key {
+			key: Expr::Num { value: *slot as f64, isfloat: false },
+			value: Expr::Table {
+				fields: masked[lo..hi]
+					.iter()
+					.map(|&w| TableField::Array(Expr::Num { value: w as f64, isfloat: false }))
+					.collect(),
+			},
+		});
+	}
 	// HB field: high-entropy long string (>= 10.5 KB) for F8 only --
 	// random alphabet glyphs, no bytecode, invisible to the handlers.
 	let mut hb_bytes: Vec<u8> = Vec::new();
@@ -747,22 +781,43 @@ pub fn scaffold(
 			let (ra, rb, rc, rd, re) = (fillers[0], fillers[1], fillers[2], fillers[3], fillers[4]);
 			let (st, ret) = step(&mut state_i);
 			let name = nm.take();
-			// Bytecode words live in the BW table (suggestion 5); the
-			// handler reads its word range, unpacks bytes with bit32,
-			// trims to the chunk length, then de-XORs. Key material was
+			// P3b: the words live SPLIT across numeric-slot arrays and
+			// additively masked per global position; the handler walks
+			// its slot segments, unmasks each word on the fly
+			// ((bm0 + g*bc0) % 2^32), unpacks bytes with bit32, trims
+			// to the chunk length, then de-XORs. Key material was
 			// consumed by the word precompute pass above.
 			let _ = chunk;
 			let (sw, nw, blen) = chunk_info[k * CHUNKS + j];
 			let ew = sw + nw - 1;
+			// slot segments covering [sw, ew] (global 1-based word idx)
+			let mut seg_code = String::new();
+			let mut g = sw;
+			while g <= ew {
+				let si = (g - 1) / BW_SLOT_WORDS; // 0-based slot index
+				let local_lo = (g - 1) % BW_SLOT_WORDS + 1; // 1-based
+				let slot_end_global = (si + 1) * BW_SLOT_WORDS;
+				let seg_hi = ew.min(slot_end_global);
+				let local_hi = local_lo + (seg_hi - g);
+				seg_code.push_str(&format!(
+					"local Ws=b[{slot}]; for wi={lo},{hi} do local w=(Ws[wi]-({bm0}+g*{bc0})%4294967296)%4294967296; g=g+1; \
+					 t[#t+1]=string.char(bit32.band(w,255)); w=bit32.rshift(w,8); \
+					 t[#t+1]=string.char(bit32.band(w,255)); w=bit32.rshift(w,8); \
+					 t[#t+1]=string.char(bit32.band(w,255)); w=bit32.rshift(w,8); \
+					 t[#t+1]=string.char(bit32.band(w,255)) end; ",
+					slot = bw_slots[si],
+					lo = local_lo,
+					hi = local_hi,
+					bm0 = bm0,
+					bc0 = bc0,
+				));
+				g = seg_hi + 1;
+			}
 			let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
 			let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
 			let src = format!(
-				"function(b,C,{ra},{rb},{rc},{rd},{re}) local W=b.{bw}; local t={{}}; \
-				 for wi={sw},{ew} do local w=W[wi]; \
-				 t[#t+1]=string.char(bit32.band(w,255)); w=bit32.rshift(w,8); \
-				 t[#t+1]=string.char(bit32.band(w,255)); w=bit32.rshift(w,8); \
-				 t[#t+1]=string.char(bit32.band(w,255)); w=bit32.rshift(w,8); \
-				 t[#t+1]=string.char(bit32.band(w,255)) end; \
+				"function(b,C,{ra},{rb},{rc},{rd},{re}) local t={{}}; local g={sw}; \
+				 {segs}\
 				 local seg=string.sub(table.concat(t),1,{blen}); \
 				 local Q=C[{idx}]~=nil and {da} or {db}; \
 				 local R=if {da}~={db} then {da} else {db}; \
@@ -771,9 +826,8 @@ pub fn scaffold(
 				 C[{idx}]=table.concat(o); \
 				 return {ret},C,{rc},{ra},{rd},{re},{rb} end",
 				idx = k * CHUNKS + j + 1,
-				bw = bw_name,
+				segs = seg_code,
 				sw = sw,
-				ew = ew,
 				blen = blen,
 				kg = kg_slot,
 				da = decoy_a,

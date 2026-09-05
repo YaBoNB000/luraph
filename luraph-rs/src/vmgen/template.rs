@@ -166,10 +166,33 @@ pub fn generate(
 	for (i, name) in OP_NAMES.iter().enumerate() {
 		oc_items.push(format!("{name} = {}", map.to_wire[i]));
 	}
-	if v15 {
-		oc_items.push(format!("NopA = {}", map.nop_alias));
-	}
 	let oc_table = format!("local OC = {{{}}}", oc_items.join(", "));
+	// P3b (自描述消除, v15): no named opcode table in the output.
+	// The wire array is built at BOOT from shuffled, per-index masked
+	// pairs (mask = (ocm + idx*occ) % 65536 over the wire byte); the
+	// dispatch compares against OCt[<op_index>] positionally. The Nop
+	// alias becomes NOPA = (p1 + p2) % 256 (no literal alias byte).
+	let oc_boot: String = if v15 {
+		let ocm = rng.int(1, 65535);
+		let occ = rng.int(1, 65535);
+		let mut pairs: Vec<String> = Vec::new();
+		for i in 0..N_OPS {
+			let mask = (ocm + i as i64 * occ) % 65536;
+			let stored = (map.to_wire[i] as i64 + mask) % 256;
+			pairs.push(format!("{}, {}", i, stored));
+		}
+		rng.shuffle(&mut pairs);
+		let p1 = rng.int(0, 255);
+		let p2 = ((map.nop_alias as i64 - p1) % 256 + 256) % 256;
+		format!(
+			"local OCt = {{}}\n  do\n    local ocp = {{{}}}\n    local oi = 1\n    while oi <= #ocp do\n      local x = ocp[oi]\n      OCt[x] = (ocp[oi + 1] - ({} + x * {}) % 65536) % 256\n      oi = oi + 2\n    end\n  end\n  local NOPA = ({} + {}) % 256",
+			pairs.join(", "), ocm, occ, p1, p2
+		)
+	} else {
+		String::new()
+	};
+	// v15 ships the boot-built wire array; legacy keeps the named table
+	let oc_table = if v15 { oc_boot } else { oc_table };
 
 	let nop = handlers::nop::body(rng);
 	// v15 stage E5: meta/type/error literals routed through the MS boot
@@ -513,10 +536,9 @@ pub fn generate(
 			sm.push_str(&format!("  local ZW{} = PF[{}].W\n", fi + 1, fi + 1));
 			for &p in sites {
 				sm.push_str(&format!(
-					"  ZW{}[{}] = {}\n",
+					"  ZW{}[{}] = NOPA\n",
 					fi + 1,
 					p as usize + 1,
-					map.nop_alias
 				));
 			}
 		}
@@ -1003,7 +1025,8 @@ pub fn generate(
 			let body = handlers::gen(name, fmt_of[*name], true, &mut pool, mk)
 				.replace("lastbase = a + 1", "E.lb = a + 1")
 				.replace("lastn = nout", "E.ln = nout");
-			cond.push_str(&format!("oc == OC.{} then {}", name, body));
+			let idx = OP_NAMES.iter().position(|n| n == name).unwrap();
+			cond.push_str(&format!("oc == OCt[{}] then {}", idx, body));
 		}
 		let cps_fetch = format!(
 			"local oc = W[pc];if oc then local a = {sa}[pc];local b = {sb}[pc];local c = {sc}[pc];local d = {sd}[pc];pc = pc + 1;if {cond} else local r = HW[oc](E,a,b,c,d); if r then if r.j then pc = r.j else return U(r[1], 1, r[2]) end end end end",
