@@ -100,9 +100,15 @@ pub enum Op {
 	/// (stored by a preceding CallE), tail values at V[a+3+b..]; d =
 	/// append varargs. c = nres (255 = all).
 	CallM,
+	/// P1 (动态内联): V[a] = short string rebuilt from masked operand
+	/// bytes — the string never enters the constant pool. b/c/d carry
+	/// (byte pairs + len) additively masked with the per-position key
+	/// (mk1 * instr_index + mk2) % 65536; the handler unmasks via
+	/// (x - mask) % 65536 and concats CHAR of each byte.
+	MkStr,
 }
 
-pub const N_OPS: usize = 41;
+pub const N_OPS: usize = 42;
 
 pub fn op_base() -> [u8; N_OPS] {
 	#[allow(clippy::declare_interior_mutable_const)]
@@ -119,6 +125,7 @@ pub fn op_base() -> [u8; N_OPS] {
 		(Op::VarArgTabN, 32), (Op::GetGlobal, 33), (Op::SetGlobal, 34),
 		(Op::GetUp, 35), (Op::SetUp, 36), (Op::Return, 37), (Op::Nop, 38),
 		(Op::CallE, 39), (Op::CallM, 40),
+		(Op::MkStr, 41),
 	];
 	let mut out = [0u8; N_OPS];
 	for (op, code) in t {
@@ -173,6 +180,7 @@ pub fn op_index(op: Op) -> usize {
 		Op::Nop => 38,
 		Op::CallE => 39,
 		Op::CallM => 40,
+		Op::MkStr => 41,
 	}
 }
 
@@ -361,24 +369,94 @@ pub enum Const {
 	Str(Vec<u8>),
 }
 
+/// P1 (致命缺点③整改): per-function constant keystream. LCG mod 2^28
+/// (same family as the scaffold keystream); one advance per ENCRYPTED
+/// PAYLOAD BYTE. Additive masking (`(plain + key) % 256`) keeps the
+/// decoder bitop-free (5.1-safe); the mirror in the template parse is
+/// `(x - key) % 256` (Lua's % is non-negative for positive modulus).
+pub struct ConstLcg {
+	pub state: u32,
+	pub km: u32,
+	pub kc: u32,
+}
+
+impl ConstLcg {
+	pub fn new(seed: u32, km: u32, kc: u32) -> ConstLcg {
+		ConstLcg { state: seed, km, kc }
+	}
+	/// Advance and return the key byte for the next payload byte.
+	pub fn next_key(&mut self) -> u8 {
+		self.state = ((self.km as u64 * self.state as u64 + self.kc as u64)
+			% 268_435_456) as u32;
+		(self.state % 256) as u8
+	}
+	pub fn mask(&mut self, plain: u8) -> u8 {
+		// wrapping add == (plain + key) mod 256; parse mirrors with
+		// (x - key) % 256 (Lua % is non-negative for positive modulus)
+		plain.wrapping_add(self.next_key())
+	}
+}
+
+/// Exact dyadic split of a double: v = ± m · 2^k with integer
+/// m ≤ 2^53-1 (mantissa incl. implicit bit) and k in [-1074, 971].
+/// Reconstruction `m * 2^k` is exact in IEEE-754 (both factors exact,
+/// product = original representable value).
+pub fn num_to_dyadic(v: f64) -> (bool, u64, i32) {
+	let bits = v.to_bits();
+	let neg = bits >> 63 != 0;
+	let exp = ((bits >> 52) & 0x7FF) as i32;
+	let mant = bits & 0x000F_FFFF_FFFF_FFFF;
+	if exp == 0 {
+		// zero or subnormal: no implicit bit, k fixed at -1074
+		(neg, mant, -1074)
+	} else {
+		(neg, mant | 0x0010_0000_0000_0000, exp - 1023 - 52)
+	}
+}
+
+/// 7-bit varint for values up to 2^56 (constant pool use; the decoder
+/// is a byte loop on the template side, exact for m < 2^53).
+pub fn encode_varint64(out: &mut Vec<u8>, mut v: u64) {
+	while v >= 128 {
+		out.push(((v % 128) + 128) as u8);
+		v /= 128;
+	}
+	out.push(v as u8);
+}
+
 impl Const {
-	pub fn encode(&self, out: &mut Vec<u8>) {
+	/// P1: encrypted constant serialization. Type byte stays clear
+	/// (parse must branch on it) and string LENGTH stays clear
+	/// (delimiter); every payload byte is keystream-masked. Numbers
+	/// are dyadic pairs (type 4) — no ASCII digit text in the blob.
+	pub fn encode(&self, out: &mut Vec<u8>, lcg: &mut ConstLcg) {
 		match self {
 			Const::Nil => out.push(0),
 			Const::Bool(b) => {
 				out.push(1);
-				out.push(*b as u8);
+				out.push(lcg.mask(*b as u8));
 			}
 			Const::Num(v) => {
-				out.push(2);
-				let text = num_text(*v);
-				push_u16(out, text.len() as u16);
-				out.extend_from_slice(text.as_bytes());
+				out.push(4);
+				let (neg, m, k) = num_to_dyadic(*v);
+				let mut mbytes: Vec<u8> = Vec::new();
+				encode_varint64(&mut mbytes, m);
+				for b in &mbytes {
+					out.push(lcg.mask(*b));
+				}
+				let kpack = (((k + 2048) * 2 + neg as i32) as u64) & 0xFFFF;
+				let mut kbytes: Vec<u8> = Vec::new();
+				encode_varint64(&mut kbytes, kpack);
+				for b in &kbytes {
+					out.push(lcg.mask(*b));
+				}
 			}
 			Const::Str(b) => {
 				out.push(3);
 				push_u16(out, b.len() as u16);
-				out.extend_from_slice(b);
+				for byte in b {
+					out.push(lcg.mask(*byte));
+				}
 			}
 		}
 	}

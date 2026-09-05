@@ -85,6 +85,16 @@ pub struct VmProgram {
 	/// `fns`). Consumed by the v15 template to emit literal-constant
 	/// self-modification writes (sample `J[Q]=12` shape, F14/F27).
 	pub nop_sites: Vec<Vec<u16>>,
+	/// P1 (致命缺点③): constant-keystream LCG constants (mod 2^28),
+	/// per build. The compiler masks every constant payload byte with
+	/// the per-function seeded stream; the template parse mirrors it.
+	pub ck_km: u32,
+	pub ck_kc: u32,
+	/// P1 (动态内联): MkStr per-position additive mask constants —
+	/// mask(i) = (mk1 * i + mk2) % 65536 over the FINAL instruction
+	/// index (post Nop-padding). Emitted into the MkStr handler.
+	pub mk1: u16,
+	pub mk2: u16,
 	/// v15 stage E3: per-function sum of ALL wire operands (mod 2^32),
 	/// parallel to `fns`. The v15 interpreter re-reads every operand
 	/// stream with inline 7-bit ladders and folds the same checksum
@@ -303,6 +313,9 @@ impl<'a> Ctx<'a> {
 			Op::SetUp => [Up, Reg, Val, Val],
 			Op::Return => [Base, Val, Val, Val],
 			Op::Nop => [Val, Val, Val, Val],
+			// P1: a = destination register (scattered); b/c/d = masked
+			// packed string bytes (opaque values, never scattered)
+			Op::MkStr => [Reg, Val, Val, Val],
 		}
 	}
 
@@ -427,6 +440,28 @@ impl<'a> Ctx<'a> {
 				}
 			}
 		}
+		// P1 (动态内联): rewrite LoadK of SHORT strings (≤5 bytes) into
+		// MkStr — the string never enters the constant pool; its bytes
+		// ride the operand streams as masked immediates. Done BEFORE
+		// scattering so operand a scatters as a register and the packed
+		// b/c/d pass through as opaque values.
+		for ins in self.code.iter_mut() {
+			if ins.op == Op::LoadK {
+				if let Some(Const::Str(bs)) = self.consts.get(ins.b as usize) {
+					if bs.len() <= 5 {
+						let mut bytes = [0u16; 5];
+						for (i, &b) in bs.iter().enumerate() {
+							bytes[i] = b as u16;
+						}
+						let len = bs.len() as u16;
+						ins.op = Op::MkStr;
+						ins.b = bytes[0] + bytes[1] * 256;
+						ins.c = bytes[2] + bytes[3] * 256;
+						ins.d = bytes[4] + len * 256;
+					}
+				}
+			}
+		}
 		// v15 stage A: operand scattering post-pass (rewrites wire
 		// operands; yields the register slot table S serialized below)
 		let s_tab = if self.scatter {
@@ -434,6 +469,20 @@ impl<'a> Ctx<'a> {
 		} else {
 			None
 		};
+		// P1: mask MkStr packed operands with a key derived from the
+		// FINAL wire register a (post-scatter): mask = (mk1*a + mk2)
+		// % 65536. The handler recomputes the same key from its a
+		// operand and unmasks via (x - mask) % 65536.
+		let mk1 = self.program.mk1 as u32;
+		let mk2 = self.program.mk2 as u32;
+		for ins in self.code.iter_mut() {
+			if ins.op == Op::MkStr {
+				let msk = (mk1 * ins.a as u32 + mk2) % 65536;
+				ins.b = ((ins.b as u32 + msk) % 65536) as u16;
+				ins.c = ((ins.c as u32 + msk) % 65536) as u16;
+				ins.d = ((ins.d as u32 + msk) % 65536) as u16;
+			}
+		}
 		let map = &self.program.opmap;
 		let perm = &self.program.slot_perm;
 		// Nop sites are final here (no more insertions after this point)
@@ -448,14 +497,27 @@ impl<'a> Ctx<'a> {
 		isa::push_u16(&mut out, nregs);
 		isa::push_u16(&mut out, self.nparams);
 		out.push(self.vararg as u8);
+		// P1: per-function constant-keystream seed (LCG state start);
+		// parse mirrors the LCG (KM/KC are per-build, embedded in the
+		// template) to unmask each constant payload byte.
+		let ckseed = self.rng.int(0, 65535) as u16;
+		isa::push_u16(&mut out, ckseed);
 		isa::push_u16(&mut out, self.upsrc.len() as u16);
 		for s in &self.upsrc {
 			isa::push_u16(&mut out, *s);
 		}
 		isa::push_u16(&mut out, self.consts.len() as u16);
+		// P1: the constant SECTION length prefixes the items — masked
+		// type-4 varints lose self-delimiting, so the walker needs one
+		// alignment anchor; parse also folds it as an integrity check.
+		let mut csec: Vec<u8> = Vec::new();
+		let mut lcg =
+			isa::ConstLcg::new(ckseed as u32, self.program.ck_km, self.program.ck_kc);
 		for c in &self.consts {
-			c.encode(&mut out);
+			c.encode(&mut csec, &mut lcg);
 		}
+		isa::push_u16(&mut out, csec.len() as u16);
+		out.extend_from_slice(&csec);
 		if let Some(s_tab) = &s_tab {
 			isa::push_u16(&mut out, s_tab.len() as u16);
 			for s in s_tab {
@@ -906,6 +968,14 @@ fn compile_chunk(
 	let mut perm: Vec<u8> = vec![0, 1, 2, 3];
 	rng.shuffle(&mut perm);
 	let slot_perm: [u8; 4] = perm.try_into().unwrap();
+	// P1 (致命缺点③): per-build constant-keystream LCG constants
+	// (odd multiplier/addend, mod 2^28 — scaffold-keystream family) +
+	// MkStr additive-mask constants. The template parse mirrors the
+	// LCG; the MkStr handler mirrors the mask.
+	let ck_km = (rng.int(100_001, 1_100_001) | 1) as u32;
+	let ck_kc = (rng.int(1_000_000, 268_000_000) | 1) as u32;
+	let mk1 = rng.int(1, 65535) as u16;
+	let mk2 = rng.int(0, 65535) as u16;
 	let mut program = VmProgram {
 		opmap: OpMap::new(rng),
 		slot_perm,
@@ -916,6 +986,10 @@ fn compile_chunk(
 		fns: vec![Vec::new(); total],
 		nop_sites: vec![Vec::new(); total],
 		operand_sums: vec![0; total],
+		ck_km,
+		ck_kc,
+		mk1,
+		mk2,
 	};
 	{
 		let mut ctx = Ctx::new_main(&mut program, rng, table, lua51, scatter);
@@ -2389,16 +2463,12 @@ mod dbg {
 			let nregs = u16(p) as usize; p += 2;
 			p += 2; // nparams
 			p += 1; // vararg
+			p += 2; // P1: ckseed (常量密钥流种子)
 			let nups = u16(p) as usize; p += 2 + 2 * nups;
-			let nconst = u16(p) as usize; p += 2;
-			for _ in 0..nconst {
-				let t = b[p]; p += 1;
-				match t {
-					0 => {}
-					1 => { p += 1; }
-					_ => { let l = u16(p) as usize; p += 2 + l; }
-				}
-			}
+			let _nconst = u16(p) as usize; p += 2;
+			// P1: constant section length anchor (masked type-4 items
+			// are not self-delimiting)
+			let seclen = u16(p) as usize; p += 2 + seclen;
 			let ns = u16(p) as usize; p += 2;
 			assert_eq!(ns, nregs, "S table length must equal nregs");
 			let mut slots: Vec<u16> = Vec::new();

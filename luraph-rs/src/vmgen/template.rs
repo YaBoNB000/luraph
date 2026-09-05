@@ -31,7 +31,7 @@ const OP_NAMES: [&str; N_OPS] = [
 	"Mod", "Pow", "Concat", "Unm", "Not", "Len", "Lt", "Le", "Gt", "Ge", "Eq",
 	"Ne", "Idiv", "NewTab", "GetTab", "SetTab", "TabN", "CallT", "Closure",
 	"Call", "VarArgTab", "VarArgC", "VarArgTabN", "GetGlobal", "SetGlobal",
-	"GetUp", "SetUp", "Return", "Nop", "CallE", "CallM",
+	"GetUp", "SetUp", "Return", "Nop", "CallE", "CallM", "MkStr",
 ];
 
 const PRIM_SRC: [&str; 15] = [
@@ -157,6 +157,8 @@ pub fn generate(
 	v15: bool,
 	nop_sites: &[Vec<u16>],
 	operand_sums: &[u64],
+	ck: (u32, u32),
+	mk: (u16, u16),
 ) -> String {
 	let mut oc_items = Vec::new();
 	for (i, name) in OP_NAMES.iter().enumerate() {
@@ -201,7 +203,7 @@ pub fn generate(
 			nop.clone()
 		} else {
 			// 建议1: fixed code returned by the instruction's own file
-			handlers::gen(name, fmt_of[name], v15, &mut pool)
+			handlers::gen(name, fmt_of[name], v15, &mut pool, mk)
 		};
 		if v15 {
 			if core.is_empty() {
@@ -276,39 +278,80 @@ pub fn generate(
 	// parse function: non-v15 keeps the original monolithic decode
 	// byte-for-byte; v15 emits it as an explicit state-machine decode
 	// (Phase B CPS foundation) with identical semantics.
+	// P1 (致命缺点③): constant decode = LCG unmask (KM/KC per build,
+	// cks = per-function seed in the blob header) + dyadic number
+	// rebuild (type 4: m·2^k exact, no digit text in the blob).
+	let const_loop = r#"for i = 1, nconst do
+      local t = BYTE(s, p); p = p + 1
+      if t == 0 then
+        C[i] = nil
+      elseif t == 1 then
+        cks = (CKM * cks + CKC) % 268435456
+        C[i] = (BYTE(s, p) - cks % 256) % 256 == 1; p = p + 1
+      elseif t == 3 then
+        local l = u16(s, p); p = p + 2
+        local xs = ""
+        for j = 1, l do
+          cks = (CKM * cks + CKC) % 268435456
+          xs = xs .. CHAR((BYTE(s, p + j - 1) - cks % 256) % 256)
+        end
+        p = p + l
+        C[i] = xs
+      else
+        local m = 0
+        local sh = 1
+        while true do
+          cks = (CKM * cks + CKC) % 268435456
+          local bb = (BYTE(s, p) - cks % 256) % 256; p = p + 1
+          if bb < 128 then m = m + bb * sh; break end
+          m = m + (bb - 128) * sh
+          sh = sh * 128
+        end
+        local kp = 0
+        local sh2 = 1
+        while true do
+          cks = (CKM * cks + CKC) % 268435456
+          local bb = (BYTE(s, p) - cks % 256) % 256; p = p + 1
+          if bb < 128 then kp = kp + bb * sh2; break end
+          kp = kp + (bb - 128) * sh2
+          sh2 = sh2 * 128
+        end
+        local kk = FLR(kp / 2) - 2048
+        local pw = 1
+        if kk >= 0 then for j = 1, kk do pw = pw * 2 end else for j = 1, 0 - kk do pw = pw / 2 end end
+        local v = m * pw
+        if kp % 2 == 1 then v = 0 - v end
+        C[i] = v
+      end
+    end"#;
+	let ck_consts =
+		format!("local CKM = {}\n  local CKC = {}\n  ", ck.0, ck.1);
 	let parse_fn = if v15 {
 		String::from(
 			r#"local function parse(s)
     s = decarrier(s)
     local p = 1
     local st = 1
-    local nregs, nparams, vararg, nups, upsrc, nconst, C, S, ncode, W, SA, SB, SC, SD, CK
+    local nregs, nparams, vararg, cks, nups, upsrc, nconst, csl, C, S, ncode, W, SA, SB, SC, SD, CK
     while st <= 5 do
       if st == 1 then
         nregs = u16(s, p); p = p + 2
         nparams = u16(s, p); p = p + 2
         vararg = BYTE(s, p); p = p + 1
+        cks = u16(s, p); p = p + 2
         nups = u16(s, p); p = p + 2
         upsrc = {}
         st = 2
       elseif st == 2 then
         for i = 1, nups do upsrc[i] = u16(s, p); p = p + 2 end
         nconst = u16(s, p); p = p + 2
+        csl = u16(s, p); p = p + 2
         C = {}
         st = 3
       elseif st == 3 then
-        for i = 1, nconst do
-          local t = BYTE(s, p); p = p + 1
-          if t == 0 then
-            C[i] = nil
-          elseif t == 1 then
-            C[i] = BYTE(s, p) == 1; p = p + 1
-          else
-            local l = u16(s, p); p = p + 2
-            local x = SUB(s, p, p + l - 1); p = p + l
-            if t == 2 then C[i] = TONUM(x) else C[i] = x end
-          end
-        end
+        local pe = p + csl
+        __CONSTS__
+        if p ~= pe then while true do end end
         local ns = u16(s, p); p = p + 2
         S = {}
         for i = 1, ns do S[i] = u16(s, p); p = p + 2 end
@@ -330,6 +373,7 @@ pub fn generate(
     end
     return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, S = S, ck = CK, W = W, SA = SA, SB = SB, SC = SC, SD = SD }
   end"#
+            .replace("__CONSTS__", const_loop)
             .replace(
                 "__STREAMS__",
                 &format!(
@@ -359,23 +403,16 @@ pub fn generate(
     local nregs = u16(s, p); p = p + 2
     local nparams = u16(s, p); p = p + 2
     local vararg = BYTE(s, p); p = p + 1
+    local cks = u16(s, p); p = p + 2
     local nups = u16(s, p); p = p + 2
     local upsrc = {}
     for i = 1, nups do upsrc[i] = u16(s, p); p = p + 2 end
     local nconst = u16(s, p); p = p + 2
+    local csl = u16(s, p); p = p + 2
     local C = {}
-    for i = 1, nconst do
-      local t = BYTE(s, p); p = p + 1
-      if t == 0 then
-        C[i] = nil
-      elseif t == 1 then
-        C[i] = BYTE(s, p) == 1; p = p + 1
-      else
-        local l = u16(s, p); p = p + 2
-        local x = SUB(s, p, p + l - 1); p = p + l
-        if t == 2 then C[i] = TONUM(x) else C[i] = x end
-      end
-    end
+    local pe = p + csl
+    __CONSTS__
+    if p ~= pe then while true do end end
     local ncode = u16(s, p); p = p + 2
     local W = {}
     for i = 1, ncode do W[i] = BYTE(s, p); p = p + 1 end
@@ -390,6 +427,7 @@ pub fn generate(
     return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, W = W, SA = SA, SB = SB, SC = SC, SD = SD }
   end"#,
 		)
+		.replace("__CONSTS__", const_loop)
 	};
 
 	// v15 (Phase B): the carrier->prototype decode is emitted as its own
@@ -745,10 +783,10 @@ pub fn generate(
 				nop.clone()
 			} else if name == "Return" {
 				// CPS: return the signal {out, total}; the loop unpacks
-				handlers::gen(name, fmt_of[name], true, &mut pool)
+				handlers::gen(name, fmt_of[name], true, &mut pool, mk)
 					.replace("return U(out, 1, total)", "return {out, total}")
 			} else {
-				handlers::gen(name, fmt_of[name], true, &mut pool)
+				handlers::gen(name, fmt_of[name], true, &mut pool, mk)
 			};
 			hdefs.push_str("H[OC.");
 			hdefs.push_str(name);
@@ -783,7 +821,7 @@ pub fn generate(
 			cond.push_str(&format!(
 				"oc == OC.{} then {}",
 				name,
-				handlers::gen(name, fmt_of[*name], true, &mut pool)
+				handlers::gen(name, fmt_of[*name], true, &mut pool, mk)
 			));
 		}
 		let cps_fetch = format!(
@@ -837,7 +875,7 @@ pub fn generate(
   local PF = {{}}
   {p_fill}  {prim_unpack}
   {ms_block}{helpers}
-  {parse_fn}
+  {ck_consts}{parse_fn}
   {decode_seg}
 {v15_selfmod}  local G = GFE(0)
   local U = UNP
@@ -882,6 +920,7 @@ end
 		branches = branches,
 		v15_selfmod = v15_selfmod,
 		decode_seg = decode_seg,
+		ck_consts = ck_consts,
 		parse_fn = parse_fn,
 		makefn_decl = makefn_decl,
 		rt_helpers = rt_helpers,

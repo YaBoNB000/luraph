@@ -197,7 +197,13 @@ def words_to_bytes(words):
 
 
 def parse_blob(b):
-    """按文档化规整布局解析。返回 (consts, fully_parsed)。"""
+    """按文档化规整布局解析。返回 (consts, fully_parsed)。
+
+    P1 之后的布局：[nregs][nparams][vararg][ckseed u16][nups][upsrc]
+    [nconst][常量…]，常量类型 0/1/3(加密载荷)/4(dyadic 双 varint, 加密)。
+    加密载荷攻击者无法还原（密钥在解释器层）——此处按格式跳过，
+    恢复出的字符串/数字值是掩码后的乱码，对照源常量必然 0 命中。
+    """
     p = 0
 
     def u16():
@@ -208,6 +214,18 @@ def parse_blob(b):
         p += 2
         return v
 
+    def varint():
+        nonlocal p
+        v = 0
+        sh = 1
+        while True:
+            bb = b[p]
+            p += 1
+            if bb < 128:
+                return v + bb * sh
+            v += (bb - 128) * sh
+            sh *= 128
+
     try:
         nregs = u16()
         nparams = u16()
@@ -217,6 +235,7 @@ def parse_blob(b):
         p += 1
         if vararg > 7:
             return None, False
+        ckseed = u16()  # noqa: F841 — P1 常量密钥流种子（头内明文）
         nups = u16()
         if nups > 255:
             return None, False
@@ -231,12 +250,18 @@ def parse_blob(b):
             if t == 0:
                 consts.append(("nil", b""))
             elif t == 1:
-                consts.append(("bool", bytes([b[p]])))
+                consts.append(("bool", bytes([b[p]])))  # 掩码后字节
                 p += 1
-            elif t in (2, 3):
+            elif t == 3:
                 l = u16()
-                consts.append(("num" if t == 2 else "str", bytes(b[p:p + l])))
+                consts.append(("str", bytes(b[p:p + l])))  # 掩码后字节
                 p += l
+            elif t == 4:
+                # dyadic 双 varint 被密钥流掩码后失去自定界结构——
+                # 攻击者无法对齐跳过，常量行走在此中断（这是防御成果，
+                # 不是格式不规整）；已收集的常量照常返回。
+                consts.append(("num", b""))
+                return consts, False
             else:
                 return None, False
         ns = u16()
@@ -262,6 +287,20 @@ def parse_blob(b):
         return consts, p == len(b)
     except (EOFError, IndexError):
         return None, False
+
+
+def parse_header(b):
+    """S2 判据（P1 起）：文档化定长头是否可识别且字段自洽。
+    常量区加密不影响头解析；P2 布局描述符化后此判据才失效。"""
+    if len(b) < 9:
+        return False
+    nregs = b[0] + b[1] * 256
+    nparams = b[2] + b[3] * 256
+    vararg = b[4]
+    ckseed = b[5] + b[6] * 256  # noqa: F841
+    nups = b[7] + b[8] * 256
+    return (nregs <= 4096 and nparams <= 255 and vararg <= 7
+            and nups <= 255)
 
 
 def attack(path):

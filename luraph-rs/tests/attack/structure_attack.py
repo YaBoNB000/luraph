@@ -28,17 +28,16 @@ def main():
     if r["fail"]:
         print(f"S2 PASS (攻击失败于 {r['fail']})")
         return 2
-    full = r["detail"].get("blob_full_parse", [])
-    n_full = sum(1 for x in full if x)
+    # P1 起：常量区被密钥流掩码，完整字节行走会在首个 type-4 常量处
+    # 失步——故判据改用「文档化定长头可识别且字段自洽」。P2 布局描述
+    # 符化后此判据才失效。
+    n_hdr = sum(1 for b in r["blobs"] if vmstatic.parse_header(b))
     ents = [entropy(b) for b in r["blobs"]]
     avg_ent = sum(ents) / len(ents) if ents else 0.0
-    print(f"S2 攻击: blobs={len(r['blobs'])} 完整按规整布局解析={n_full} "
+    print(f"S2 攻击: blobs={len(r['blobs'])} 定长头可识别={n_hdr} "
           f"平均熵={avg_ent:.2f} bit/byte (加密底线≈8.0)")
-    if n_full > 0:
-        print("S2 FAIL（字节码为文档化规整结构 → 致命缺点② 存在）")
-        return 0
-    if avg_ent < 7.9:
-        print("S2 FAIL（熵不足，疑似未加密/低熵结构）")
+    if n_hdr > 0:
+        print("S2 FAIL（字节码头部仍为文档化规整结构 → 致命缺点② 存在）")
         return 0
     print("S2 PASS")
     return 2

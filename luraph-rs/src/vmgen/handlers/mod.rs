@@ -40,6 +40,7 @@ pub mod len;
 pub mod loadk;
 pub mod loadnil;
 pub mod lt;
+pub mod mkstr;
 pub mod mod_;
 #[path = "move.rs"]
 pub mod move_;
@@ -76,8 +77,9 @@ pub fn n_formats(name: &str, v15: bool) -> u8 {
 
 /// The interpreter body of one opcode, in the format chosen for this
 /// build. `v15` selects the operand-scattering variant for the opcodes
-/// that walk contiguous register ranges (isa stage A).
-pub fn gen(name: &str, fmt: u8, v15: bool, p: &mut StrPool) -> String {
+/// that walk contiguous register ranges (isa stage A). `mk` = the
+/// per-build MkStr mask constants (used only by mkstr.rs).
+pub fn gen(name: &str, fmt: u8, v15: bool, p: &mut StrPool, mk: (u16, u16)) -> String {
 	match name {
 		"Jmp" => jmp::code(fmt),
 		"Jf" => jf::code(fmt),
@@ -161,6 +163,7 @@ pub fn gen(name: &str, fmt: u8, v15: bool, p: &mut StrPool) -> String {
 				callm::code(fmt)
 			}
 		}
+		"MkStr" => mkstr::code(fmt, mk),
 		_ => panic!("unknown opcode name {name}"),
 	}
 }
