@@ -172,8 +172,7 @@ fn lcg_factory(rng: &mut Rng, states: usize) -> Expr {
 /// All P2 module-table fields (primitives + LCG factories + mutable
 /// constant slot + named constants). Slot numbers are a Fisher-Yates
 /// sample of 1..=126 (sparse, per build).
-pub fn module_fields(rng: &mut Rng, exclude: &[i64]) -> Vec<TableField> {
-	let mut slots: Vec<i64> = (1..=126)
+pub fn module_fields(rng: &mut Rng, exclude: &[i64]) -> Vec<TableField> {	let mut slots: Vec<i64> = (1..=126)
 		.filter(|n| !exclude.contains(n))
 		.collect();
 	rng.shuffle(&mut slots);
@@ -315,6 +314,9 @@ fn lua_bytes_lit(bytes: &[u8]) -> String {
 /// Never collides with the P2 constant field names.
 struct Names {
 	pool: Vec<String>,
+	/// exhaustion fallback counter (fresh namespace the pool never
+	/// generates — large corpora drain the shuffled pool)
+	fallback: usize,
 }
 
 impl Names {
@@ -339,10 +341,37 @@ impl Names {
 			"pC", "h", "s", "b",
 		];
 		pool.retain(|n| !reserved.contains(&n.as_str()));
-		Names { pool }
+		Names { pool, fallback: 0 }
 	}
 	fn take(&mut self) -> String {
-		self.pool.pop().unwrap()
+		match self.pool.pop() {
+			Some(n) => n,
+			None => {
+				self.fallback += 1;
+				format!("vN{}", self.fallback)
+			}
+		}
+	}
+	/// Draw a name that is not in `forbidden` — forbidden pops are
+	/// stashed and returned to the pool afterwards (they stay valid
+	/// names elsewhere). Needed inside scaffold handler bodies, whose
+	/// fixed parameter/local names (C, E, i, Q, ...) must never be
+	/// shadowed by a generated local — shadowing the context param `C`
+	/// turns `C[aux]=s` into indexing a function.
+	fn take_avoid(&mut self, forbidden: &[&str]) -> String {
+		let mut stashed: Vec<String> = Vec::new();
+		let result = loop {
+			match self.pool.pop() {
+				Some(n) if !forbidden.contains(&n.as_str()) => break n,
+				Some(n) => stashed.push(n),
+				None => {
+					self.fallback += 1;
+					break format!("vN{}", self.fallback);
+				}
+			}
+		};
+		self.pool.extend(stashed);
+		result
 	}
 }
 
@@ -426,6 +455,32 @@ pub fn decoy_slots(max_carrier_len: usize, avoid: &[i64]) -> (i64, i64) {
 	(d1, d2)
 }
 
+/// P4 (防御代码隐藏): emit a runtime string-builder for `name` —
+/// char codes stored SHUFFLED in a numeric table plus an order list,
+/// concatenated through the module's string.char slot. The name never
+/// appears in the output (codes look like arbitrary slot arithmetic).
+/// Appends declarations to `out`; returns the result variable name.
+fn coded_name(out: &mut String, var: &str, name: &str, sc_slot: i64, rng: &mut Rng) {
+	let codes: Vec<u8> = name.bytes().collect();
+	let mut pos: Vec<usize> = (0..codes.len()).collect();
+	rng.shuffle(&mut pos);
+	out.push_str(&format!("local {var}t={{}};"));
+	for (i, &c) in codes.iter().enumerate() {
+		out.push_str(&format!("{var}t[{}]={c};", pos[i] + 1));
+	}
+	// order[k] = storage index holding output char k
+	let mut inv = vec![0usize; codes.len()];
+	for (i, &p) in pos.iter().enumerate() {
+		inv[i] = p + 1;
+	}
+	out.push_str(&format!("local {var}o={{"));
+	out.push_str(&inv.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","));
+	out.push_str(&format!(
+		"}};local {var}=\"\";for {var}i=1,#{var}o do {var}={var}..b[{sc}]({var}t[{var}o[{var}i]]) end;",
+		sc = sc_slot
+	));
+}
+
 pub fn scaffold(
 	rng: &mut Rng,
 	interp_src: &str,
@@ -440,6 +495,7 @@ pub fn scaffold(
 	carrier: &crate::vmgen::isa::Carrier,
 	guard: bool,
 	bw_slots: &[i64],
+	prim_extra: (i64, i64),
 ) -> (Vec<TableField>, String) {
 	let carrier_tokens: &[String] = &carrier.tokens;
 	let mut nm = Names::new(rng);
@@ -616,6 +672,17 @@ pub fn scaffold(
 		parse_expr("function(b,b) return b%4294967296 end"),
 	));
 
+	// P4 (防御代码隐藏): dedicated string.byte / string.char slots —
+	// the verify folds and coded-name builders access primitives through
+	// the numeric-slot family, never dotted globals.
+	fields.push(TableField::Key {
+		key: Expr::Num { value: prim_extra.0 as f64, isfloat: false },
+		value: dot_value("string.byte"),
+	});
+	fields.push(TableField::Key {
+		key: Expr::Num { value: prim_extra.1 as f64, isfloat: false },
+		value: dot_value("string.char"),
+	});
 	// ---- decoy LCG slots (sample [63]/[96] family, F28): numeric-slot
 	// functions carrying the 2^28 modulus, statically never referenced
 	// anywhere else (external `\w\[key\]` count stays 0)
@@ -953,42 +1020,67 @@ pub fn scaffold(
 		));
 	}
 
-	// ---- verify phase (sample site3 shape): re-fold the checksum over
-	// the STORED chunks (real integrity check) then compare; mismatch =
-	// silent trap (no os.clock -- fingerprint F18 safe)
+	// ---- verify phase: re-fold the checksum over the STORED chunks
+	// then compare; mismatch = silent trap. P4 (防御代码隐藏): no
+	// dotted primitives, no repeated identical loops, no plaintext
+	// loader/debug names — byte access goes through the numeric-slot
+	// family, loop shapes vary per instance, and every check string is
+	// runtime-built from shuffled char codes.
 	{
 		rng.shuffle(&mut fillers);
 		let (ra, rb, rc, rd, re) = (fillers[0], fillers[1], fillers[2], fillers[3], fillers[4]);
 		let (st, ret) = step(&mut state_i);
 		let mut body = String::from("local s=0;");
-		// F11 fetch-shape scans: materialize the first carrier's chunks
-		// into byte tables and walk them with `local v=T[Q]; if v`
-		// fetch loops (real byte-sum work feeding the aux slot)
-		for j in 0..CHUNKS {
-			body.push_str(&format!(
-				"local T={{{}}};for i=1,#C[{c}] do T[i]=string.byte(C[{c}],i) end;\
-				 local Q=1;while Q<=#T do local v=T[Q];if v then C[{aux}]=C[{aux}]+v end;Q=Q+1 end;",
-				"",
-				c = j + 1,
-				aux = auxslot,
-			));
+		// Handler scope names that generated locals must never shadow:
+		// the context param C plus the hardcoded locals E/i/Q (and the
+		// already-reserved b/s). Shadowing C corrupts `C[aux]=s`.
+		// "d" is additionally banned because coded_name derives
+		// `{base}o` — base "d" would emit the keyword `do`.
+		const V1H_FORBID: &[&str] = &["C", "E", "i", "Q", "d"];
+		let mut accs: Vec<String> = Vec::new();
+		for _k in 0..n {
+			accs.push(nm.take_avoid(V1H_FORBID));
 		}
 		for k in 0..n {
 			let base = k * CHUNKS + 1;
-			// re-fold the byte sums from the STORED chunks
-			body.push_str(&format!("local t{k}=0;", k = k));
+			let acc = &accs[k];
+			body.push_str(&format!("local {acc}=0;"));
 			for j in 0..CHUNKS {
-				body.push_str(&format!(
-					"for i=1,#C[{c}] do t{k}=t{k}+string.byte(C[{c}],i) end;",
-					c = base + j,
-					k = k,
-				));
+				let c = base + j;
+				// alternate loop idioms per instance (no repeated shape)
+				match (k + j) % 3 {
+					0 => body.push_str(&format!(
+						"for i=1,#C[{c}] do {acc}={acc}+b[{sb}](C[{c}],i) end;",
+						c = c,
+						acc = acc,
+						sb = prim_extra.0,
+					)),
+					1 => body.push_str(&format!(
+						"local i=1;while i<=#C[{c}] do {acc}={acc}+b[{sb}](C[{c}],i);i=i+1 end;",
+						c = c,
+						acc = acc,
+						sb = prim_extra.0,
+					)),
+					_ => body.push_str(&format!(
+						"for i=#C[{c}],1,-1 do {acc}={acc}+b[{sb}](C[{c}],i) end;",
+						c = c,
+						acc = acc,
+						sb = prim_extra.0,
+					)),
+				}
 			}
+			// fold through the arithmetic assistants (same visual
+			// family as the staging handlers); a fused decoy
+			// conditional keeps the sample's and/or shape (F23).
+			let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
+			let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
 			body.push_str(&format!(
-				"s=b:{mod}(b:{mul}(s,31)+t{k});",
-				k = k,
+				"local Q=if s>=0 then {da} else {db};s=b:{mod}(b:{mul}(s,31)+{acc}+Q-Q);",
+				da = decoy_a,
+				db = decoy_b,
 				mod = modulo,
 				mul = mul,
+				acc = acc,
 			));
 			// Integrity here = the double fold: the staging phase folded
 			// each carrier's byte SUM from the XORed chunks (into
@@ -996,21 +1088,44 @@ pub fn scaffold(
 			// The two are compared at v2 (mismatch -> silent trap), so
 			// any tamper of HB / LCG key / decode breaks the fold.
 		}
-		// Suggestion 2 (environment detection interleaved in the decode
-		// step): re-check loader/native integrity MID-staging, not just
-		// at boot, so a debugger that neutralised the boot guard still
-		// trips here. Silent trap on hook detection.
-		body.push_str(
-			"local dI=debug and debug.info; \
-			 if type(dI)=='function' then \
-			 local eo,e0=pcall(dI,error,'s'); \
-			 if not eo or e0~='[C]' then while true do end end; \
-			 local ls0=rawget(_G,'loadstring'); \
-			 if type(ls0)=='function' then local o1,s1=pcall(dI,ls0,'s'); if not o1 or s1~='[C]' then while true do end end end; \
-			 local l0=rawget(_G,'load'); \
-			 if type(l0)=='function' then local o2,s2=pcall(dI,l0,'s'); if not o2 or s2~='[C]' then while true do end end end; \
+		// Environment re-check MID-staging (suggestion 2): loader/debug
+		// integrity, silent trap on hook detection. All names are
+		// runtime-built from shuffled char codes and looked up through
+		// the global env table — nothing identifying appears in text.
+		let g0 = nm.take_avoid(V1H_FORBID);
+		let d_t = nm.take_avoid(V1H_FORBID);
+		let d_i = nm.take_avoid(V1H_FORBID);
+		let dt_n = nm.take_avoid(V1H_FORBID);
+		let it_n = nm.take_avoid(V1H_FORBID);
+		let ls_n = nm.take_avoid(V1H_FORBID);
+		let l_n = nm.take_avoid(V1H_FORBID);
+		let ct_n = nm.take_avoid(V1H_FORBID);
+		let fn_n = nm.take_avoid(V1H_FORBID);
+		let s_n = nm.take_avoid(V1H_FORBID);
+		let er_n = nm.take_avoid(V1H_FORBID);
+		let er_v = nm.take_avoid(V1H_FORBID);
+		coded_name(&mut body, &dt_n, "debug", prim_extra.1, rng);
+		coded_name(&mut body, &it_n, "info", prim_extra.1, rng);
+		coded_name(&mut body, &ls_n, "loadstring", prim_extra.1, rng);
+		coded_name(&mut body, &l_n, "load", prim_extra.1, rng);
+		coded_name(&mut body, &ct_n, "[C]", prim_extra.1, rng);
+		coded_name(&mut body, &fn_n, "function", prim_extra.1, rng);
+		coded_name(&mut body, &s_n, "s", prim_extra.1, rng);
+		coded_name(&mut body, &er_n, "error", prim_extra.1, rng);
+		body.push_str(&format!(
+			"local {g0}=getfenv(0);local {d_t}={g0}[{dt_n}];local {d_i}={d_t} and {d_t}[{it_n}];local {er_v}={g0}[{er_n}]; \
+			 if type({d_i})=={fn_n} then \
+			 local eo,e0=pcall({d_i},{er_v},{s_n}); \
+			 if not eo or e0~={ct_n} then while true do end end; \
+			 local ls0={g0}[{ls_n}]; \
+			 if type(ls0)=={fn_n} then local o1,s1=pcall({d_i},ls0,{s_n}); if not o1 or s1~={ct_n} then while true do end end end; \
+			 local l0={g0}[{l_n}]; \
+			 if type(l0)=={fn_n} then local o2,s2=pcall({d_i},l0,{s_n}); if not o2 or s2~={ct_n} then while true do end end end; \
 			 end;",
-		);
+			g0 = g0, d_t = d_t, d_i = d_i, dt_n = dt_n, it_n = it_n,
+			ls_n = ls_n, l_n = l_n, ct_n = ct_n, fn_n = fn_n, s_n = s_n,
+			er_n = er_n, er_v = er_v,
+		));
 		let src = format!(
 			"function(b,C,{ra},{rb},{rc},{rd},{re}) {body} C[{verifyslot}]=s; \
 			 return {ret},C,{rb},{ra},{rc},{re},{rd} end",

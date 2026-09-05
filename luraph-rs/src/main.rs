@@ -479,11 +479,17 @@ fn main() -> ExitCode {
 				let kg = slot_pool[3]; // LCG keystream generator slot
 				let bw_slots: Vec<i64> =
 					slot_pool[4..4 + n_bw_slots].to_vec();
+				// P4 (防御代码隐藏): dedicated string.byte / string.char
+				// slots for the scaffold's own use (verify folds + coded
+				// name construction) — hide primitive access behind the
+				// numeric-slot family instead of dotted globals.
+				let sb_slot = slot_pool[4 + n_bw_slots];
+				let sc_slot = slot_pool[5 + n_bw_slots];
 				// decoy LCG slots (F28): clear of every other slot
 				// mechanism (runners/keystream/primitives/AL/context
 				// slots AND the Nop self-mod instruction positions)
 				let max_len = carrier_bytes.iter().map(|c| c.len()).max().unwrap_or(0);
-				let mut avoid: Vec<i64> = vec![r1, r2, ks, kg];
+				let mut avoid: Vec<i64> = vec![r1, r2, ks, kg, sb_slot, sc_slot];
 				avoid.extend_from_slice(&bw_slots);
 				let (d1, d2) = vmgen::v15::decoy_slots(max_len, &avoid);
 				let (scaffold_fields, fc) = vmgen::v15::scaffold(
@@ -500,8 +506,9 @@ fn main() -> ExitCode {
 					&program.carrier,
 					opts.do_guard,
 					&bw_slots,
+					(sb_slot, sc_slot),
 				);
-				let mut exclude: Vec<i64> = vec![r1, r2, ks, kg, d1, d2];
+				let mut exclude: Vec<i64> = vec![r1, r2, ks, kg, d1, d2, sb_slot, sc_slot];
 				exclude.extend_from_slice(&bw_slots);
 				let mut fields =
 					vmgen::v15::module_fields(&mut rng, &exclude);

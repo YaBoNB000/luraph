@@ -112,6 +112,11 @@ tests/gen_examples.sh
   永不执行的死 fetch 环，向样本的多分发点形态靠拢，制造「哪个环是
   真的」问题。轮廓 32 条 + 安全 5 项双指纹门禁，见
   `tests/v15_fingerprint.py` 与 `tests/security_fingerprint.py`。
+- **防御代码隐藏**（安全战役 P4，v15 档）：所有防御/校验代码不用时
+  看不出是什么——复检目标名（loadstring/debug/info/[C] 等）全部由
+  打乱码表+序表运行时拼接构造并经 `getfenv(0)[...]` 索引；完整性
+  校验字节求和走数字槽原语、循环形态逐实例轮换。输出里不存在任何
+  防御特征明文。
 
 ## 预设（M6）
 

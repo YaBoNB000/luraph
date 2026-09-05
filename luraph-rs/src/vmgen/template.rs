@@ -148,6 +148,29 @@ fn prim_slots(rng: &mut Rng) -> [u8; 15] {
 	out
 }
 
+/// P4 (防御代码隐藏): runtime string-builder for the interpreter
+/// scope — char codes stored SHUFFLED in a table plus an order list,
+/// concatenated through CHAR. Returns Lua declarations; the built
+/// value ends up in `var`.
+fn coded_name_tpl(rng: &mut Rng, var: &str, name: &str) -> String {
+	let codes: Vec<u8> = name.bytes().collect();
+	let mut pos: Vec<usize> = (0..codes.len()).collect();
+	rng.shuffle(&mut pos);
+	let mut out = format!("local {var}t = {{}}\n");
+	for (i, &c) in codes.iter().enumerate() {
+		out.push_str(&format!("    {var}t[{}] = {c}\n", pos[i] + 1));
+	}
+	let mut inv = vec![0usize; codes.len()];
+	for (i, &p) in pos.iter().enumerate() {
+		inv[i] = p + 1;
+	}
+	out.push_str(&format!(
+		"    local {var}o = {{{}}}\n    local {var} = \"\"\n    for {var}i = 1, #{var}o do\n      {var} = {var} .. CHAR({var}t[{var}o[{var}i]])\n    end\n",
+		inv.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ")
+	));
+	out
+}
+
 pub fn generate(
 	map: &OpMap,
 	slot_perm: &[u8; 4],
@@ -963,17 +986,31 @@ pub fn generate(
 			hqi.push(format!("{}, {}, {}", _wire, slot, blen));
 		}
 		rng.shuffle(&mut hqi);
+		// P4 (防御代码隐藏): the loader/integrity names never appear
+		// in the output — each is runtime-built from shuffled char
+		// codes (user style), then the nativeness check runs exactly
+		// as before (hooked loader -> silent trap, never an oracle).
+		let mut boot = String::new();
+		let v_ls = "hls";
+		let v_dbg = "hdbg";
+		let v_inf = "hinf";
+		let v_s = "hsarg";
+		let v_c = "hcb";
+		boot.push_str(&coded_name_tpl(rng, v_ls, "loadstring"));
+		boot.push_str(&coded_name_tpl(rng, v_dbg, "debug"));
+		boot.push_str(&coded_name_tpl(rng, v_inf, "info"));
+		boot.push_str(&coded_name_tpl(rng, v_s, "s"));
+		boot.push_str(&coded_name_tpl(rng, v_c, "[C]"));
 		let build = format!(
 			r#"{}  local HW = {{}}
   do
-    -- P3 (S5): dynamic-load integrity -- the loader must be the native
-    -- C function; a hooked loader is a silent trap, never a decrypt
-    -- oracle.
-    local LS = GFE(0)["loadstring"]
+    {}local LS = GFE(0)[{v_ls}]
+    local DBG = GFE(0)[{v_dbg}]
+    local INF = DBG and DBG[{v_inf}]
     local nlok = false
     do
-      local ok, sr = PCAL(function() return debug.info(LS, "s") end)
-      if ok and sr == "[C]" then nlok = true end
+      local ok, sr = PCAL(function() return INF(LS, {v_s}) end)
+      if ok and sr == {v_c} then nlok = true end
     end
     if not nlok then while true do end end
     local hqi = {{{}}}
@@ -1006,7 +1043,8 @@ pub fn generate(
       HW[w] = LS(SUB(table.concat(t), 1, flen))()
     end
   end"#,
-			hq_lines, hqi.join(", "), hseed, hstep, hm, hc, hm, hc, hm, hc, hm, hc
+			hq_lines, boot, hqi.join(", "), hseed, hstep, hm, hc, hm, hc, hm, hc, hm, hc,
+			v_ls = v_ls, v_dbg = v_dbg, v_inf = v_inf, v_s = v_s, v_c = v_c,
 		);
 		hfrag = build;
 		String::new()

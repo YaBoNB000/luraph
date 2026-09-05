@@ -169,6 +169,35 @@ P3 随 parse 一起进加密层。）
 
 ## 4. P3 解释器分层保护（致命缺点①，指纹耦合，最后做）
 
+### P4 防御代码隐藏 ✅（2026-09-05，用户点名插队：防御代码不能一眼认出）
+
+用户要求：防御代码「不使用的时候，根本看不出来是什么代码」。落地：
+1. **v1h 校验 handler 重写**（`v15.rs`）：
+   - 删除 5 个一眼可辨的字节表+累加死循环（原为 F11 凑形，实为死存储）；
+   - 字节求和改走数字槽原语 `b[<slot>]`（新增专用 string.byte/
+     string.char 槽，prim_extra），三种循环形态按实例轮换 + 融合
+     诱饵条件——与 staging 算术同族，不再是明显的校验和形状；
+   - 中途环境复检全部名字运行时构造：`debug`/`info`/`loadstring`/
+     `load`/`[C]`/`function`/`s`/`error` 均为打乱码表+序表+
+     拼接循环（用户示例的闭包造字风格），全局经 `getfenv(0)[...]`
+     索引——输出中零明文。
+2. **hfrag 引导块**（`template.rs`）：`loadstring`/`debug`/`info`/
+   `s`/`[C]` 五个名字同款打乱码构造（`coded_name_tpl`），
+   `GFE(0)[构造名]` 索引，原生复检语义不变（hook → 静默陷阱）。
+3. **guard 前奏去成员访问**（`guard.rs`）：`debug.info`/
+   `string.gmatch`/`table.unpack`/`_G.warn` 改 `_G["..."]` 字符串
+   索引——自动进 GS 数值编码表，明文成员访问清零。
+4. **修复两个隐患**：① scaffold 生成名会遮蔽 handler 上下文参数
+   `C`（`Names` 池含单字母）→ `take_avoid` 防碰撞分配（禁用名暂存
+   归还 + 耗尽兜底 `vN*` 新命名空间）；② 基名 `d` 派生关键字 `do`
+   → 禁用集收编。
+
+结果：print6 输出明文残留 `"loadstring"`×2 / `debug.info`×3 /
+`rawget(_G`×2 / `string.byte(C`×10 → **全部 0**（仅剩样本族原语槽
+里的 `string.gmatch` 绑定，属轮廓结构）。门禁：204/204 + 405/405 +
+5 种子 0 失败 + 轮廓指纹 18/18 + 31 示例 32/32 + 安全指纹 3 语料 4/5
+（S4 独红 = P3b 职责）+ 纯度 0 非 ASCII + cargo test 27。
+
 ### P3a 完成记录（2026-09-05）：handler 体加密 + loadstring 引导
 
 落地（`vmgen/template.rs`，v15 档）：

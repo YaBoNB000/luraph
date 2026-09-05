@@ -53,12 +53,12 @@ const GUARD_PREAMBLE: &str = r###"local _guard = (function()
 	local setmetatable = setmetatable
 	local tostring = tostring
 	local tonumber = tonumber
-	local gmatch = string and string.gmatch
-	local unpack = unpack or (table and table.unpack)
+	local gmatch = _G["string"] and _G["string"]["gmatch"]
+	local unpack = _G["unpack"] or (_G["table"] and _G["table"]["unpack"])
 	local print = print
-	local warn = _G and _G.warn
+	local warn = _G and _G["warn"]
 	local newproxy = newproxy
-	local debugInfo = debug and debug.info
+	local debugInfo = _G["debug"] and _G["debug"]["info"]
 	local failed = false
 
 	local function abort()
