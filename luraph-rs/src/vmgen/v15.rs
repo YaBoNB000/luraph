@@ -348,6 +348,22 @@ impl Names {
 
 /// Binary dispatch tree over sorted (state, leaf) pairs (sample style:
 /// `if V<=N then ... else ...` range tree).
+/// Suggestion 2 — opaque predicate wrapping. Wraps a dispatch leaf in
+/// `if <opaque> then REAL else DECOY end` (or the inverted direction),
+/// where the predicate is arithmetically always-true on the numeric
+/// state `V` but not obviously so. Static analysis cannot tell which
+/// branch runs without proving the predicate; the decoy branch is dead.
+/// The direction and predicate are randomized per leaf per build.
+fn opaque_wrap(code: String, rng: &mut crate::rng::Rng) -> String {
+	const PREDS: [&str; 3] = ["(V*V)>=0", "(V-V)==0", "((V%2)==0)or((V%2)~=0)"];
+	let p = PREDS[rng.int(0, 2) as usize];
+	if rng.int(0, 1) == 0 {
+		format!("if {} then {} else local _=V end", p, code)
+	} else {
+		format!("if not({}) then local _=V else {} end", p, code)
+	}
+}
+
 fn dispatch_tree(
 	vname: &str,
 	leaves: &[(i64, String)],
@@ -975,7 +991,14 @@ pub fn scaffold(
 
 	// ---- CPS loop: binary range tree + continue leaves + control leaf
 	{
-		let tree = dispatch_tree("V", &leaves, 0, leaves.len());
+		// suggestion 2: wrap every dispatch leaf in an opaque predicate
+		// (random direction) so static analysis cannot resolve the real
+		// handler without proving the always-true arithmetic predicate.
+		let wrapped: Vec<(i64, String)> = leaves
+			.iter()
+			.map(|(st, code)| (*st, opaque_wrap(code.clone(), rng)))
+			.collect();
+		let tree = dispatch_tree("V", &wrapped, 0, wrapped.len());
 		let max_leaf = leaves.last().unwrap().0;
 		let src = format!(
 			"function(b,C,V,f1,f2,f3,f4,f5) while true do if V<={} then {} \
