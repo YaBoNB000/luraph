@@ -430,6 +430,12 @@ fn main() -> ExitCode {
 					);
 					mangle::mangle(&mut ttable, &mut rng, true);
 				}
+				// P3c (measured & reverted): flattening the interpreter
+				// diverges from the sample (its VM core ships loop-based
+				// dispatch, four independent loops for build/verify/
+				// decode/execute) AND breaks TCO-era control flow. The
+				// state-machine smell comes from the CPS scaffold around
+				// it — that is the structural parity we keep.
 				if opts.do_strings {
 					strings::apply_strings(
 						&mut tblock, &mut ttable, &mut rng, &reserved,

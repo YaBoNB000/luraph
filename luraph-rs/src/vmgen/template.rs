@@ -542,7 +542,21 @@ pub fn generate(
 				));
 			}
 		}
-		sm.push_str("  local DA = {}\n  local DP = 1\n  local DF = 0\n  while DF > 0 do\n    local f = DA[DP]\n    if f >= 4 then\n      if f < 6 then\n        if f ~= 5 then DF = 0 else DF = 0 end\n      else DF = 0 end\n    elseif f < 2 then DF = 0\n    else DF = 0 end\n    DP = DP + 1\n  end\n");
+		sm.push_str("  local DA = {}\n  local DP = 1\n  local DF = 0\n  while DF > 0 do\n    local f = DA[DP]\n    if f >= 4 then\n      if f < 6 then\n        if f ~= 5 then DF = 0 else DF = 0 end\n      else DF = 0 end\n    elseif f < 2 then DF = 0\n    else DF = 0 end\n");
+		// P3c: decoy fetch points — the sample ships several dispatch
+		// loops (golden F11 = 19); these dead fetch shapes raise the
+		// family resemblance and multiply the "which loop is real"
+		// question for an analyst. Never executed (DF stays 0).
+		let n_decoys = rng.int(1, 3);
+		for _ in 0..n_decoys {
+			let i1 = rng.int(0, (N_OPS - 1) as i64);
+			let i2 = rng.int(0, (N_OPS - 1) as i64);
+			sm.push_str(&format!(
+				"    local oc = DA[DP]\n    if oc then\n      local a = DA[DP]\n      local b = DA[DP]\n      local c = DA[DP]\n      local d = DA[DP]\n      DP = DP + 1\n      if oc == OCt[{}] then DA[DP] = a elseif oc == OCt[{}] then DA[DP] = b else local r = DA[DP](a, b, c, d); if r then DF = r[1] end end\n    end\n",
+				i1, i2
+			));
+		}
+		sm.push_str("    DP = DP + 1\n  end\n");
 		sm
 	} else {
 		String::new()
