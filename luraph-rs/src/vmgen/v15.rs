@@ -397,12 +397,23 @@ impl Names {
 /// branch runs without proving the predicate; the decoy branch is dead.
 /// The direction and predicate are randomized per leaf per build.
 fn opaque_wrap(code: String, rng: &mut crate::rng::Rng, vname: &str) -> String {
-	let preds: [String; 3] = [
-		format!("({v}*{v})>=0", v = vname),
-		format!("({v}-{v})==0", v = vname),
-		format!("(({v}%2)==0)or(({v}%2)~=0)", v = vname),
+	// 增量⑪ (防静态, 报告突破口 #3): the old predicates (v-v==0,
+	// v*v>=0, v%2==0 or v%2~=0) were OBVIOUS tautologies the attacker
+	// folded to statically simulate the whole state machine. Replace with
+	// less-obvious identities that still hold for every (non-negative
+	// integer) state value but require actual reasoning to prove
+	// always-true, raising the cost of static branch collapsing.
+	let preds: [String; 4] = [
+		// v(v+1) is always even (product of consecutive integers)
+		format!("((({v}*{v})+{v})%2)==0", v = vname),
+		// a square is never negative
+		format!("(({v}%3)*({v}%3))>=0", v = vname),
+		// (v+1)^2 = v^2+2v+1 >= v^2 for v>=0
+		format!("(({v}+1)*({v}+1))>=({v}*{v})", v = vname),
+		// (v%5)^4 is non-negative
+		format!("((({v}%5)*({v}%5))*(({v}%5)*({v}%5)))>=0", v = vname),
 	];
-	let p = &preds[rng.int(0, 2) as usize];
+	let p = &preds[rng.int(0, 3) as usize];
 	if rng.int(0, 1) == 0 {
 		format!("if {} then {} else local _={} end", p, code, vname)
 	} else {

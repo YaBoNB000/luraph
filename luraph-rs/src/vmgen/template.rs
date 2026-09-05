@@ -148,6 +148,20 @@ fn prim_slots(rng: &mut Rng) -> [u8; 15] {
 	out
 }
 
+/// 增量⑪ (防静态, 报告突破口 #6/#10): obfuscate an integer so it no
+/// longer appears as a bare literal (the attacker used the hardcoded
+/// checksums as oracles to verify their decryption). Returns a Lua
+/// expression EXACTLY equal to `n` (doubles are exact for |n|<2^53).
+/// Decomposes into `x + y - z` with random x,y (z = x+y-n) so there is
+/// no trivially-simplifiable `a+(n-a)` shape.
+fn obf_num(n: u64, rng: &mut Rng) -> String {
+	// keep x,y below 2^40 so x+y-n stays exact in a double
+	let x = rng.int(0, 1_099_511_627_775) as i64; // < 2^40
+	let y = rng.int(0, 1_099_511_627_775) as i64;
+	let z = x + y - n as i64;
+	format!("({} + {} - {})", x, y, z)
+}
+
 /// P4 (防御代码隐藏): runtime string-builder for the interpreter
 /// scope — char codes stored SHUFFLED in a table plus an order list,
 /// concatenated through CHAR. Returns Lua declarations; the built
@@ -534,9 +548,10 @@ pub fn generate(
 		// build-time fold of every wire operand); parse re-reads the
 		// streams through the inline ladders and re-folds -- a mismatch
 		// means tamper -> silent trap (no os.clock, F18 safe)
+		// 增量⑪: checksum values obfuscated (no bare literal oracle)
 		let os_list = operand_sums
 			.iter()
-			.map(|s| s.to_string())
+			.map(|s| obf_num(*s, rng))
 			.collect::<Vec<_>>()
 			.join(", ");
 		format!(
