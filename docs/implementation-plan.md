@@ -139,6 +139,16 @@
 
 ## 4. 更新日志
 
+- **2026-09-05（虚拟机建议·增量 ⑥：建议2 收尾行为 — 解密步间环境检测）**
+  verify handler（staging 解码校验步）内联**环境完整性复检**：解码
+  校验中途重查 `error` 的 debug source 必须 `[C]`、`loadstring`/`load`
+  若存在必须原生（`pcall(debug.info, f, 's') == '[C]'`），hook 检出即
+  静默 `while true do end` 陷阱。意义：反调试不再单点依赖开机 guard
+  ——调试器抹掉开机前奏，走到解码校验步仍会触发。注意 pcall 双值捕获
+  （ok, result），避免单值比较恒真误报。验证：204/204 + 405/405 +
+  3 种子×30 语料 90/90 + 指纹抽查 6/6 个 32/32 + 干净环境零误报。
+  建议2 行为部分（真假分支 + guard 拆函数 + 步间环境检测）完成；余
+  anti/ 文件夹模块化（建议2 组织部分）与建议1（指令拆文件多形态）。
 - **2026-09-05（虚拟机建议·增量 ⑤：建议2 第二部分 — guard 拆子函数联调 + mangle）**
   guard 检查段拆为 `stage_core / stage_env / stage_debug / stage_canaries /
   stage_misc` 五个子函数，共享 `failed` upvalue，末尾串联调用——防单步

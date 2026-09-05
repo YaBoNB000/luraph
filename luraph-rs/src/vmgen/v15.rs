@@ -942,6 +942,21 @@ pub fn scaffold(
 			// The two are compared at v2 (mismatch -> silent trap), so
 			// any tamper of HB / LCG key / decode breaks the fold.
 		}
+		// Suggestion 2 (environment detection interleaved in the decode
+		// step): re-check loader/native integrity MID-staging, not just
+		// at boot, so a debugger that neutralised the boot guard still
+		// trips here. Silent trap on hook detection.
+		body.push_str(
+			"local dI=debug and debug.info; \
+			 if type(dI)=='function' then \
+			 local eo,e0=pcall(dI,error,'s'); \
+			 if not eo or e0~='[C]' then while true do end end; \
+			 local ls0=rawget(_G,'loadstring'); \
+			 if type(ls0)=='function' then local o1,s1=pcall(dI,ls0,'s'); if not o1 or s1~='[C]' then while true do end end end; \
+			 local l0=rawget(_G,'load'); \
+			 if type(l0)=='function' then local o2,s2=pcall(dI,l0,'s'); if not o2 or s2~='[C]' then while true do end end end; \
+			 end;",
+		);
 		let src = format!(
 			"function(b,C,{ra},{rb},{rc},{rd},{re}) {body} C[{verifyslot}]=s; \
 			 return {ret},C,{rb},{ra},{rc},{re},{rd} end",
