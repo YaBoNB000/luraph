@@ -584,6 +584,16 @@ P0 指纹口径改版（安全指纹 S1–S6 + 攻击脚本）→ P1 常量加�
 → P2 字节码不规则化 → P3 解释器分层（可见骨架 + 加密 handler +
 load 引导）。详见 `docs/plan-resemblance-and-security.md`。
 
+**P0 ✅（2026-09-05）：安全指纹 S1–S6 + 攻击脚本基线**。新增
+`tests/attack/vmstatic.py`（静态白盒脱壳链：BW u32 字表→LCG 重放→
+解 XOR→carrier→AL/TK→base-94→规整布局解析，纯静态不运行）+
+`constants_attack.py`(S1)/`structure_attack.py`(S2)/`interp_attack.py`
+(S3+S4) + `tests/security_fingerprint.py`(编排器)。基线 8 语料全
+**0/5、4 红**：S1 stress_strings 源常量 82 恢复 79（96%）、basics
+19/19；S2 布局完整解析、熵仅 4.5~5.0（应≈8）；S3 寄存器形态 ~163 +
+4 参函数 44；S4 BW/LCG/AL/TK/OC 全物化。轮廓指纹 32/32 不动（未改
+发射器）。下一步 P1 常量加密+动态内联。
+
 ### ✅ v15 反调试 guard（CHAR 编码版，2026-08-29）
 
 用户要求 v15 也带 guard；字面量会破 F10，故 `v15_guard_source()` 把
