@@ -1,0 +1,16 @@
+; VM 函数原型 #1   nregs=3  nparams=0  vararg=0  ninst=6  nconst=6  ck=411152（== OX[1]，已验证）
+; 操作数间接表 S = [8, 9, 4]   (S[x] -> 寄存器；nil -> 溢出槽)
+; 常量池:
+;   C[1] = 659975.0
+;   C[2] = 12.0
+;   C[3] = 'print'
+;   C[4] = None
+;   C[5] = None
+;   C[6] = 581310.0
+
+[001] GETGLOBAL   a=8      b=2      c=29222  d=62818    R9 = _G['print']
+[002] LOADK       a=3      b=1      c=35180  d=46739    R4 = 12.0
+[003] CALL        a=1      b=1      c=1      d=0        R9(R4)   nargs=1 nres=1 vararg=False
+[004] MOVE        a=7      b=3      c=23073  d=49105    R8 = R4
+[005] RETURN      a=0      b=0      c=0      d=0        return  (0 个值)
+[006] NOP         a=57104  b=29473  c=40696  d=37715    -- 空操作垃圾指令 (local _ = a*c+b)
