@@ -627,58 +627,88 @@ pub fn scaffold(
 
 	// ---- staging chain: per carrier = 1 fold handler (length checksum
 	// through the assistants) + CHUNKS storage handlers
-	// ---- HB blob (F10): the XORed chunk literals move into ONE long
-	// string, hex-encoded (2 lowercase hex chars per byte). Chunk
-	// handlers slice + dehex at runtime -- no per-chunk short string
-	// literals left in the output. Precompute here so the staging loop
-	// below consumes identical key material (same LCG advance order).
-	const HEX: &[u8; 16] = b"0123456789abcdef";
+	// ---- HB blob (suggestion 4, high-entropy serialization): each
+	// chunk XORed with the LCG keystream, then base-94-encoded over the
+	// build-shuffled alphabet (4 bytes -> 5 glyphs, ~6.55 bits/glyph).
+	// This is byte-level high entropy with NO hex/base64 signature --
+	// the alphabet is random per build, so the blob is unrecognizable
+	// (suggestion 4: high entropy, not hex escaping). Raw binary is not
+	// used because the output pipeline is UTF-8 String-based (raw bytes
+	// would be lossy-mangled); base-94 is the pipeline-safe high-entropy
+	// form. Chunk handlers slice the glyph range and base-94-decode +
+	// de-XOR at runtime. Precompute here so the staging loop below
+	// consumes identical key material (same LCG advance order).
 	let hb_name = nm.take();
-	let dh_name = nm.take();
+	let b94_name = nm.take();
+	let alphabet = carrier.alphabet;
 	let mut hb_bytes: Vec<u8> = Vec::new();
-	let mut hb_bounds: Vec<(usize, usize)> = Vec::new(); // 1-based hex range
+	let mut hb_bounds: Vec<(usize, usize)> = Vec::new(); // 1-based glyph range
 	for chunks in chunked.iter() {
 		for chunk in chunks.iter() {
 			ks_state = (km1 * ks_state + kc1) % 268435456;
 			ks_state = (km2 * ks_state + kc2) % 268435456;
 			ks_state = (km3 * ks_state + kc3) % 268435456;
 			let ks_const: i64 = ks_state;
+			// XOR the chunk with the keystream
+			let xored: Vec<u8> = chunk
+				.iter()
+				.enumerate()
+				.map(|(i, &c)| {
+					let key = ((ks_const + (i as i64 + 1)) % 256) as u8;
+					c ^ key
+				})
+				.collect();
+			// base-94-encode with a 4-byte LE length prefix (so the
+			// runtime decoder trims padding exactly)
+			let mut src = Vec::with_capacity(xored.len() + 8);
+			src.extend_from_slice(&(xored.len() as u32).to_le_bytes());
+			src.extend_from_slice(&xored);
+			while src.len() % 4 != 0 {
+				src.push(0);
+			}
 			let hs = hb_bytes.len() + 1;
-			for (i, &c) in chunk.iter().enumerate() {
-				let key = ((ks_const + (i as i64 + 1)) % 256) as u8;
-				let x = c ^ key;
-				hb_bytes.push(HEX[(x >> 4) as usize]);
-				hb_bytes.push(HEX[(x & 15) as usize]);
+			for c4 in src.chunks(4) {
+				let mut v = u32::from_le_bytes([c4[0], c4[1], c4[2], c4[3]]);
+				let mut d = [0u8; 5];
+				for i in 0..5 {
+					d[4 - i] = alphabet[(v % 94) as usize];
+					v /= 94;
+				}
+				hb_bytes.extend_from_slice(&d);
 			}
 			hb_bounds.push((hs, hb_bytes.len()));
 		}
 	}
-	// F8 size floor: pad the hex blob with random hex chars (even
-	// count). XORed data + random hex carry no visible structure --
-	// unlike the dropped plain-carrier RC blob, whose raw zero-byte
-	// runs surfaced as conspicuous same-char streaks (user report
-	// 2026-08-29; the sample's blob is keystream-random too). Padding
-	// sits after the last chunk slice, invisible to the handlers.
+	// F8 size floor: pad the blob with random base-94 glyphs (uniform,
+	// high entropy, no same-char streaks). Padding sits after the last
+	// chunk slice, invisible to the handlers.
 	while hb_bytes.len() < 10_500 {
-		let n = rng.int(0, 255) as u8;
-		hb_bytes.push(HEX[(n >> 4) as usize]);
-		hb_bytes.push(HEX[(n & 15) as usize]);
+		hb_bytes.push(alphabet[rng.int(0, 93) as usize]);
 	}
 	fields.push(named(
 		hb_name.clone(),
 		Expr::LongStr { bytes: hb_bytes.clone() },
 	));
-	// hex decoder (scaffold-level helper field): pure arithmetic nibble
-	// fold, Luau if-expression shape
+	// base-94 decoder (scaffold-level helper): rebuilds each 5-glyph
+	// group into 4 bytes via the embedded build-random alphabet, reads
+	// the LE length prefix, trims padding. Pure arithmetic + string.find
+	// (plain-match) -- no hex, no bit32.
+	let alph_lit = lua_bytes_lit(&alphabet);
 	fields.push(named(
-		dh_name.clone(),
-		parse_expr(
-			"function(b,h) local t={} for i=1,#h,2 do \
-			 local x=string.byte(h,i);local y=string.byte(h,i+1); \
-			 local a=if x>=97 then x-87 else x-48; \
-			 local c=if y>=97 then y-87 else y-48; \
-			 t[#t+1]=string.char(a*16+c) end; return table.concat(t) end",
-		),
+		b94_name.clone(),
+		parse_expr(&format!(
+			"function(b,h) local A={alph}; local t={{}}; \
+			 for i=1,#h,5 do local v=0; \
+			 for j=0,4 do v=v*94+string.find(A,string.sub(h,i+j,i+j),1,true)-1 end; \
+			 t[#t+1]=string.char(v%256); v=(v-v%256)/256; \
+			 t[#t+1]=string.char(v%256); v=(v-v%256)/256; \
+			 t[#t+1]=string.char(v%256); v=(v-v%256)/256; \
+			 t[#t+1]=string.char(v%256) end; \
+			 local s=table.concat(t); \
+			 local n=string.byte(s,1)+string.byte(s,2)*256+string.byte(s,3)*65536+string.byte(s,4)*16777216; \
+			 return string.sub(s,5,4+n) end",
+			alph = alph_lit,
+		)),
 	));
 
 	for (k, chunks) in chunked.iter().enumerate() {
@@ -722,21 +752,23 @@ pub fn scaffold(
 			let (ra, rb, rc, rd, re) = (fillers[0], fillers[1], fillers[2], fillers[3], fillers[4]);
 			let (st, ret) = step(&mut state_i);
 			let name = nm.take();
-			// XORed bytes live in the HB long string (hex); the handler
-			// slices its precomputed range and dehexes at runtime. Key
-			// material was consumed by the HB precompute pass above.
+			// Base-94-encoded XORed bytes live in the HB long string;
+			// the handler slices its glyph range, base-94-decodes and
+			// de-XORs at runtime. Key material was consumed by the HB
+			// precompute pass above.
 			let _ = chunk;
 			let (hs, he) = hb_bounds[k * CHUNKS + j];
 			let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
 			let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
 			let src = format!(
-				"function(b,C,{ra},{rb},{rc},{rd},{re}) local seg=b:{dh}(string.sub(b.{hb},{hs},{he})); local kv=b[{kg}](b); local t={{}}; \
+				"function(b,C,{ra},{rb},{rc},{rd},{re}) local seg=b:{b94}(string.sub(b.{hb},{hs},{he})); local kv=b[{kg}](b); local t={{}}; \
 				 local Q=C[{idx}]~=nil and {da} or {db}; \
+				 local R=if {da}~={db} then {da} else {db}; \
 				 for i=1,#seg do t[i]=string.char(bit32.bxor(string.byte(seg,i),(kv+i)%256)) end; \
 				 C[{idx}]=table.concat(t); \
 				 return {ret},C,{rc},{ra},{rd},{re},{rb} end",
 				idx = k * CHUNKS + j + 1,
-				dh = dh_name,
+				b94 = b94_name,
 				hb = hb_name,
 				hs = hs,
 				he = he,
