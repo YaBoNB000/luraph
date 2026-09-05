@@ -65,191 +65,202 @@ const GUARD_SRC: &str = r###"local _guard = (function()
 		return (nil)[1]
 	end
 
-	if
-		type(type) ~= "function"
-		or type(pcall) ~= "function"
-		or type(xpcall) ~= "function"
-		or type(error) ~= "function"
-		or type(rawget) ~= "function"
-		or type(rawset) ~= "function"
-		or type(getmetatable) ~= "function"
-		or type(setmetatable) ~= "function"
-	then
-		abort()
-	end
-
-	local env
-
-	if type(getfenv) == "function" then
-		local ok, value = pcall(getfenv)
-
-		if ok then
-			env = value
-		end
-	end
-
-	if env == nil then
-		env = _G
-	end
-
-	if type(env) ~= "table" or type(print) ~= "function" or (warn ~= nil and type(warn) ~= "function") then
-		failed = true
-	end
-
-	local slot = {}
-	local marker = function() end
-	local writeOk = pcall(rawset, slot, -271823, marker)
-
-	if not writeOk or rawget(slot, -271823) ~= marker then
-		failed = true
-	end
-
-	rawset(slot, -271823, nil)
-
-	if rawget(slot, -271823) ~= nil or pcall(error) then
-		failed = true
-	end
-
-	local function lineProbe() return (nil)[1] end
-
-	if
-		type(debugInfo) == "function"
-		and type(gmatch) == "function"
-		and type(tostring) == "function"
-		and type(tonumber) == "function"
-	then
-		local lineOk, line = pcall(debugInfo, lineProbe, "l")
-		local sourceOk, source = pcall(debugInfo, lineProbe, "s")
-		local errorLine
-		local callOk = xpcall(lineProbe, function(message)
-			for digits in gmatch(tostring(message), ":(%d+):") do
-				errorLine = tonumber(digits)
-			end
-
-			return message
-		end)
-
-		if
-			callOk
-			or not lineOk
-			or type(line) ~= "number"
-			or not sourceOk
-			or type(source) ~= "string"
-			or source == "[C]"
-			or type(errorLine) ~= "number"
-			or line ~= errorLine
-		then
-			failed = true
-		end
-
-		local nativeOk, nativeSource = pcall(debugInfo, error, "s")
-
-		if nativeOk and type(nativeSource) == "string" and nativeSource ~= "[C]" then
-			failed = true
-		end
-	end
-
-	-- suggestion 3: load/loadstring hook integrity. A debugger/hooks
-	-- replaces the loaders with Lua wrappers; a native loader's debug
-	-- source is "[C]". Flag any present-but-non-native loader. Only
-	-- meaningful where debugInfo exists (Luau debug.info); 5.1 degrades
-	-- gracefully like the line probe above.
-	if type(debugInfo) == "function" then
-		local function isNative(f)
-			if type(f) ~= "function" then
-				return false
-			end
-			local ok, src = pcall(debugInfo, f, "s")
-			return ok and type(src) == "string" and src == "[C]"
-		end
-
-		local envTable = _G
-
-		if type(envTable) == "table" then
-			local loaderLS = rawget(envTable, "loadstring")
-			local loaderL = rawget(envTable, "load")
-
-			if type(loaderLS) == "function" and not isNative(loaderLS) then
-				failed = true
-			end
-
-			if type(loaderL) == "function" and not isNative(loaderL) then
-				failed = true
-			end
-		end
-	end
-
-	local canaries = {}
-
 	local function tripwire()
 		failed = true
 		abort()
 	end
 
-	if type(newproxy) == "function" then
-		local proxyOk, proxy = pcall(newproxy, true)
+	local canaries = {}
 
-		if not proxyOk or proxy == nil then
+	local function stage_core()
+		if
+			type(type) ~= "function"
+			or type(pcall) ~= "function"
+			or type(xpcall) ~= "function"
+			or type(error) ~= "function"
+			or type(rawget) ~= "function"
+			or type(rawset) ~= "function"
+			or type(getmetatable) ~= "function"
+			or type(setmetatable) ~= "function"
+		then
+			abort()
+		end
+	end
+
+	local env
+
+	local function stage_env()
+		if type(getfenv) == "function" then
+			local ok, value = pcall(getfenv)
+
+			if ok then
+				env = value
+			end
+		end
+
+		if env == nil then
+			env = _G
+		end
+
+		if type(env) ~= "table" or type(print) ~= "function" or (warn ~= nil and type(warn) ~= "function") then
 			failed = true
-		else
-			local metatableOk, metatable = pcall(getmetatable, proxy)
+		end
 
-			if not metatableOk or type(metatable) ~= "table" then
+		local slot = {}
+		local marker = function() end
+		local writeOk = pcall(rawset, slot, -271823, marker)
+
+		if not writeOk or rawget(slot, -271823) ~= marker then
+			failed = true
+		end
+
+		rawset(slot, -271823, nil)
+
+		if rawget(slot, -271823) ~= nil or pcall(error) then
+			failed = true
+		end
+	end
+
+	local function stage_debug()
+		local function lineProbe() return (nil)[1] end
+
+		if
+			type(debugInfo) == "function"
+			and type(gmatch) == "function"
+			and type(tostring) == "function"
+			and type(tonumber) == "function"
+		then
+			local lineOk, line = pcall(debugInfo, lineProbe, "l")
+			local sourceOk, source = pcall(debugInfo, lineProbe, "s")
+			local errorLine
+			local callOk = xpcall(lineProbe, function(message)
+				for digits in gmatch(tostring(message), ":(%d+):") do
+					errorLine = tonumber(digits)
+				end
+
+				return message
+			end)
+
+			if
+				callOk
+				or not lineOk
+				or type(line) ~= "number"
+				or not sourceOk
+				or type(source) ~= "string"
+				or source == "[C]"
+				or type(errorLine) ~= "number"
+				or line ~= errorLine
+			then
 				failed = true
-			else
-				metatable.__tostring = tripwire
-				metatable.__concat = tripwire
-				metatable.__call = tripwire
-				canaries[#canaries + 1] = proxy
+			end
+
+			local nativeOk, nativeSource = pcall(debugInfo, error, "s")
+
+			if nativeOk and type(nativeSource) == "string" and nativeSource ~= "[C]" then
+				failed = true
+			end
+		end
+
+		if type(debugInfo) == "function" then
+			local function isNative(f)
+				if type(f) ~= "function" then
+					return false
+				end
+				local ok, src = pcall(debugInfo, f, "s")
+				return ok and type(src) == "string" and src == "[C]"
+			end
+
+			local envTable = _G
+
+			if type(envTable) == "table" then
+				local loaderLS = rawget(envTable, "loadstring")
+				local loaderL = rawget(envTable, "load")
+
+				if type(loaderLS) == "function" and not isNative(loaderLS) then
+					failed = true
+				end
+
+				if type(loaderL) == "function" and not isNative(loaderL) then
+					failed = true
+				end
 			end
 		end
 	end
 
-	local function addCanary(lock)
-		local value = {}
-		local metatable = {
-			__metatable = lock,
-			__tostring = tripwire,
-			__concat = tripwire,
-			__iter = tripwire,
-		}
-		local ok, result = pcall(setmetatable, value, metatable)
+	local function stage_canaries()
+		if type(newproxy) == "function" then
+			local proxyOk, proxy = pcall(newproxy, true)
 
-		if not ok or result ~= value then
-			failed = true
-			return
+			if not proxyOk or proxy == nil then
+				failed = true
+			else
+				local metatableOk, metatable = pcall(getmetatable, proxy)
+
+				if not metatableOk or type(metatable) ~= "table" then
+					failed = true
+				else
+					metatable.__tostring = tripwire
+					metatable.__concat = tripwire
+					metatable.__call = tripwire
+					canaries[#canaries + 1] = proxy
+				end
+			end
 		end
 
-		local readOk, visibleMetatable = pcall(getmetatable, value)
+		local function addCanary(lock)
+			local value = {}
+			local metatable = {
+				__metatable = lock,
+				__tostring = tripwire,
+				__concat = tripwire,
+				__iter = tripwire,
+			}
+			local ok, result = pcall(setmetatable, value, metatable)
 
-		if not readOk or visibleMetatable ~= lock then
-			failed = true
+			if not ok or result ~= value then
+				failed = true
+				return
+			end
+
+			local readOk, visibleMetatable = pcall(getmetatable, value)
+
+			if not readOk or visibleMetatable ~= lock then
+				failed = true
+			end
+
+			canaries[#canaries + 1] = value
 		end
 
-		canaries[#canaries + 1] = value
+		addCanary("tddxhpfcpi")
+		addCanary("lsphhfstdm")
+		addCanary("vymgglkhqr")
 	end
 
-	addCanary("tddxhpfcpi")
-	addCanary("lsphhfstdm")
-	addCanary("vymgglkhqr")
+	local function stage_misc()
+		if type(unpack) == "function" then
+			local ok = pcall(unpack, {}, 0, 64)
 
-	if type(unpack) == "function" then
-		local ok = pcall(unpack, {}, 0, 64)
+			if not ok then
+				failed = true
+			end
+		end
 
-		if not ok then
-			failed = true
+		if type(env) == "table" then
+			if type(print) == "function" and env.print ~= print then
+				failed = true
+			end
+
+			if type(warn) == "function" and env.warn ~= warn then
+				failed = true
+			end
 		end
 	end
 
-	if type(env) == "table" then
-		if type(print) == "function" and env.print ~= print then
-			failed = true
-		end
-
-		if type(warn) == "function" and env.warn ~= warn then
-			failed = true
-		end
-	end
+	stage_core()
+	stage_env()
+	stage_debug()
+	stage_canaries()
+	stage_misc()
 
 	if failed then
 		abort()
@@ -315,9 +326,12 @@ fn replace_literals_with_table(src: &str, strings: &[String]) -> String {
 /// literals to the v15 output (32/32 fingerprints stay intact). If
 /// `string.char` is unavailable (hooked env), the GS table stays empty
 /// and every integrity comparison fails -> abort() fires naturally.
-/// The result is a `local _guard=(function()...end)()` statement ready
-/// to prepend to the FC entry-machine body.
-pub fn v15_guard_source() -> String {
+/// The guard is mangled so its local/stage function names are
+/// build-random (the scaffold module table is otherwise built after
+/// mangle and would leave them readable). The result is a
+/// `local _guard=(function()...end)()` statement ready to prepend to
+/// the FC entry-machine body.
+pub fn v15_guard_source(rng: &mut Rng) -> String {
 	let strings = lua_string_literals(GUARD_SRC);
 	let mut gs = String::from("\nlocal GS={}\nlocal schar=string and string.char\nif schar then\n");
 	for (k, s) in strings.iter().enumerate() {
@@ -325,7 +339,18 @@ pub fn v15_guard_source() -> String {
 		gs.push_str(&format!("GS[{}]=schar({})\n", k + 1, codes.join(",")));
 	}
 	gs.push_str("end\n");
-	let replaced = replace_literals_with_table(GUARD_SRC, &strings);
+	// mangle the guard first (build-random names), then swap the string
+	// literals for GS[k] and splice the GS table in -- mangle leaves
+	// string literals untouched, so the swap stays exact.
+	let mangled = match parser::parse(GUARD_SRC, true).ok() {
+		Some(mut block) => {
+			let mut table = crate::symtab::resolve(&mut block);
+			mangle::mangle(&mut table, rng, false);
+			printer::print_chunk_luau(&table, &block)
+		}
+		None => GUARD_SRC.to_string(),
+	};
+	let replaced = replace_literals_with_table(&mangled, &strings);
 	let marker = "(function()";
 	let pos = replaced.find(marker).expect("guard IIFE marker") + marker.len();
 	format!("{}{}{}", &replaced[..pos], gs, &replaced[pos..])

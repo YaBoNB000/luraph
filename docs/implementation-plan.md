@@ -139,6 +139,16 @@
 
 ## 4. 更新日志
 
+- **2026-09-05（虚拟机建议·增量 ⑤：建议2 第二部分 — guard 拆子函数联调 + mangle）**
+  guard 检查段拆为 `stage_core / stage_env / stage_debug / stage_canaries /
+  stage_misc` 五个子函数，共享 `failed` upvalue，末尾串联调用——防单步
+  调试（调试器无法在一个连续块里看全所有检查，各阶段是独立函数帧）。
+  v15 版 `v15_guard_source` 增加 mangle：此前 scaffold 在 mangle 之后
+  构建、stage 函数名裸露可读；现 parse→mangle→print 后再做 GS 字符串
+  表注入（mangle 不动字符串字面量，GS 注入仍精确），stage 名 0 残留。
+  验证：204/204 + 405/405 + 3 种子×30 语料 90/90 + 指纹抽查 6/6 个
+  32/32 + 双档（5.1/luau）运行一致。建议2 余下（anti/ 文件夹模块化 +
+  每构建随机注入 + 解密步间环境检测）与建议1（指令拆文件多形态）待续。
 - **2026-09-05（虚拟机建议·增量 ④：建议2 第一部分 — 不透明谓词真假分支）**
   每个分发叶子包裹不透明谓词：`if (V*V)>=0 then 真指令 else local _=V end`
   或反向 `if not(…) then 假 else 真`（方向 + 谓词每叶每构建随机；谓词

@@ -540,8 +540,16 @@ bit32 用量大幅上升（band 22 / rshift 17 / bxor 6）。
 算术证明的情况下判定真实分支；假分支是死代码。因 CPS 循环里 `f1..f5`
 均为 nil，谓词必须用数值态 `V`。验证：204/405 全绿 + 语义不变 + 指纹
 32/32 保持 + 不透明谓词 76 处。
-**待做（建议2 余下）**：anti/ 文件夹（anti1.rs/anti3.rs 随机注入 + 拆
-函数联调防单步）+ 解密步间环境检测。**待做（建议1）**：指令拆文件 +
+**增量 ⑤ 建议2(第二部分) ✅：guard 拆子函数联调 + mangle**——把 guard
+的检查段拆成 `stage_core / stage_env / stage_debug / stage_canaries /
+stage_misc` 五个子函数共享 `failed` upvalue、末尾串联调用（防单步：
+调试器无法在一个连续块里看全所有检查）。v15 版 `v15_guard_source`
+增 mangle（此前 scaffold 在 mangle 之后构建、stage 名裸露可读；现
+parse→mangle→print 后再做 GS 字符串表注入，stage 名 0 残留）。验证：
+204/405 全绿 + 3 种子×30 语料 90/90 + 指纹抽查 6/6 个 32/32 + 双档
+运行一致。
+**待做（建议2 余下）**：anti/ 文件夹（anti1.rs/anti3.rs 模块化 + 每
+构建随机注入）+ 解密步间环境检测。**待做（建议1）**：指令拆文件 +
 一指令多形态。
 
 ### ✅ v15 反调试 guard（CHAR 编码版，2026-08-29）

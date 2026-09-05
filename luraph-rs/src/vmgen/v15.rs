@@ -1032,7 +1032,7 @@ pub fn scaffold(
 	// integrity guard runs at the head of the entry machine, before the
 	// boot loop -- zero visible string literals, fingerprints intact.
 	let guard_src = if guard {
-		format!("{} ", crate::guard::v15_guard_source())
+		format!("{} ", crate::guard::v15_guard_source(rng))
 	} else {
 		String::new()
 	};
