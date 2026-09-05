@@ -364,8 +364,15 @@ impl<'a> Printer<'a> {
 				let mut lvl = 0usize;
 				loop {
 					let closer = format!("]{}]", "=".repeat(lvl));
-					let closer_ok =
-						!bytes.windows(closer.len()).any(|w| w == closer.as_bytes());
+					// the FIRST closer in content+closer must land exactly
+					// at the content end (content ending in `]=*` would
+					// otherwise pull the close forward, stranding a `]`)
+					let mut joined = bytes.to_vec();
+					joined.extend_from_slice(closer.as_bytes());
+					let first = joined
+						.windows(closer.len())
+						.position(|w| w == closer.as_bytes());
+					let closer_ok = first == Some(bytes.len());
 					let opener_ok = lvl > 0 || !bytes.windows(2).any(|w| w == b"[[");
 					if closer_ok && opener_ok {
 						break;

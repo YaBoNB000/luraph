@@ -140,6 +140,22 @@
 
 ## 4. 更新日志
 
+- **2026-09-05（「看着像+安全性也像」战役·P3a：解释器 handler 加密 +
+  loadstring 引导）**  致命缺点①整改第一步（v15 档）：42 个指令
+  handler 体不再以代码出现——包成 `return function(E,a,b,c,d)
+  local V,C,...=E[1],... <body> end` 环境参数化闭包源，LCG 加性掩码
+  （片段级种子 `(hseed+wire·hstep)%2²⁸`）+ base-94 打包，存进 `HQ`
+  长字符串数字槽；引导期 `loadstring` 原生性复检（`debug.info == "[C]"`，
+  被 hook → 静默陷阱）后解码重建 `HW` 表；`loadstring` 走
+  `GFE(0)["loadstring"]` 索引访问（F18 安全）。CPS 信号化：Jmp 族返回
+  `{j=target}`、帧簿记迁 `E.ln/E.lb`、Call 族保持内联（真 TCO）。
+  顺手修复隐患：guard mangle 保留 `GS`/`schar` 名（防遮蔽注入表，
+  P3a rng 位移曾暴露 print6@seed42）。结果：安全指纹 0/5→**4/5**
+  （S3 寄存器形态 163→29、4 参函数 45→2；S5 转绿）；轮廓指纹 32/32
+  保持（F4 168→125 仍在带内，更近样本）。验证：204/204 + 405/405 +
+  5 种子 0 失败 + 18/18 抽查 + 31 示例 32/32 + 双档运行一致 +
+  cargo test 27 + 纯度 0 非 ASCII。余 P3b（OC/AL/TK/BW 去物化，S4）
+  与 P3c（骨架强化 + 指纹回校）。
 - **2026-09-05（「看着像+安全性也像」战役·P2：字节码不规则化）**
   致命缺点②整改：① **布局描述符化**——函数 blob 拆 6 类节（HEAD/
   CKSEED/UPS/CONSTS/SLOTS/CODE）+ DECOY 诱饵节，每构建随机乱序拼接，

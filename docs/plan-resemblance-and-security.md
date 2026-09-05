@@ -169,6 +169,46 @@ P3 随 parse 一起进加密层。）
 
 ## 4. P3 解释器分层保护（致命缺点①，指纹耦合，最后做）
 
+### P3a 完成记录（2026-09-05）：handler 体加密 + loadstring 引导
+
+落地（`vmgen/template.rs`，v15 档）：
+1. **42 个 handler 体不再以代码出现**：每条指令体包成
+   `return function(E,a,b,c,d) local V,C,...=E[1],... <body> end`
+   环境参数化闭包源 → LCG 加性掩码（片段级种子
+   `(hseed + wire·hstep) % 2²⁸`，与遍历顺序无关）→ base-94 打包 →
+   存进解释器作用域的 `HQ` 长字符串数字槽（长串级别选择与打印器
+   同源加固：闭合器首次出现必须恰落内容尾，杜绝内容尾 `]=*` 诱发的
+   提前闭合）。
+2. **引导期重建**：`loadstring` 前做原生性复检
+   （`debug.info(LS,"s") == "[C]"`，被 hook → 静默陷阱，绝不充当
+   解密预言机）；按打乱的 `HQI`（wire/slot/len 三元组）解 base-94 →
+   解掩码 → `loadstring(src)()` 建 `HW` 表。`loadstring` 走
+   `GFE(0)["loadstring"]` 索引访问（指纹 F18 的裸标识符计数不触发）。
+3. **CPS 信号化改造**：Jmp/Jf/Jt 返回 `{j = target}` 跳转信号（循环
+   应用）；Return 维持 `{out, total}` 信号；帧簿记 `lastn/lastbase`
+   迁入每帧环境 `E.ln/E.lb`（内联 Call/CallM 写、加密 Return 读）。
+   Call 族（Call/CallE/CallM/CallT）保持内联（真 TCO 需要），不进
+   HW，其 `lastbase/lastn` 写入同步改 `E.lb/E.ln`。
+4. **每帧环境 E**：run 入场构造 22 元素数组 + `ln=0, lb=0`（声明序
+   修正：`local O` 必须在 E 之前）；HW 建一次、跨帧共享。
+5. **顺手修复隐患**：guard 的 GS 表名冲突——guard mangle 可能生成
+   恰好叫 `GS`/`schar` 的名字，遮蔽注入表（P3a 的 rng 位移使其暴露：
+   print6@seed42 "index function with number"）；把两名字加入 guard
+   mangle 保留集。
+
+结果：安全指纹 0/5 → **4/5**（S3 寄存器形态 163→29、4 参函数 45→2、
+handler 特征片段 0 命中；S5 转绿：动态加载 + 原生复检配对，Luau 冻结
+全局额外阻断 hook 安装）；S4 独红（OC/AL/TK/BW 素材物化，P3b）。
+轮廓指纹 32/32 保持（F4 由 168 降至 125，仍在带内——样本的
+`=function(` 本就不含可见 handler，反而更近样本）。
+门禁：204/204 + 405/405 + 5 种子回归 0 失败 + 18/18 抽查 + 31 示例
+32/32 + 双档运行一致 + cargo test 27 + 纯度 0 非 ASCII。
+性能：stress_bigtable 274→461ms（E 解包开销，预算内）。
+
+**余下**：P3b——OC 表运行时生长 + AL/TK 载体表去物化 + BW 字表
+隐藏（S4 转绿）；P3c——可见骨架（fetch/阶梯/自修改写回）过
+flatten/数值混淆 + 指纹口径回校。
+
 思路：**可见骨架 + 加密语义**——轮廓靠骨架撑，安全靠语义层锁。
 
 1. **拆两层**：

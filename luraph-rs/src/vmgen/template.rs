@@ -815,28 +815,167 @@ pub fn generate(
 	// `return U(r[1], 1, r[2])` so run still returns unpacked results
 	// (consistent with real TCO). With real TCO the closure->run frame is
 	// reused, reducing per-recursion-level stack growth.
+	//
+	// P3a (致命缺点①): the handler bodies no longer appear as code. Each
+	// is wrapped into an env-parameterized closure source, LCG-masked,
+	// base-94 packed and stored as a long-string HQ fragment; boot
+	// decodes + `loadstring`s them into HW (wire -> function), after a
+	// loadstring-nativeness recheck (hooked loader -> silent trap).
+	// Jump handlers return `{j = target}` signals (pc is the loop's
+	// local); Call/CallE/CallM/CallT stay inline in the CPS chain.
+	let env_names = [
+		"V", "C", "S", "O", "G", "vargs", "vargc", "ups", "makefn", "mget",
+		"resolve_call", "callcap", "HAS_LEN_META", "CHAR", "FLOOR", "ERR",
+		"TYP", "GMT", "RGET", "RSET", "U", "MS",
+	];
+	let prelude_lhs = env_names.join(", ");
+	let prelude_rhs: Vec<String> =
+		(0..env_names.len()).map(|i| format!("E[{}]", i + 1)).collect();
+	let prelude_rhs = prelude_rhs.join(", ");
+	let e_ctor = format!(
+		"local E = {{{}, ln = 0, lb = 0}}",
+		env_names.join(", ")
+	);
+	let hfrag: String;
 	let handler_defs = if v15 {
-		let mut hdefs = String::from("local H = {}\n");
-		// items was shuffled above: the H definition order is a
-		// per-build permutation as well (建议1: 每次生成打乱顺序)
-		for (name, _wire) in &items {
-			let body = if name == "Nop" || name == "NopA" {
+		let hm = (rng.int(100_001, 1_100_001) | 1) as u32;
+		let hc = (rng.int(1_000_000, 268_000_000) | 1) as u32;
+		let hseed = rng.int(0, 268_435_455) as u32;
+		let mut frags: Vec<(u8, Vec<u8>)> = Vec::new(); // (wire, source bytes)
+		for (name, wire) in &items {
+			if matches!(name.as_str(), "Call" | "CallE" | "CallM" | "CallT") {
+				continue; // inline in the CPS chain, never via HW
+			}
+			let mut body = if name == "Nop" || name == "NopA" {
 				nop.clone()
-			} else if name == "Return" {
-				// CPS: return the signal {out, total}; the loop unpacks
-				handlers::gen(name, fmt_of[name], true, &mut pool, mk)
-					.replace("return U(out, 1, total)", "return {out, total}")
 			} else {
 				handlers::gen(name, fmt_of[name], true, &mut pool, mk)
 			};
-			hdefs.push_str("H[OC.");
-			hdefs.push_str(name);
-			hdefs.push_str("] = function(a,b,c,d) ");
-			hdefs.push_str(&body);
-			hdefs.push_str(" end\n");
+			if name == "Return" {
+				// CPS signal form; frame bookkeeping moves into E
+				body = body
+					.replace("return U(out, 1, total)", "return {out, total}");
+			}
+			body = body.replace("lastbase", "E.lb").replace("lastn", "E.ln");
+			if matches!(name.as_str(), "Jmp" | "Jf" | "Jt") {
+				body = body.replace("pc = b", "return {j = b}");
+			}
+			let src = format!(
+				"return function(E,a,b,c,d) local {} = {} {} end",
+				prelude_lhs, prelude_rhs, body
+			);
+			frags.push((*wire, src.into_bytes()));
 		}
-		hdefs
+		// mask + base-94 pack. Per-fragment keystream seed is derived
+		// from the wire code ((hseed + wire*hstep) % 2^28) so the
+		// decode order (shuffled HQI) is irrelevant.
+		let hstep = rng.int(1, 268_435_455) as u32;
+		let alpha = carrier.alphabet;
+		let mut hq_lines = String::from("local HQ = {}\n");
+		let mut hqi: Vec<String> = Vec::new();
+		let mut slots: Vec<i64> = (1..=2000).collect();
+		rng.shuffle(&mut slots);
+		for (i, (_wire, src)) in frags.iter().enumerate() {
+			let mut state = ((hseed as u64 + *_wire as u64 * hstep as u64)
+				% 268_435_456) as u64;
+			let mut xb: Vec<u8> = src
+				.iter()
+				.map(|&b| {
+					state = (hm as u64 * state + hc as u64) % 268_435_456;
+					b.wrapping_add((state % 256) as u8)
+				})
+				.collect();
+			let blen = xb.len();
+			while xb.len() % 4 != 0 {
+				xb.push(0);
+			}
+			let mut digits: Vec<u8> = Vec::with_capacity(xb.len() / 4 * 5);
+			for chunk in xb.chunks(4) {
+				let mut v = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+				let mut d = [0u8; 5];
+				for k in 0..5 {
+					d[4 - k] = alpha[(v % 94) as usize];
+					v /= 94;
+				}
+				digits.extend_from_slice(&d);
+			}
+			let slot = slots[i];
+			// clash-free long-string level (printer parity): the FIRST
+			// closer `]=*]` in content+closer must land exactly at the
+			// content end (guards content ending in `]=*`, which would
+			// pull the close forward and strand a stray `]`)
+			let digits_s = String::from_utf8(digits).unwrap();
+			let mut lvl = 0usize;
+			loop {
+				let closer = format!("]{}]", "=".repeat(lvl));
+				let joined = format!("{}{}", digits_s, closer);
+				let first = joined.find(&closer);
+				let closer_ok = first == Some(digits_s.len());
+				let opener_ok = lvl > 0 || !digits_s.contains("[[");
+				if closer_ok && opener_ok {
+					break;
+				}
+				lvl += 1;
+			}
+			let o = "=".repeat(lvl);
+			hq_lines.push_str(&format!(
+				"  HQ[{slot}] = [{o}[{d}]{o}]\n",
+				slot = slot,
+				o = o,
+				d = digits_s
+			));
+			hqi.push(format!("{}, {}, {}", _wire, slot, blen));
+		}
+		rng.shuffle(&mut hqi);
+		let build = format!(
+			r#"{}  local HW = {{}}
+  do
+    -- P3 (S5): dynamic-load integrity -- the loader must be the native
+    -- C function; a hooked loader is a silent trap, never a decrypt
+    -- oracle.
+    local LS = GFE(0)["loadstring"]
+    local nlok = false
+    do
+      local ok, sr = PCAL(function() return debug.info(LS, "s") end)
+      if ok and sr == "[C]" then nlok = true end
+    end
+    if not nlok then while true do end end
+    local hqi = {{{}}}
+    local hi = 1
+    while hi <= #hqi do
+      local w = hqi[hi]
+      local seg = HQ[hqi[hi + 1]]
+      local flen = hqi[hi + 2]
+      hi = hi + 3
+      local hs = ({} + w * {}) % 268435456
+      local t = {{}}
+      local ti = 1
+      local n = #seg
+      for i = 1, n, 5 do
+        local v = 0
+        v = v * 94 + AL[BYTE(seg, i)]
+        v = v * 94 + AL[BYTE(seg, i + 1)]
+        v = v * 94 + AL[BYTE(seg, i + 2)]
+        v = v * 94 + AL[BYTE(seg, i + 3)]
+        v = v * 94 + AL[BYTE(seg, i + 4)]
+        local b1 = v % 256; v = FLR(v / 256)
+        local b2 = v % 256; v = FLR(v / 256)
+        local b3 = v % 256; v = FLR(v / 256)
+        local b4 = v % 256
+        hs = ({} * hs + {}) % 268435456; t[ti] = CHAR((b1 - hs % 256) % 256); ti = ti + 1
+        hs = ({} * hs + {}) % 268435456; t[ti] = CHAR((b2 - hs % 256) % 256); ti = ti + 1
+        hs = ({} * hs + {}) % 268435456; t[ti] = CHAR((b3 - hs % 256) % 256); ti = ti + 1
+        hs = ({} * hs + {}) % 268435456; t[ti] = CHAR((b4 - hs % 256) % 256); ti = ti + 1
+      end
+      HW[w] = LS(SUB(table.concat(t), 1, flen))()
+    end
+  end"#,
+			hq_lines, hqi.join(", "), hseed, hstep, hm, hc, hm, hc, hm, hc, hm, hc
+		);
+		hfrag = build;
+		String::new()
 	} else {
+		hfrag = String::new();
 		String::new()
 	};
 	let (fetch, branches) = if v15 {
@@ -859,14 +998,15 @@ pub fn generate(
 			if i > 0 {
 				cond.push_str(" elseif ");
 			}
-			cond.push_str(&format!(
-				"oc == OC.{} then {}",
-				name,
-				handlers::gen(name, fmt_of[*name], true, &mut pool, mk)
-			));
+			// P3a: frame bookkeeping moves into the per-frame env E so
+			// the (encrypted) Return handler can read it back
+			let body = handlers::gen(name, fmt_of[*name], true, &mut pool, mk)
+				.replace("lastbase = a + 1", "E.lb = a + 1")
+				.replace("lastn = nout", "E.ln = nout");
+			cond.push_str(&format!("oc == OC.{} then {}", name, body));
 		}
 		let cps_fetch = format!(
-			"local oc = W[pc];if oc then local a = {sa}[pc];local b = {sb}[pc];local c = {sc}[pc];local d = {sd}[pc];pc = pc + 1;if {cond} else local r = H[oc](a,b,c,d); if r then return U(r[1], 1, r[2]) end end end",
+			"local oc = W[pc];if oc then local a = {sa}[pc];local b = {sb}[pc];local c = {sc}[pc];local d = {sd}[pc];pc = pc + 1;if {cond} else local r = HW[oc](E,a,b,c,d); if r then if r.j then pc = r.j else return U(r[1], 1, r[2]) end end end end",
 			sa = sa, sb = sb, sc = sc, sd = sd, cond = cond,
 		);
 		(cps_fetch, String::new())
@@ -918,7 +1058,8 @@ pub fn generate(
   {ms_block}{helpers}
   {ck_consts}{parse_fn}
   {decode_seg}
-{v15_selfmod}  local G = GFE(0)
+{v15_selfmod}{hfrag}
+  local G = GFE(0)
   local U = UNP
   local FLOOR = FLR
   local _probe = SMT({{}}, {{ __len = function() return 99 end }})
@@ -935,9 +1076,7 @@ pub fn generate(
     {run_unpack}
     {run_soa}
     local pc = 1
-    local lastn = 0
-    local lastbase = 0
-    {o_decl}{handler_defs}
+    {o_decl}{ln_decl}{handler_defs}
     while true do
       {fetch}
       {branches}
@@ -957,6 +1096,12 @@ end
 		run_unpack = run_unpack,
 		run_soa = run_soa,
 		handler_defs = handler_defs,
+		hfrag = hfrag,
+		ln_decl = if v15 {
+			e_ctor
+		} else {
+			"local lastn = 0\n    local lastbase = 0".to_string()
+		},
 		fetch = fetch,
 		branches = branches,
 		v15_selfmod = v15_selfmod,

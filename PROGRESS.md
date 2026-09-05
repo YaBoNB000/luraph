@@ -623,6 +623,27 @@ tag 字节（`section_tags`）；全部计数字段改 7-bit varint → 固定�
 32/32 + 双档运行一致 + cargo 27 + 纯度 0 非 ASCII。下一步 P3 解释器
 分层保护（可见骨架 + 加密 handler + load 引导，指纹耦合最大）。
 
+**P3a ✅（2026-09-05）：解释器 handler 加密 + loadstring 引导
+（致命缺点① 整改第一步，v15 档）**。42 个指令 handler 体不再以代码
+出现：包成 `return function(E,a,b,c,d) local V,C,...=E[1],... <body>
+end` 环境参数化闭包源 → LCG 加性掩码（片段级种子
+`(hseed+wire·hstep)%2²⁸`，与遍历顺序无关）→ base-94 打包 → `HQ`
+长字符串数字槽（级别选择加固：闭合器首次出现必须恰落内容尾）。
+引导期先复检 `loadstring` 原生性（`debug.info=="[C]"`，hook → 静默
+陷阱），再按打乱 `HQI`（wire/slot/len）解码重建 `HW`；`loadstring`
+走 `GFE(0)["loadstring"]` 索引访问（F18 裸标识符计数不触发）。CPS
+信号化：Jmp 族返回 `{j=target}` 信号；帧簿记迁 `E.ln/E.lb`（内联
+Call/CallM 写、加密 Return 读）；Call 族保持内联保真 TCO。每帧环境
+E（22 元素 + ln/lb，`local O` 声明序先于 E）。顺手修复：guard mangle
+保留 `GS`/`schar` 名（防遮蔽注入表——P3a rng 位移暴露的隐患，
+print6@seed42 "index function with number"）。结果：安全指纹
+0/5→**4/5**（S3 寄存器形态 163→29、4 参函数 45→2、特征片段 0 命中；
+S5 转绿），S4 独红（OC/AL/TK/BW 物化，P3b 的活）；轮廓指纹 32/32
+保持（F4 168→125 在带内、更近样本）。门禁：204/204 + 405/405 +
+5 种子 0 失败 + 18/18 抽查 + 31 示例 32/32 + 双档运行一致 +
+cargo 27 + 纯度 0 非 ASCII。性能：stress_bigtable 274→461ms（预算内）。
+下一步 P3b（OC 运行时生长 + AL/TK/BW 去物化 → S4）。
+
 ### ✅ v15 反调试 guard（CHAR 编码版，2026-08-29）
 
 用户要求 v15 也带 guard；字面量会破 F10，故 `v15_guard_source()` 把

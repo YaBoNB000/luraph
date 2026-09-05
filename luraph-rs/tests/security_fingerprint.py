@@ -70,7 +70,8 @@ def main():
     results.append(("S4", ITEMS[3][1], s4_line,
                     verdict(rc) if not s4_line else "PASS" in s4_line))
 
-    results.append(("S5", ITEMS[4][1], "N/A（P3 引入 load 后启用）", None))
+    rc, out = run("load_attack.py", obf)
+    results.append(("S5", ITEMS[4][1], out, verdict(rc)))
 
     npass = sum(1 for *_, ok in results if ok)
     nfail = sum(1 for *_, ok in results if ok is False)

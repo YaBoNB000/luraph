@@ -194,6 +194,13 @@ pub fn v15_guard_source(rng: &mut Rng) -> String {
 	let mangled = match parser::parse(&guard_src, true).ok() {
 		Some(mut block) => {
 			let mut table = crate::symtab::resolve(&mut block);
+			// the spliced-in GS table + schar alias keep their literal
+			// names (inserted after mangle) — mangle must never draw
+			// those exact names for its own locals (a mangled stage
+			// function named "GS" would shadow the injected table and
+			// turn GS[k] into indexing a function)
+			table.globals.push("GS".to_string());
+			table.globals.push("schar".to_string());
 			mangle::mangle(&mut table, rng, false);
 			printer::print_chunk_luau(&table, &block)
 		}
