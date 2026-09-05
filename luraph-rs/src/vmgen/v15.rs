@@ -239,7 +239,9 @@ pub fn module_fields(rng: &mut Rng, exclude: &[i64]) -> Vec<TableField> {	let mu
 	fields.push(named_str("EL", ": "));
 	fields.push(named_str("PL", "?"));
 	fields.push(named_str("cL", "string"));
-	fields.push(named_str("dL", "LPH:"));
+	// 增量⑫ (防静态, 报告突破口 #1): the `dL="LPH:"` brand field is
+	// GONE — it was dead data whose only purpose was sample shape, and
+	// the attack used it as a recognition beacon.
 	// gL = line-number rewrite regex (nL consumes it in P8)
 	fields.push(TableField::Key {
 		key: Expr::Str {
@@ -963,9 +965,7 @@ pub fn scaffold(
 			));
 		}
 		for (j, chunk) in chunks.iter().enumerate() {
-			// 增量⑩: avoid km/kc — the chunk handler now opens with two
-			// word-mask-key locals of those names
-			fillers = (0..5).map(|_| nm.take_avoid(&["b", "C", "Q", "R", "d", "km", "kc"])).collect();
+			fillers = (0..5).map(|_| nm.take_avoid(&["b", "C", "Q", "R", "d"])).collect();
 			rng.shuffle(&mut fillers);
 			let (ra, rb, rc, rd, re) = (fillers[0].as_str(), fillers[1].as_str(), fillers[2].as_str(), fillers[3].as_str(), fillers[4].as_str());
 			let (st, ret) = step(&mut state_i);
@@ -973,12 +973,59 @@ pub fn scaffold(
 			// P3b: the words live SPLIT across numeric-slot arrays and
 			// additively masked per global position; the handler walks
 			// its slot segments, unmasks each word on the fly
-			// ((bm0 + g*bc0) % 2^32), unpacks bytes with bit32, trims
-			// to the chunk length, then de-XORs. Key material was
-			// consumed by the word precompute pass above.
+			// ((bm0 + g*bc0) % 2^32), unpacks bytes, trims to the chunk
+			// length, then de-XORs. Key material was consumed by the
+			// word precompute pass above.
 			let _ = chunk;
 			let (sw, nw, blen) = chunk_info[k * CHUNKS + j];
 			let ew = sw + nw - 1;
+			// 增量⑫ (防静态, 报告突破口 #4 — 5 个孪生解密函数): every
+			// internal local is a fresh per-handler name and every loop/
+			// idiom is drawn from equivalent variants, so no two chunk
+			// handlers are textually identical (or even same-shaped).
+			// NOTE: avoid "b"/"C" — the handler's self/context params
+			// must never be shadowed by a generated local.
+			const CH_AVOID: &[&str] = &["b", "C"];
+			let nkm = nm.take_avoid(CH_AVOID);
+			let nkc = nm.take_avoid(CH_AVOID);
+			let nt = nm.take_avoid(CH_AVOID);
+			let ng = nm.take_avoid(CH_AVOID);
+			let nws = nm.take_avoid(CH_AVOID);
+			let nwi = nm.take_avoid(CH_AVOID);
+			let nwd = nm.take_avoid(CH_AVOID);
+			let nseg = nm.take_avoid(CH_AVOID);
+			let nkv = nm.take_avoid(CH_AVOID);
+			let no = nm.take_avoid(CH_AVOID);
+			let ni = nm.take_avoid(CH_AVOID);
+			let nbx = nm.take_avoid(CH_AVOID);
+			let while_words = rng.int(0, 1) == 1;
+			let divmod_bytes = rng.int(0, 1) == 1;
+			let add_unmask = rng.int(0, 1) == 1;
+			let xor_style = rng.int(0, 2);
+			let trim_style = rng.int(0, 1) == 1;
+			// one byte-extraction step (band/rshift vs div/mod family)
+			let byte_step = |last: bool| -> String {
+				if divmod_bytes {
+					let s = format!(
+						"{nt}[#{nt}+1]=string.char({wd}%256);",
+						nt = nt, wd = nwd
+					);
+					if last { s } else { format!("{s}{wd}=({wd}-{wd}%256)/256; ", wd = nwd, s = s) }
+				} else {
+					let s = format!(
+						"{nt}[#{nt}+1]=string.char(bit32.band({wd},255));",
+						nt = nt, wd = nwd
+					);
+					if last { s } else { format!("{s}{wd}=bit32.rshift({wd},8); ", wd = nwd, s = s) }
+				}
+			};
+			let four_bytes = format!(
+				"{}{}{}{}",
+				byte_step(false),
+				byte_step(false),
+				byte_step(false),
+				byte_step(true)
+			);
 			// slot segments covering [sw, ew] (global 1-based word idx)
 			let mut seg_code = String::new();
 			let mut g = sw;
@@ -988,40 +1035,93 @@ pub fn scaffold(
 				let slot_end_global = (si + 1) * BW_SLOT_WORDS;
 				let seg_hi = ew.min(slot_end_global);
 				let local_hi = local_lo + (seg_hi - g);
-			// 增量⑩: km/kc assembled at handler entry (fragment slots),
-				// no mask-key literal at the decode site
-				seg_code.push_str(&format!(
-					"local Ws=b[{slot}]; for wi={lo},{hi} do local w=(Ws[wi]-(km+g*kc)%4294967296)%4294967296; g=g+1; \
-				 t[#t+1]=string.char(bit32.band(w,255)); w=bit32.rshift(w,8); \
-				 t[#t+1]=string.char(bit32.band(w,255)); w=bit32.rshift(w,8); \
-				 t[#t+1]=string.char(bit32.band(w,255)); w=bit32.rshift(w,8); \
-				 t[#t+1]=string.char(bit32.band(w,255)) end; ",
-					slot = bw_slots[si],
-					lo = local_lo,
-					hi = local_hi,
-				));
+				// 增量⑩: km/kc assembled at handler entry (fragment
+				// slots), no mask-key literal at the decode site.
+				// 增量⑫: subtractive vs additive unmask + for/while
+				// word-loop variants.
+				let unmask = if add_unmask {
+					format!(
+						"({ws}[{wi}]+(4294967296-({km}+{gc}*{kc})%4294967296))%4294967296",
+						ws = nws, wi = nwi, km = nkm, gc = ng, kc = nkc
+					)
+				} else {
+					format!(
+						"({ws}[{wi}]-({km}+{gc}*{kc})%4294967296)%4294967296",
+						ws = nws, wi = nwi, km = nkm, gc = ng, kc = nkc
+					)
+				};
+				let body = format!(
+					"local {wd}={unmask};{gc}={gc}+1; {four}",
+					wd = nwd, unmask = unmask, gc = ng, four = four_bytes
+				);
+				seg_code.push_str(&format!("local {ws}=b[{slot}]; ", ws = nws, slot = bw_slots[si]));
+				if while_words {
+					seg_code.push_str(&format!(
+						"local {wi}={lo};while {wi}<={hi} do {body}{wi}={wi}+1 end; ",
+						wi = nwi, lo = local_lo, hi = local_hi, body = body
+					));
+				} else {
+					seg_code.push_str(&format!(
+						"for {wi}={lo},{hi} do {body}end; ",
+						wi = nwi, lo = local_lo, hi = local_hi, body = body
+					));
+				}
 				g = seg_hi + 1;
 			}
 			let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
 			let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
-			let qc = nm.take_avoid(&["b", "C", "t", "g", "seg", "kv", "o", "i", "km", "kc"]);
-			let qr = nm.take_avoid(&["b", "C", "t", "g", "seg", "kv", "o", "i", "km", "kc"]);
+			let qc = nm.take_avoid(CH_AVOID);
+			let qr = nm.take_avoid(CH_AVOID);
+			let trim = if trim_style {
+				// nil separator == "" but emits no string literal (F10)
+				format!(
+					"local {seg}=table.concat({t},nil,1,{blen});",
+					seg = nseg, t = nt, blen = blen
+				)
+			} else {
+				format!(
+					"local {seg}=string.sub(table.concat({t}),1,{blen});",
+					seg = nseg, t = nt, blen = blen
+				)
+			};
+			let xor_line = format!(
+				"{o}[{i}]=string.char(bit32.bxor(string.byte({seg},{i}),({kv}+{i})%256))",
+				o = no, i = ni, seg = nseg, kv = nkv
+			);
+			let xor_loop = match xor_style {
+				0 => format!("for {i}=1,#{seg} do {line} end", i = ni, seg = nseg, line = xor_line),
+				1 => format!(
+					"local {i}=1;while {i}<=#{seg} do {line};{i}={i}+1 end",
+					i = ni, seg = nseg, line = xor_line
+				),
+				_ => format!(
+					"for {i}=1,#{seg} do local {bx}=string.byte({seg},{i});{o}[{i}]=string.char(bit32.bxor({bx},({kv}+{i})%256)) end",
+					i = ni, seg = nseg, bx = nbx, o = no, kv = nkv
+				),
+			};
 			let src = format!(
 				"function(b,C,{ra},{rb},{rc},{rd},{re}) \
-				 local km=(b[{kfa}]+b[{kfb}])%4294967296;local kc=(b[{kfc}]-b[{kfd}])%4294967296; \
-				 local t={{}}; local g={sw}; \
+				 local {km}=(b[{kfa}]+b[{kfb}])%4294967296;local {kc}=(b[{kfc}]-b[{kfd}])%4294967296; \
+				 local {t}={{}}; local {g}={sw}; \
 				 {segs}\
-				 local seg=string.sub(table.concat(t),1,{blen}); \
+				 {trim} \
 				 local {qc}=C[{idx}]~=nil and {da} or {db}; \
 				 local {qr}=if {da}~={db} then {da} else {db}; \
-				 local kv=b[{kg}](b); local o={{}}; \
-				 for i=1,#seg do o[i]=string.char(bit32.bxor(string.byte(seg,i),(kv+i)%256)) end; \
-				 C[{idx}]=table.concat(o); \
+				 local {kv}=b[{kg}](b); local {o}={{}}; \
+				 {xor_loop}; \
+				 C[{idx}]=table.concat({o}); \
 				 return {ret},C,{rc},{ra},{rd},{re},{rb} end",
 				idx = k * CHUNKS + j + 1,
 				segs = seg_code,
 				sw = sw,
-				blen = blen,
+				trim = trim,
+				xor_loop = xor_loop,
+				t = nt,
+				g = ng,
+				km = nkm,
+				kc = nkc,
+				kv = nkv,
+				o = no,
 				kg = kg_slot,
 				kfa = kfrag[1],
 				kfb = kfrag[2],

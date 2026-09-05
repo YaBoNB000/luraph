@@ -723,7 +723,13 @@ pub fn generate(
 				));
 			}
 		}
-		sm.push_str("  local DA = {}\n  local DP = 1\n  local DF = 0\n  while DF > 0 do\n    local f = DA[DP]\n    if f >= 4 then\n      if f < 6 then\n        if f ~= 5 then DF = 0 else DF = 0 end\n      else DF = 0 end\n    elseif f < 2 then DF = 0\n    else DF = 0 end\n");
+		// 增量⑫ (防静态, 报告突破口 #14): the dead-dispatch decoy used a
+		// literal `DF = 0`, so static dead-code elimination proved the
+		// loop unreachable and discarded it (zero-reference decoy spotted).
+		// Derive DF from RUNTIME data instead: `PF[#FN].ck % 1` is 0 for
+		// every run (integer checksum mod 1) but is not foldable without
+		// modeling the runtime, so the decoy stays "possibly live".
+		sm.push_str("  local DA = {}\n  local DP = 1\n  local DF = PF[#FN].ck % 1\n  while DF > 0 do\n    local f = DA[DP]\n    if f >= 4 then\n      if f < 6 then\n        if f ~= 5 then DF = 0 else DF = 0 end\n      else DF = 0 end\n    elseif f < 2 then DF = 0\n    else DF = 0 end\n");
 		// P3c: decoy fetch points — the sample ships several dispatch
 		// loops (golden F11 = 19); these dead fetch shapes raise the
 		// family resemblance and multiply the "which loop is real"
@@ -1094,9 +1100,12 @@ pub fn generate(
 		let hseed = rng.int(1_048_576, 268_435_455) as u32;
 		let mut frags: Vec<(u8, Vec<u8>)> = Vec::new(); // (wire, source bytes)
 		for (name, wire) in &items {
-			if matches!(name.as_str(), "Call" | "CallE" | "CallM" | "CallT") {
-				continue; // inline in the CPS chain, never via HW
-			}
+			// 增量⑫ (防静态, 报告突破口 #9): the Call family is inlined
+			// in the CPS chain, but it STILL gets an HQ fragment — the
+			// dispatch key set must be complete (0..42 with no holes),
+			// otherwise the 4 missing wires identify the inline family
+			// instantly. The inline chain catches those wires first, so
+			// these four handlers are decoded but never executed.
 			let mut body = if name == "Nop" || name == "NopA" {
 				nop.clone()
 			} else {

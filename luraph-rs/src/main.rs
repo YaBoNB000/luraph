@@ -634,13 +634,13 @@ fn main() -> ExitCode {
 			let m = minify::minify(&out, luau).map_err(|e| format!("minify: {}", e))?;
 			tlog("minify");
 			if opts.do_v15 {
-				// F1/F2 shape: header comment + blank line + one-line body
-				// + trailing semicolon, no trailing newline (sample form).
-				Ok(format!(
-					"-- This file was protected using luraph v{}\n\n{};",
-					VERSION,
-					m.trim_end_matches('\n')
-				))
+				// F1/F2 shape: one-line body + trailing semicolon, no
+				// trailing newline (sample form).
+				// 增量⑫ (防静态, 报告突破口 #1): NO header comment —
+				// the old `luraph v0.2.0` line told the analyst exactly
+				// which tool/version they were facing. F1 accepts the
+				// 2-line no-header form.
+				Ok(format!("\n{};", m.trim_end_matches('\n')))
 			} else if opts.do_guard {
 				// anti-debug guard prelude ahead of the payload
 				Ok(format!("{}\n{}", guard::guard_prelude(&mut rng, luau), m))
