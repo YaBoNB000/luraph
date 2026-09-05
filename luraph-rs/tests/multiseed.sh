@@ -29,7 +29,12 @@ for seed in $SEEDS; do
 		for d in $dialects; do
 			if [[ "$d" == "5.1" ]]; then interp=$LUA51; else interp=$LUAU; fi
 			o1="$(timeout 60 "$interp" "$case" 2>&1)"; c1=$?
-			for vmflag in "" "--vm"; do
+			# 增量⑩起: v15 profile joins the seed sweep (Luau-only). The
+			# per-build key-fragment recipes are seed-shaped — seed-42-only
+			# coverage missed an anchor-length bug.
+			vmflags=("" "--vm")
+			[[ "$d" == "luau" ]] && vmflags+=("--preset v15")
+			for vmflag in "${vmflags[@]}"; do
 				if ! timeout 60 "$TOOL" $vmflag --dialect "$d" --seed "$seed" "$case" /tmp/ms_out.lua 2>/dev/null; then
 					echo "FAIL [tool] $base $d ${vmflag:-nv} seed=$seed"; fail=$((fail+1)); continue
 				fi

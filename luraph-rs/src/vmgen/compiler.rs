@@ -1053,16 +1053,16 @@ fn compile_chunk(
 	// (odd multiplier/addend, mod 2^28 — scaffold-keystream family) +
 	// MkStr additive-mask constants. The template parse mirrors the
 	// LCG; the MkStr handler mirrors the mask.
-	let ck_km = (rng.int(100_001, 1_100_001) | 1) as u32;
-	let ck_kc = (rng.int(1_000_000, 268_000_000) | 1) as u32;
+	let ck_km = (rng.int(1_048_577, 33_000_001) | 1) as u32;
+	let ck_kc = (rng.int(1_048_576, 268_000_000) | 1) as u32;
 	let mk1 = rng.int(1, 65535) as u16;
 	let mk2 = rng.int(0, 65535) as u16;
 	// P2 (字节码不规则): blob position-mask keystream + per-function
 	// seed derivation + section tag identity (all per build).
-	let blob_km = (rng.int(100_001, 1_100_001) | 1) as u32;
-	let blob_kc = (rng.int(1_000_000, 268_000_000) | 1) as u32;
-	let blob_seed = rng.int(0, 268_435_455) as u32;
-	let blob_step = rng.int(1, 268_435_455) as u32;
+	let blob_km = (rng.int(1_048_577, 33_000_001) | 1) as u32;
+	let blob_kc = (rng.int(1_048_576, 268_000_000) | 1) as u32;
+	let blob_seed = rng.int(1_048_576, 268_435_455) as u32;
+	let blob_step = rng.int(1_048_576, 268_435_455) as u32;
 	let mut tag_pool: Vec<u8> = (1..=250).collect();
 	rng.shuffle(&mut tag_pool);
 	let section_tags: [u8; 7] = tag_pool[..7].try_into().unwrap();

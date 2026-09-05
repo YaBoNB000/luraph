@@ -352,6 +352,21 @@ impl Names {
 			"pC", "h", "s", "b", "do", "if", "in", "or",
 		];
 		pool.retain(|n| !reserved.contains(&n.as_str()));
+		// coded_name() emits `{var}t` / `{var}o` / `{var}i` for each
+		// drawn name — a name whose SUFFIXED derivative is a keyword
+		// parses as that keyword (e.g. var "no" -> "not"). Ban any pool
+		// entry whose own or suffixed form is a Lua/Luau keyword.
+		const KW: &[&str] = &[
+			"and", "break", "do", "else", "elseif", "end", "false", "for",
+			"function", "if", "in", "local", "nil", "not", "or", "repeat",
+			"return", "then", "true", "until", "while", "continue",
+		];
+		pool.retain(|n| {
+			!KW.contains(&n.as_str())
+				&& !KW.contains(&(n.clone() + "t").as_str())
+				&& !KW.contains(&(n.clone() + "o").as_str())
+				&& !KW.contains(&(n.clone() + "i").as_str())
+		});
 		let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 		pool.retain(|n| seen.insert(n.clone()));
 		Names { pool, fallback: 0 }
@@ -544,6 +559,10 @@ pub fn scaffold(
 	guard: bool,
 	bw_slots: &[i64],
 	prim_extra: (i64, i64),
+	// 增量⑩: key-fragment slots. kfrag[0] = second ks-seed fragment;
+	// kfrag[1..=4] = the bm0/bc0 word-mask key fragments. All blend
+	// into the numeric-slot family (values are random halves, not keys).
+	kfrag: &[i64],
 ) -> (Vec<TableField>, String) {
 	let carrier_tokens: &[String] = &carrier.tokens;
 	let mut nm = Names::new(rng);
@@ -575,19 +594,44 @@ pub fn scaffold(
 
 	// SECURITY (sample parity): the carrier keystream comes from a
 	// state-machine LCG, NOT literal constants in the chunk handlers.
-	// ks_slot holds the LCG state (seeded); kg_slot holds a 3-step LCG
-	// generator (sample [96] shape) that advances the state and returns
-	// it. Each chunk handler calls the generator to obtain its key
-	// constant, so no key material appears at the decode site -- the key
-	// is runtime-derived and its constants live inside the state-machine
-	// transitions (not statically extractable from a chunk handler).
-	let ks_seed: i64 = rng.int(1, 268435455);
-	let lcm = |rng: &mut Rng| rng.int(100_001, 1_100_001) | 1;
-	let lcc = |rng: &mut Rng| rng.int(1_000_000, 268_000_000) | 1;
+	// kg_slot holds a 3-step LCG generator (sample [96] shape) that
+	// advances the state and returns it. Each chunk handler calls the
+	// generator to obtain its key constant, so no key material appears
+	// at the decode site.
+	// 增量⑩ (防静态, 报告突破口 #5 — R001 直接读走了 [ks]=种子 字面量):
+	// the seed is SPLIT into two meaningless fragments parked at random
+	// module slots; the generator ASSEMBLES the real seed on its first
+	// call (state := fragA + fragB, then the marker slot is erased).
+	// The LCG constants themselves are emitted as two-term arithmetic,
+	// so no key value survives as a single literal anywhere.
+	let ks_seed: i64 = rng.int(1_048_576, 268_435_455);
+	let lcm = |rng: &mut Rng| rng.int(1_048_577, 33_000_001) | 1;
+	let lcc = |rng: &mut Rng| rng.int(1_048_576, 268_000_000) | 1;
 	let (km1, kc1) = (lcm(rng), lcc(rng));
 	let (km2, kc2) = (lcm(rng), lcc(rng));
 	let (km3, kc3) = (lcm(rng), lcc(rng));
+	crate::vmgen::manifest_key("KS_SEED", ks_seed as u64);
+	crate::vmgen::manifest_key("KG_M1", km1 as u64);
+	crate::vmgen::manifest_key("KG_C1", kc1 as u64);
+	crate::vmgen::manifest_key("KG_M2", km2 as u64);
+	crate::vmgen::manifest_key("KG_C2", kc2 as u64);
+	crate::vmgen::manifest_key("KG_M3", km3 as u64);
+	crate::vmgen::manifest_key("KG_C3", kc3 as u64);
 	let mut ks_state: i64 = ks_seed;
+	// 增量⑩: split a value into an `(a+b)` two-term sum (no bare literal).
+	let split_sum = |v: i64, rng: &mut Rng| -> String {
+		let a = rng.int(1, v - 1);
+		format!("({}+{})", a, v - a)
+	};
+	// 增量⑩: store `v` in a table field as a `(u-d)` arithmetic
+	// expression (never a bare number). d stays 8-digit so u fits a
+	// double with room to spare.
+	let split_field = |v: i64, rng: &mut Rng| -> Expr {
+		let d = rng.int(10_000_000, 99_999_999);
+		parse_expr(&format!("({}-{})", v + d, d))
+	};
+	let ks_frag_a = rng.int(0, 268_435_455);
+	let ks_frag_b = (ks_seed - ks_frag_a).rem_euclid(268_435_456);
 
 	// ---- RT reverse-token table names (F8 pC shape below)
 	let rt_name = nm.take();
@@ -657,30 +701,29 @@ pub fn scaffold(
 		},
 		value,
 	};
-	// SECURITY: LCG keystream slots. KSC = the LCG state (seeded);
-	// KG = a 3-step LCG state-machine generator (sample [96] shape) that
-	// advances b[KSC] by three transitions and returns it. Key constants
-	// live in this generator's state-machine body, never at the decode
-	// site, so the keystream is runtime-derived (not statically
-	// extractable from a chunk handler).
-	fields.push(slotted(
-		ks_slot,
-		Expr::Num {
-			value: ks_seed as f64,
-			isfloat: false,
-		},
-	));
+	// SECURITY: LCG keystream slots. KSC = the LCG state; KG = a 3-step
+	// LCG state-machine generator (sample [96] shape) that advances
+	// b[KSC] by three transitions and returns it.
+	// 增量⑩: b[KSC] initially holds fragment A of the seed (arithmetic
+	// expression, not the seed); fragment B parks at kfrag[0]. On the
+	// FIRST generator call the state is assembled (A+B), written back
+	// and the marker slot erased — from then on the generator behaves
+	// exactly as before.
+	fields.push(slotted(ks_slot, split_field(ks_frag_a, rng)));
+	fields.push(slotted(kfrag[0], split_field(ks_frag_b, rng)));
 	// P3b: operand order emitted as (x*m+c) and per-step local names
 	// vary — the keystream stays runtime-derived (sample [96] family)
 	// but no fixed-shape constant triple is grep-able in one function.
+	// 增量⑩: m/c constants emitted as two-term sums as well.
 	fields.push(slotted(
 		kg_slot,
 		parse_expr(&format!(
-			"function(b) local x=b[{ks}];local u=0;while true do if u<=0 then x=(x*{m1}+{c1})%268435456;u=1 elseif u<=1 then local y=(x*{m2}+{c2})%268435456;x=y;u=2 else local z=(x*{m3}+{c3})%268435456;b[{ks}]=z;return z end end end",
+			"function(b) local x=b[{ks}];if b[{fb}]~=nil then x=(x+b[{fb}])%268435456;b[{ks}]=x;b[{fb}]=nil end;local u=0;while true do if u<=0 then x=(x*{m1}+{c1})%268435456;u=1 elseif u<=1 then local y=(x*{m2}+{c2})%268435456;x=y;u=2 else local z=(x*{m3}+{c3})%268435456;b[{ks}]=z;return z end end end",
 			ks = ks_slot,
-			m1 = km1, c1 = kc1,
-			m2 = km2, c2 = kc2,
-			m3 = km3, c3 = kc3,
+			fb = kfrag[0],
+			m1 = split_sum(km1, rng), c1 = split_sum(kc1, rng),
+			m2 = split_sum(km2, rng), c2 = split_sum(kc2, rng),
+			m3 = split_sum(km3, rng), c3 = split_sum(kc3, rng),
 		)),
 	));
 	// wide state tuple: handlers take (b, C, p1..p5) = 7 params (F6)
@@ -826,6 +869,20 @@ pub fn scaffold(
 	// chunk handlers unmask on the fly while unpacking.
 	let bm0 = rng.int(1, 4_294_967_295) as i64;
 	let bc0 = (rng.int(1, 4_294_967_295) | 1) as i64;
+	crate::vmgen::manifest_key("BW_M0", bm0 as u64);
+	crate::vmgen::manifest_key("BW_C0", bc0 as u64);
+	// 增量⑩: the word-mask keys are split into module-table fragments
+	// too (kfrag[1..=4]); chunk handlers assemble them at runtime:
+	//   bm0 = (b[kfrag[1]] + b[kfrag[2]]) % 2^32
+	//   bc0 = (b[kfrag[3]] - b[kfrag[4]]) % 2^32
+	let bm0_a = rng.int(0, 4_294_967_295);
+	let bm0_b = (bm0 - bm0_a).rem_euclid(4_294_967_296);
+	let bc0_a = rng.int(0, 4_294_967_295);
+	let bc0_b = (bc0_a - bc0).rem_euclid(4_294_967_296);
+	fields.push(slotted(kfrag[1], split_field(bm0_a, rng)));
+	fields.push(slotted(kfrag[2], split_field(bm0_b, rng)));
+	fields.push(slotted(kfrag[3], split_field(bc0_a, rng)));
+	fields.push(slotted(kfrag[4], split_field(bc0_b, rng)));
 	let n_slots_needed = (all_words.len() + BW_SLOT_WORDS - 1) / BW_SLOT_WORDS;
 	assert!(
 		n_slots_needed <= bw_slots.len(),
@@ -906,7 +963,9 @@ pub fn scaffold(
 			));
 		}
 		for (j, chunk) in chunks.iter().enumerate() {
-			fillers = (0..5).map(|_| nm.take_avoid(&["b", "C", "Q", "R", "d"])).collect();
+			// 增量⑩: avoid km/kc — the chunk handler now opens with two
+			// word-mask-key locals of those names
+			fillers = (0..5).map(|_| nm.take_avoid(&["b", "C", "Q", "R", "d", "km", "kc"])).collect();
 			rng.shuffle(&mut fillers);
 			let (ra, rb, rc, rd, re) = (fillers[0].as_str(), fillers[1].as_str(), fillers[2].as_str(), fillers[3].as_str(), fillers[4].as_str());
 			let (st, ret) = step(&mut state_i);
@@ -929,26 +988,28 @@ pub fn scaffold(
 				let slot_end_global = (si + 1) * BW_SLOT_WORDS;
 				let seg_hi = ew.min(slot_end_global);
 				let local_hi = local_lo + (seg_hi - g);
+			// 增量⑩: km/kc assembled at handler entry (fragment slots),
+				// no mask-key literal at the decode site
 				seg_code.push_str(&format!(
-					"local Ws=b[{slot}]; for wi={lo},{hi} do local w=(Ws[wi]-({bm0}+g*{bc0})%4294967296)%4294967296; g=g+1; \
-					 t[#t+1]=string.char(bit32.band(w,255)); w=bit32.rshift(w,8); \
-					 t[#t+1]=string.char(bit32.band(w,255)); w=bit32.rshift(w,8); \
-					 t[#t+1]=string.char(bit32.band(w,255)); w=bit32.rshift(w,8); \
-					 t[#t+1]=string.char(bit32.band(w,255)) end; ",
+					"local Ws=b[{slot}]; for wi={lo},{hi} do local w=(Ws[wi]-(km+g*kc)%4294967296)%4294967296; g=g+1; \
+				 t[#t+1]=string.char(bit32.band(w,255)); w=bit32.rshift(w,8); \
+				 t[#t+1]=string.char(bit32.band(w,255)); w=bit32.rshift(w,8); \
+				 t[#t+1]=string.char(bit32.band(w,255)); w=bit32.rshift(w,8); \
+				 t[#t+1]=string.char(bit32.band(w,255)) end; ",
 					slot = bw_slots[si],
 					lo = local_lo,
 					hi = local_hi,
-					bm0 = bm0,
-					bc0 = bc0,
 				));
 				g = seg_hi + 1;
 			}
 			let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
 			let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
-			let qc = nm.take_avoid(&["b", "C", "t", "g", "seg", "kv", "o", "i"]);
-			let qr = nm.take_avoid(&["b", "C", "t", "g", "seg", "kv", "o", "i"]);
+			let qc = nm.take_avoid(&["b", "C", "t", "g", "seg", "kv", "o", "i", "km", "kc"]);
+			let qr = nm.take_avoid(&["b", "C", "t", "g", "seg", "kv", "o", "i", "km", "kc"]);
 			let src = format!(
-				"function(b,C,{ra},{rb},{rc},{rd},{re}) local t={{}}; local g={sw}; \
+				"function(b,C,{ra},{rb},{rc},{rd},{re}) \
+				 local km=(b[{kfa}]+b[{kfb}])%4294967296;local kc=(b[{kfc}]-b[{kfd}])%4294967296; \
+				 local t={{}}; local g={sw}; \
 				 {segs}\
 				 local seg=string.sub(table.concat(t),1,{blen}); \
 				 local {qc}=C[{idx}]~=nil and {da} or {db}; \
@@ -962,6 +1023,10 @@ pub fn scaffold(
 				sw = sw,
 				blen = blen,
 				kg = kg_slot,
+				kfa = kfrag[1],
+				kfb = kfrag[2],
+				kfc = kfrag[3],
+				kfd = kfrag[4],
 				da = decoy_a,
 				db = decoy_b,
 				ret = ret,

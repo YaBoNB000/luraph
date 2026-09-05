@@ -162,6 +162,117 @@ fn obf_num(n: u64, rng: &mut Rng) -> String {
 	format!("({} + {} - {})", x, y, z)
 }
 
+use super::manifest_key;
+
+/// 增量⑩ (防静态, 报告突破口 #5/#2): key material is never emitted as a
+/// literal. The R001 break came from reading the keys straight out of
+/// the output (seed literal next to the number table). Now every 28-bit
+/// key K is assembled AT RUNTIME from random fragments parked in the KF
+/// table; a per-key recipe is drawn from three shapes:
+///
+///   additive `(KF[a] + KF[b]) % 2^28`
+///   affine   `(KF[a] * KF[b] + KF[c]) % 2^28`
+///   anchored `(KF[a] + KF[b] * <anchor>) % 2^28`
+///            (anchor = a boot-time table length, e.g. #APH / #hqi —
+///             a value that exists only after boot code ran)
+///
+/// Fragment values are individually random and meaningless; both the
+/// stored values and the slot indexes go through obf_num, so literal
+/// scanning recovers no complete key. All arithmetic stays exact in
+/// doubles (products bounded < 2^45).
+const KEY_MOD: i64 = 268_435_456; // 2^28
+
+struct KeyEmitter {
+	slots: Vec<i64>,
+	si: usize,
+	writes: Vec<String>,
+}
+
+impl KeyEmitter {
+	fn new(rng: &mut Rng) -> KeyEmitter {
+		let mut slots: Vec<i64> = (1..=400).collect();
+		rng.shuffle(&mut slots);
+		KeyEmitter { slots, si: 0, writes: Vec::new() }
+	}
+	/// Park one fragment: obfuscated value at an obfuscated slot index.
+	/// Returns the slot number (the recipe re-obfuscates its own index).
+	fn frag(&mut self, v: i64, rng: &mut Rng) -> i64 {
+		let slot = self.slots[self.si];
+		self.si += 1;
+		self.writes.push(format!(
+			"KF[{}] = {}",
+			obf_num(slot as u64, rng),
+			obf_num(v as u64, rng)
+		));
+		slot
+	}
+	/// Assembly expression that evaluates to `key` at runtime.
+	/// `anchor` = (Lua expression, its build-known runtime value).
+	fn key_expr(
+		&mut self,
+		key: i64,
+		anchor: Option<(&str, i64)>,
+		rng: &mut Rng,
+	) -> String {
+		if std::env::var("LURAPH_KEY_DBG").is_ok() {
+			return format!("{}", key);
+		}
+		let idx = |v: i64, rng: &mut Rng| obf_num(v as u64, rng);
+		let form = if anchor.is_some() { rng.int(0, 2) } else { rng.int(0, 1) };
+		match form {
+			0 => {
+				// additive: K = (A + B) % M
+				let a = rng.int(0, KEY_MOD - 1);
+				let b = (key - a).rem_euclid(KEY_MOD);
+				let sa = self.frag(a, rng);
+				let sb = self.frag(b, rng);
+				format!(
+					"((KF[{}] + KF[{}]) % {})",
+					idx(sa, rng),
+					idx(sb, rng),
+					KEY_MOD
+				)
+			}
+			1 => {
+				// affine: K = (A*B + C) % M (B small odd, product exact)
+				let b = rng.int(1, 16383) | 1;
+				let a = rng.int(0, KEY_MOD - 1);
+				let c = (key - a * b).rem_euclid(KEY_MOD);
+				let sa = self.frag(a, rng);
+				let sb = self.frag(b, rng);
+				let sc = self.frag(c, rng);
+				format!(
+					"((KF[{}] * KF[{}] + KF[{}]) % {})",
+					idx(sa, rng),
+					idx(sb, rng),
+					idx(sc, rng),
+					KEY_MOD
+				)
+			}
+			_ => {
+				// anchored: K = (A + B*anchor) % M
+				let (ae, av) = anchor.unwrap();
+				let b = rng.int(1, 999);
+				let a = (key - b * av).rem_euclid(KEY_MOD);
+				let sa = self.frag(a, rng);
+				let sb = self.frag(b, rng);
+				format!(
+					"((KF[{}] + KF[{}] * {}) % {})",
+					idx(sa, rng),
+					idx(sb, rng),
+					ae,
+					KEY_MOD
+				)
+			}
+		}
+	}
+	/// `local KF = {}` + the (shuffled) fragment writes.
+	fn block(mut self, rng: &mut Rng) -> String {
+		rng.shuffle(&mut self.writes);
+		format!("local KF = {{}}\n  {}\n  ", self.writes.join("\n  "))
+	}
+}
+
 /// P4 (防御代码隐藏): runtime string-builder for the interpreter
 /// scope — char codes stored SHUFFLED in a table plus an order list,
 /// concatenated through CHAR. Returns Lua declarations; the built
@@ -209,6 +320,9 @@ pub fn generate(
 	// pairs (mask = (ocm + idx*occ) % 65536 over the wire byte); the
 	// dispatch compares against OCt[<op_index>] positionally. The Nop
 	// alias becomes NOPA = (p1 + p2) % 256 (no literal alias byte).
+	// 增量⑩: key-fragment emitter — every key constant below is drawn
+	// through ke.key_expr (no bare key literal survives in the output).
+	let mut ke = KeyEmitter::new(rng);
 	let oc_boot: String = if v15 {
 		let ocm = rng.int(1, 65535);
 		let occ = rng.int(1, 65535);
@@ -221,9 +335,15 @@ pub fn generate(
 		rng.shuffle(&mut pairs);
 		let p1 = rng.int(0, 255);
 		let p2 = ((map.nop_alias as i64 - p1) % 256 + 256) % 256;
+		// 增量⑩: the wire-mask keys and the Nop-alias sum are assembled
+		// from KF fragments; #ocp (built right here at boot) is the
+		// runtime anchor (2*N_OPS entries).
+		let ocm_e = ke.key_expr(ocm, Some(("#ocp", 2 * N_OPS as i64)), rng);
+		let occ_e = ke.key_expr(occ, Some(("#ocp", 2 * N_OPS as i64)), rng);
+		let nopa_e = ke.key_expr((p1 + p2).rem_euclid(KEY_MOD), None, rng);
 		format!(
-			"local OCt = {{}}\n  do\n    local ocp = {{{}}}\n    local oi = 1\n    while oi <= #ocp do\n      local x = ocp[oi]\n      OCt[x] = (ocp[oi + 1] - ({} + x * {}) % 65536) % 256\n      oi = oi + 2\n    end\n  end\n  local NOPA = ({} + {}) % 256",
-			pairs.join(", "), ocm, occ, p1, p2
+			"local OCt = {{}}\n  do\n    local ocp = {{{}}}\n    local oi = 1\n    while oi <= #ocp do\n      local x = ocp[oi]\n      OCt[x] = (ocp[oi + 1] - ({} + x * {}) % 65536) % 256\n      oi = oi + 2\n    end\n  end\n  local NOPA = ({}) % 256",
+			pairs.join(", "), ocm_e, occ_e, nopa_e
 		)
 	} else {
 		String::new()
@@ -394,10 +514,25 @@ pub fn generate(
         C[i] = v
       end
     end"#;
+	// 增量⑩: the constant/blob keystream keys are KF-assembled too.
+	// NOTE: these six are evaluated at VM-BODY scope (the declarations
+	// sit outside parse), so the recipes must stay anchor-free — no
+	// parse-local names may appear in them.
 	let ck_consts = format!(
 		"local CKM = {}\n  local CKC = {}\n  local BKM = {}\n  local BKC = {}\n  local BSEED = {}\n  local BSTEP = {}\n  ",
-		ck.0, ck.1, blobk.0, blobk.1, blobk.2, blobk.3
+		ke.key_expr(ck.0 as i64, None, rng),
+		ke.key_expr(ck.1 as i64, None, rng),
+		ke.key_expr(blobk.0 as i64, None, rng),
+		ke.key_expr(blobk.1 as i64, None, rng),
+		ke.key_expr(blobk.2 as i64, None, rng),
+		ke.key_expr(blobk.3 as i64, None, rng),
 	);
+	manifest_key("CKM", ck.0 as u64);
+	manifest_key("CKC", ck.1 as u64);
+	manifest_key("BKM", blobk.0 as u64);
+	manifest_key("BKC", blobk.1 as u64);
+	manifest_key("BSEED", blobk.2 as u64);
+	manifest_key("BSTEP", blobk.3 as u64);
 	// P2 section tags (per-build identity bytes) + walk preamble:
 	// position-unmask the whole blob, then tag-walk the sections in
 	// blob order. Constant decoding is deferred to AFTER the walk
@@ -655,9 +790,9 @@ pub fn generate(
 	// instantly and bootstrapped the whole decode from it). Instead the
 	// ordered alphabet is stored LCG-masked and the reverse map is built
 	// at boot, so the byte->index table never appears in the output.
-	let akm = (rng.int(100_001, 1_100_001) | 1) as u32;
-	let akc = (rng.int(1_000_000, 268_000_000) | 1) as u32;
-	let aseed = rng.int(0, 268_435_455) as u32;
+	let akm = (rng.int(1_048_577, 33_000_001) | 1) as u32;
+	let akc = (rng.int(1_048_576, 268_000_000) | 1) as u32;
+	let aseed = rng.int(1_048_576, 268_435_455) as u32;
 	let mut astate = aseed as u64;
 	let masked_alpha: Vec<String> = carrier
 		.alphabet
@@ -667,15 +802,23 @@ pub fn generate(
 			ch.wrapping_add((astate % 256) as u8).to_string()
 		})
 		.collect();
+	// 增量⑩: rebuild keys KF-assembled, anchored on #APH (the masked
+	// byte table sitting right above the rebuild loop).
+	let aseed_e = ke.key_expr(aseed as i64, Some(("#APH", 94)), rng);
+	let akm_e = ke.key_expr(akm as i64, Some(("#APH", 94)), rng);
+	let akc_e = ke.key_expr(akc as i64, Some(("#APH", 94)), rng);
+	manifest_key("APH_SEED", aseed as u64);
+	manifest_key("APH_KM", akm as u64);
+	manifest_key("APH_KC", akc as u64);
 	let al_lines = format!(
 		"local APH = {{{}}}\n  local AL = {{}}\n  do\n    local ast = {}\n    for i = 1, 94 do\n      ast = ({} * ast + {}) % 268435456\n      AL[(APH[i] - ast % 256) % 256] = i - 1\n    end\n  end\n",
-		masked_alpha.join(", "), aseed, akm, akc
+		masked_alpha.join(", "), aseed_e, akm_e, akc_e
 	);
 	// 增量⑨-2 (防静态): the 10-token escape table is also stored
 	// masked and rebuilt at boot (no `TK[CHAR(...)]=CHAR(...)` rows).
-	let tkm = (rng.int(100_001, 1_100_001) | 1) as u32;
-	let tkc = (rng.int(1_000_000, 268_000_000) | 1) as u32;
-	let tkseed = rng.int(0, 268_435_455) as u32;
+	let tkm = (rng.int(1_048_577, 33_000_001) | 1) as u32;
+	let tkc = (rng.int(1_048_576, 268_000_000) | 1) as u32;
+	let tkseed = rng.int(1_048_576, 268_435_455) as u32;
 	let mut tkstate = tkseed as u64;
 	let mut tk_bytes: Vec<u8> = Vec::new();
 	for i in 0..10 {
@@ -689,9 +832,16 @@ pub fn generate(
 			b.wrapping_add((tkstate % 256) as u8).to_string()
 		})
 		.collect();
+	// 增量⑩: token-table rebuild keys KF-assembled, anchored on #TKD.
+	let tkseed_e = ke.key_expr(tkseed as i64, Some(("#TKD", 60)), rng);
+	let tkm_e = ke.key_expr(tkm as i64, Some(("#TKD", 60)), rng);
+	let tkc_e = ke.key_expr(tkc as i64, Some(("#TKD", 60)), rng);
+	manifest_key("TK_SEED", tkseed as u64);
+	manifest_key("TK_KM", tkm as u64);
+	manifest_key("TK_KC", tkc as u64);
 	let tk_lines = format!(
 		"local TKD = {{{}}}\n  local TK = {{}}\n  do\n    local tst = {}\n    local tb = {{}}\n    for i = 1, 60 do\n      tst = ({} * tst + {}) % 268435456\n      tb[i] = (TKD[i] - tst % 256) % 256\n    end\n    for i = 0, 9 do\n      TK[CHAR(tb[i * 5 + 1], tb[i * 5 + 2], tb[i * 5 + 3], tb[i * 5 + 4], tb[i * 5 + 5])] = CHAR(tb[50 + i + 1])\n    end\n  end\n",
-		masked_tk.join(", "), tkseed, tkm, tkc
+		masked_tk.join(", "), tkseed_e, tkm_e, tkc_e
 	);
 
 	// decode-hub / fetch: two styles, return-tuple order shuffled
@@ -939,9 +1089,9 @@ pub fn generate(
 	);
 	let hfrag: String;
 	let handler_defs = if v15 {
-		let hm = (rng.int(100_001, 1_100_001) | 1) as u32;
-		let hc = (rng.int(1_000_000, 268_000_000) | 1) as u32;
-		let hseed = rng.int(0, 268_435_455) as u32;
+		let hm = (rng.int(1_048_577, 33_000_001) | 1) as u32;
+		let hc = (rng.int(1_048_576, 268_000_000) | 1) as u32;
+		let hseed = rng.int(1_048_576, 268_435_455) as u32;
 		let mut frags: Vec<(u8, Vec<u8>)> = Vec::new(); // (wire, source bytes)
 		for (name, wire) in &items {
 			if matches!(name.as_str(), "Call" | "CallE" | "CallM" | "CallT") {
@@ -970,7 +1120,7 @@ pub fn generate(
 		// mask + base-94 pack. Per-fragment keystream seed is derived
 		// from the wire code ((hseed + wire*hstep) % 2^28) so the
 		// decode order (shuffled HQI) is irrelevant.
-		let hstep = rng.int(1, 268_435_455) as u32;
+		let hstep = rng.int(1_048_576, 268_435_455) as u32;
 		let alpha = carrier.alphabet;
 		let mut hq_lines = String::from("local HQ = {}\n");
 		let mut hqi: Vec<String> = Vec::new();
@@ -1028,6 +1178,19 @@ pub fn generate(
 			hqi.push(format!("{}, {}, {}", _wire, slot, blen));
 		}
 		rng.shuffle(&mut hqi);
+		// 增量⑩: handler-fragment keystream keys KF-assembled, anchored
+		// on #hqi (the fragment-index table declared in the same block).
+		// NOTE: hqi is a Vec of "w, s, l" TRIPLET strings that join into
+		// a flat table — runtime #hqi = 3 * hqi.len().
+		let n_hqi = 3 * hqi.len() as i64;
+		let hseed_e = ke.key_expr(hseed as i64, Some(("#hqi", n_hqi)), rng);
+		let hstep_e = ke.key_expr(hstep as i64, Some(("#hqi", n_hqi)), rng);
+		let hm_e = ke.key_expr(hm as i64, Some(("#hqi", n_hqi)), rng);
+		let hc_e = ke.key_expr(hc as i64, Some(("#hqi", n_hqi)), rng);
+		manifest_key("HQ_SEED", hseed as u64);
+		manifest_key("HQ_STEP", hstep as u64);
+		manifest_key("HQ_KM", hm as u64);
+		manifest_key("HQ_KC", hc as u64);
 		// P4 (防御代码隐藏): the loader/integrity names never appear
 		// in the output — each is runtime-built from shuffled char
 		// codes (user style), then the nativeness check runs exactly
@@ -1085,7 +1248,7 @@ pub fn generate(
       HW[w] = LS(SUB(table.concat(t), 1, flen))()
     end
   end"#,
-			hq_lines, boot, hqi.join(", "), hseed, hstep, hm, hc, hm, hc, hm, hc, hm, hc,
+			hq_lines, boot, hqi.join(", "), hseed_e, hstep_e, hm_e, hc_e, hm_e, hc_e, hm_e, hc_e, hm_e, hc_e,
 			v_ls = v_ls, v_dbg = v_dbg, v_inf = v_inf, v_s = v_s, v_c = v_c,
 		);
 		hfrag = build;
@@ -1166,9 +1329,12 @@ pub fn generate(
 	);
 	let ms_block = if v15 { pool.boot_block() } else { String::new() };
 
+	// 增量⑩: the key-fragment table + all fragment writes land at the
+	// very top of the VM body (before the first key use in oc_boot).
+	let kf_block = ke.block(rng);
 	format!(
 		r#"local VM = function({params})
-  {oc_table}
+  {kf_block}{oc_table}
   local FN = {{{params}}}
   local PF = {{}}
   {p_fill}  {prim_unpack}
@@ -1205,6 +1371,7 @@ pub fn generate(
 end
 "#,
 		params = params,
+		kf_block = kf_block,
 		oc_table = oc_table,
 		p_fill = p_fill,
 		prim_unpack = prim_unpack,

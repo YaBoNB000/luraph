@@ -471,7 +471,7 @@ fn main() -> ExitCode {
 				let est_words = total_bytes / 4 + carrier_bytes.len() * vmgen::v15::CHUNKS + 4;
 				let n_bw_slots = est_words / vmgen::v15::BW_SLOT_WORDS + 1;
 				let mut slot_pool: Vec<i64> =
-					(1..=std::cmp::max(126, n_bw_slots as i64 + 10)).collect();
+					(1..=std::cmp::max(126, n_bw_slots as i64 + 16)).collect();
 				rng.shuffle(&mut slot_pool);
 				let r1 = slot_pool[0];
 				let r2 = slot_pool[1];
@@ -485,12 +485,18 @@ fn main() -> ExitCode {
 				// numeric-slot family instead of dotted globals.
 				let sb_slot = slot_pool[4 + n_bw_slots];
 				let sc_slot = slot_pool[5 + n_bw_slots];
+				// 增量⑩: key-fragment slots (ks-seed half + bm0/bc0
+				// word-mask halves) — blend into the numeric-slot family.
+				let kfrag: Vec<i64> = slot_pool
+					[6 + n_bw_slots..11 + n_bw_slots]
+					.to_vec();
 				// decoy LCG slots (F28): clear of every other slot
 				// mechanism (runners/keystream/primitives/AL/context
 				// slots AND the Nop self-mod instruction positions)
 				let max_len = carrier_bytes.iter().map(|c| c.len()).max().unwrap_or(0);
 				let mut avoid: Vec<i64> = vec![r1, r2, ks, kg, sb_slot, sc_slot];
 				avoid.extend_from_slice(&bw_slots);
+				avoid.extend_from_slice(&kfrag);
 				let (d1, d2) = vmgen::v15::decoy_slots(max_len, &avoid);
 				let (scaffold_fields, fc) = vmgen::v15::scaffold(
 					&mut rng,
@@ -507,9 +513,11 @@ fn main() -> ExitCode {
 					opts.do_guard,
 					&bw_slots,
 					(sb_slot, sc_slot),
+					&kfrag,
 				);
 				let mut exclude: Vec<i64> = vec![r1, r2, ks, kg, d1, d2, sb_slot, sc_slot];
 				exclude.extend_from_slice(&bw_slots);
+				exclude.extend_from_slice(&kfrag);
 				let mut fields =
 					vmgen::v15::module_fields(&mut rng, &exclude);
 				fields.extend(scaffold_fields);
