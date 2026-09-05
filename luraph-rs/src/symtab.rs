@@ -125,6 +125,13 @@ impl<'a> Resolver<'a> {
 				self.resolve_expr(l);
 				self.resolve_expr(r);
 			}
+			Expr::IfExpr { arms, elseb } => {
+				for (c, v) in arms {
+					self.resolve_expr(c);
+					self.resolve_expr(v);
+				}
+				self.resolve_expr(elseb);
+			}
 			Expr::Table { fields } => {
 				for f in fields {
 					match f {
@@ -151,6 +158,10 @@ impl<'a> Resolver<'a> {
 		self_param: bool,
 	) {
 		self.new_scope();
+		// idempotency: blocks may be resolved more than once (the v15
+		// shell re-resolves the already-passed interpreter block inside
+		// the module table); clear so re-declares don't duplicate.
+		param_syms.clear();
 		for p in params {
 			param_syms.push(self.declare(p, true));
 		}

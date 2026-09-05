@@ -117,6 +117,11 @@ pub enum Expr {
 	/// every non-printable-ASCII byte — no UTF-8 passthrough, which would
 	/// otherwise emit random CJK garbage from arbitrary ciphertext bytes)
 	Str { bytes: Vec<u8>, is_binary: bool },
+	/// Luau/Lua long string `[[...]]` — content must be printable ASCII
+	/// (carrier blobs); the printer picks a clash-free bracket level.
+	/// Survives minify verbatim (the lexer captures the raw span). F8
+	/// sample shape: the giant RC blob lives in a long string.
+	LongStr { bytes: Vec<u8> },
 	Bool { value: bool },
 	Nil,
 	Vararg,
@@ -128,6 +133,10 @@ pub enum Expr {
 	Method { obj: Box<Expr>, name: String, args: Vec<Expr> },
 	Un { op: UnOp, e: Box<Expr> },
 	Bin { op: BinOp, l: Box<Expr>, r: Box<Expr> },
+	/// Luau if-expression: `if c1 then v1 [elseif c then v]* else e`
+	/// (no `end`). Arms = (condition, value) pairs; the else branch is
+	/// mandatory. Only produced/emitted for Luau targets (F22 shape).
+	IfExpr { arms: Vec<(Expr, Expr)>, elseb: Box<Expr> },
 	Table { fields: Vec<TableField> },
 	Function {
 		params: Vec<String>,

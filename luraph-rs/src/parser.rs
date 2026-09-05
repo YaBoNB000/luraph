@@ -775,7 +775,11 @@ impl Parser {
 			}
 			TokKind::Str => {
 				self.next();
-				Ok(Expr::Str { bytes: t.bytes, is_binary: false })
+				if t.long_str {
+					Ok(Expr::LongStr { bytes: t.bytes })
+				} else {
+					Ok(Expr::Str { bytes: t.bytes, is_binary: t.high_bytes })
+				}
 			}
 			TokKind::Interp => {
 				self.next();
@@ -803,6 +807,24 @@ impl Parser {
 						vararg: f.vararg,
 						body: f.body,
 					})
+				}
+				"if" if self.luau => {
+					// Luau if-expression: if c then v (elseif c then v)* else e
+					self.next();
+					let mut arms = Vec::new();
+					loop {
+						let cond = self.exp()?;
+						self.expect_kw("then")?;
+						let val = self.exp()?;
+						arms.push((cond, val));
+						if self.is_kw("elseif") {
+							self.next();
+							continue;
+						}
+						self.expect_kw("else")?;
+						let elseb = self.exp()?;
+						return Ok(Expr::IfExpr { arms, elseb: Box::new(elseb) });
+					}
 				}
 				_ => self.prefixexp(),
 			},
@@ -855,7 +877,7 @@ impl Parser {
 			}
 		}
 		if args.is_empty() {
-			return Ok(Expr::Str { bytes: fmt, is_binary: false });
+			return Ok(Expr::Str { bytes: fmt, is_binary: t.high_bytes });
 		}
 		let func = Expr::Dot {
 			obj: Box::new(Expr::Ident {
@@ -864,7 +886,7 @@ impl Parser {
 			}),
 			name: "format".to_string(),
 		};
-		let mut all = vec![Expr::Str { bytes: fmt, is_binary: false }];
+		let mut all = vec![Expr::Str { bytes: fmt, is_binary: t.high_bytes }];
 		all.extend(args);
 		Ok(Expr::Call {
 			func: Box::new(func),
@@ -1029,6 +1051,14 @@ fn clone_expr(e: &Expr) -> Expr {
 			isfloat: *isfloat,
 		},
 		Expr::Str { bytes, is_binary } => Expr::Str { bytes: bytes.clone(), is_binary: *is_binary },
+		Expr::LongStr { bytes } => Expr::LongStr { bytes: bytes.clone() },
+		Expr::IfExpr { arms, elseb } => Expr::IfExpr {
+			arms: arms
+				.iter()
+				.map(|(c, v)| (clone_expr(c), clone_expr(v)))
+				.collect(),
+			elseb: Box::new(clone_expr(elseb)),
+		},
 		Expr::Bool { value } => Expr::Bool { value: *value },
 		Expr::Nil => Expr::Nil,
 		Expr::Vararg => Expr::Vararg,
@@ -1196,3 +1226,4 @@ pub fn parse(src: &str, luau: bool) -> Result<Block, ParseError> {
 	}
 	Ok(block)
 }
+

@@ -128,7 +128,14 @@ fn rw_stmt(s: Stmt, rng: &mut Rng) -> Stmt {
 fn rw_expr(e: Expr, rng: &mut Rng) -> Expr {
 	match e {
 		Expr::Num { value, isfloat } => rw_num(value, isfloat, rng),
-		Expr::Ident { .. } | Expr::Str { .. } | Expr::Bool { .. } | Expr::Nil | Expr::Vararg => e,
+		Expr::Ident { .. } | Expr::Str { .. } | Expr::LongStr { .. } | Expr::Bool { .. } | Expr::Nil | Expr::Vararg => e,
+		Expr::IfExpr { arms, elseb } => Expr::IfExpr {
+			arms: arms
+				.into_iter()
+				.map(|(c, v)| (rw_expr(c, rng), rw_expr(v, rng)))
+				.collect(),
+			elseb: Box::new(rw_expr(*elseb, rng)),
+		},
 		Expr::Dot { obj, name } => Expr::Dot {
 			obj: Box::new(rw_expr(*obj, rng)),
 			name,

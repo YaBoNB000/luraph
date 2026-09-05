@@ -4,8 +4,10 @@
 > 完整了解：仓库是什么、用户要什么、现在做到哪了、环境怎么用、规矩是什么、
 > 下一步该干什么。读完此文件再动手；细节在 `docs/` 里。
 >
-> **最后更新：2026-08-25**（M6 收官：`--preset` + 产品 README + 性能数据；
-> 官方 204 + 预设 405 全绿；下一步无里程碑，按需增强）
+> **最后更新：2026-08-29**（修复 v15 输出混入 CJK/特殊字符：词法器
+> `high_bytes` 标志 → 转义 ≥0x80 字节的字符串按二进制重打印；64 示例
+> 0 非 ASCII。v15 阶段 A=操作数散布已完成，安全项全部收官；官方 204
+> + 预设 405 + 多 seed 5×8 全绿）
 
 ---
 
@@ -42,7 +44,7 @@
 5. 用户提供的 Luraph 样本已分析完毕（`docs/luraph15-analysis.md`），
    VM 设计已吸收其 v15 的关键技术（7-bit 分块/三层分发/LCG 密钥流等）
 
-## 3. 当前状态（2026-08-25）
+## 3. 当前状态（2026-08-28）
 
 | 阶段 | 状态 |
 |---|---|
@@ -57,6 +59,7 @@
 | **M4（L6 VM：私有字节码 + 生成混淆解释器，`--vm`）** | ✅ **完成 + 续期加固（2026-08-25）：矩阵 204/204 全绿（语料 21→29，新增 8 个 stress_*）+ 多种子回归（5 seeds）0 失败；upvalue 单 cell 别名模型 / 循环变量 per-iteration 共享 cell / 5.1 构造器存储序 / 全变长展开等 9 类语义修复；实现笔记 `docs/vm-l6-implementation.md` §8** |
 | **M5（VM 完整随机面）** | ✅ **完成（2026-08-25）**：SoA 平行数组 + 完整 7/14/21-bit + base-94 载体/token + 解码枢纽/状态元组随机 + 帧入场原语解包 + `luac51 -l` 抽查；矩阵 204/204 + 多种子 0 失败 |
 | **M6（产品化）** | ✅ **完成（2026-08-25）**：`--preset low\|medium\|high\|vm\|max`（默认 ≡ high；vm ≡ `--vm`；max = vm，v2 预留）+ 产品 README + `docs/performance.md`；预设矩阵 405/405 |
+| **v15 结构同族（路线 A）** | ✅ **结构 100% 还原达成（2026-08-29）**：安全项全部收官后，用户改拍板「先结构 100% 还原」→ 结构战役 **增量 E1–E5 全部完成：32/32 指纹 × 30 语料 × 5 种子（150/150 运行时 + 30/30 指纹）+ 矩阵 204/204 + 预设 405/405 + 多 seed 全绿**。E1 复合赋值折叠+脚手架形态（F11/F12/F23/F24/F26/F28/F30/F31）；E2 宽参数 7 参 handler + Luau if 表达式（F6/F22）；E3 内联 -128 阶梯 + 操作数校验和（F13）；E4 RC 载体长串 + HB 十六进制分块长串 + RT 反查表（F8）；E5 解释器字符串池 MS/TK-CHAR 数值化（F10 233→33）；规模地板（小源码也保量级）+ 诱饵槽碰撞三轮修复 + 长串 5.1 嵌套选级修复。**下一步：回到安全增强（阶段 D 每帧闭包/动态分析阻力）**。详见 `docs/v15-pipeline-rewrite.md` + implementation-plan 更新日志 |
 
 **M5 清单**（对照 `docs/vm-l6-implementation.md` §7，全部勾完）：
 
@@ -203,6 +206,7 @@ luraph/
     │   ├── flatten.rs / junk.rs                                 # L3（flatten 内含
     │   │                       #   循环降级 make_loop —— ForGen 单迭代器语义在这）
     │   ├── numbers.rs / body.rs / antidbg.rs                    # L4 / L5 / L7
+    │   ├── guard.rs                                             # 反调试环境完整性 guard（2026-08-29，用户设计）：标准管线 = mangle 前奏；v15 = CHAR 编码注入 FC 入口机头部（指纹零破坏）；--no-guard 两路同关
     │   ├── desugar.rs        # ⚠️ 孤儿文件（main.rs 未声明 mod，死代码，勿改勿依赖）
     │   └── vmgen/            # ★ L6 VM
     │       ├── isa.rs        #   41 条 Op + OpMap + SoA + 完整 7-bit + Carrier
@@ -212,6 +216,8 @@ luraph/
     ├── tests/
     │   ├── run_tests.sh        # ★ 官方矩阵（非 VM + VM 两阶段；.tools 路径回退）
     │   ├── run_presets.sh      # ★ 五档预设 × 全语料（M6，405 项）
+    │   ├── v15_fingerprint.py  # ★ v15 结构指纹 32 条（P0；样本 32/32，改
+    │   │                       #   vmgen/ 发射外壳前后对打用；解析口径坑见文件头）
     │   ├── bench_presets.sh    #   性能快照 → docs/performance.md
     │   ├── multiseed.sh        # ★ 多种子回归（VM 改动必跑；seeds 可传参，
     │   │                       #   默认 1 7 4242 31337 999999）
@@ -319,9 +325,11 @@ bash tests/run_tests.sh
 bash tests/multiseed.sh
 ```
 
-**M0–M6 已完成。** 若要输出在结构上与 `samples/luraph15.txt` 同族，
-读 `docs/v15-structural-parity-plan.md`（须先选路线 A=Roblox 克隆档
-或 B=双目标孪生；未拍板前不改 `vmgen/` 发射外壳）。
+**M0–M6 已完成。** v15 结构同族**已拍板路线 A**（Roblox/Luau 克隆档，
+2026-08-25）：P0 脚手架 ✅（`tests/v15_fingerprint.py` 32 条：样本全绿 /
+现 `vm` 产物全红；`--preset v15` = Luau 门控 + stub），**下一步 = P1 外壳
+换代**——全部路线/阶段/验收在 `docs/v15-structural-parity-plan.md`，
+改发射外壳前必读其 §1.1（五处架构修正）。
 
 **通用规则**：改 VM 三件套（isa/compiler/template）任何一处 → 先读
 `docs/vm-l6-implementation.md`（尤其 §8 的 9 类坑），改完 = 矩阵 204 +

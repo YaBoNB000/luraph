@@ -97,6 +97,7 @@ bash tests/gen_examples.sh   # 重生成 luraph-rs/examples/
 | `docs/vm-l6-implementation.md` | VM 实现笔记（动 `vmgen/` 前必读） |
 | `docs/obfuscation-research.md` | 混淆调研 + 双方言实测 |
 | `docs/luraph15-analysis.md` | Luraph v15 样本分析 |
+| `docs/luraph15-defense-analysis.md` | Luraph v15 防御手段全解析（安全导向） |
 | `luraph-rs/` | Rust 本体（`src/vmgen/` = L6） |
 | `luraph-rs/tests/` | 矩阵 / 预设 / 多种子 / 语料 |
 | `luraph-rs/examples/` | 全语料混淆示例 |

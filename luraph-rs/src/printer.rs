@@ -17,6 +17,10 @@ pub struct Printer<'a> {
 	pub table: &'a SymTable,
 	pub out: String,
 	pub indent: usize,
+	/// Luau target: fold `x = x op y` into compound `x op= y` (F24
+	/// sample shape). Only pure targets (ident / dot / index chains
+	/// without calls) fold, so lvalue evaluation counts never change.
+	pub luau_fold: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,6 +47,17 @@ impl<'a> Printer<'a> {
 			table,
 			out: String::new(),
 			indent: 0,
+			luau_fold: false,
+		}
+	}
+
+	/// Luau-target printer: enables compound-assignment folding.
+	pub fn new_luau(table: &'a SymTable) -> Printer<'a> {
+		Printer {
+			table,
+			out: String::new(),
+			indent: 0,
+			luau_fold: true,
 		}
 	}
 
@@ -54,7 +69,10 @@ impl<'a> Printer<'a> {
 		for (i, s) in b.stmts.iter().enumerate() {
 			self.print_stmt(s);
 			if i + 1 < b.stmts.len() {
-				self.out.push('\n');
+				// explicit statement separator: survives minify's
+				// re-lexing and gives v15-family outputs the sample's
+				// `stmt;stmt` shape (fingerprint F11 needs `...;if ...`)
+				self.out.push_str(";\n");
 			}
 		}
 	}
@@ -117,6 +135,21 @@ impl<'a> Printer<'a> {
 			}
 			Stmt::Assign { targets, values } => {
 				self.out.push_str(&self.ind());
+				// Luau compound fold: `x = x op y` -> `x op= y`
+				if self.luau_fold && targets.len() == 1 && values.len() == 1 {
+					if let Expr::Bin { op, l, r } = &values[0] {
+						if let Some(sym) = compound_sym(op) {
+							if foldable_target(&targets[0]) && expr_same(&targets[0], l) {
+								self.print_expr(&targets[0], Ctx::Top);
+								self.out.push(' ');
+								self.out.push_str(sym);
+								self.out.push(' ');
+								self.print_expr(r, Ctx::Top);
+								return;
+							}
+						}
+					}
+				}
 				for (i, t) in targets.iter().enumerate() {
 					if i > 0 {
 						self.out.push_str(", ");
@@ -321,10 +354,55 @@ impl<'a> Printer<'a> {
 				self.out.push_str(&print_string_bytes(bytes, *is_binary));
 				self.out.push('"');
 			}
+			Expr::LongStr { bytes } => {
+				// clash-free bracket level: content must not contain the
+				// matching `]=*]` closer (finite content -> a level
+				// exists). Lua 5.1 additionally rejects a bare `[[`
+				// nested inside a level-0 long string ("nesting of
+				// [[...]] is deprecated"), so bump to >= 1 when the
+				// content contains `[[`.
+				let mut lvl = 0usize;
+				loop {
+					let closer = format!("]{}]", "=".repeat(lvl));
+					let closer_ok =
+						!bytes.windows(closer.len()).any(|w| w == closer.as_bytes());
+					let opener_ok = lvl > 0 || !bytes.windows(2).any(|w| w == b"[[");
+					if closer_ok && opener_ok {
+						break;
+					}
+					lvl += 1;
+				}
+				let pad = if bytes.first() == Some(&b'\n') { "\n" } else { "" };
+				self.out.push_str(&format!(
+					"[{o}[{pad}{c}]{o}]",
+					o = "=".repeat(lvl),
+					pad = pad,
+					c = String::from_utf8_lossy(bytes)
+				));
+			}
 			Expr::Bool { value } => {
 				self.out.push_str(if *value { "true" } else { "false" });
 			}
 			Expr::Nil => self.out.push_str("nil"),
+			Expr::IfExpr { arms, elseb } => {
+				// Luau restricts bare if-expressions in operand position;
+				// parenthesize everywhere except statement-level Top
+				let par = !matches!(ctx, Ctx::Top);
+				if par {
+					self.out.push('(');
+				}
+				for (i, (c, v)) in arms.iter().enumerate() {
+					self.out.push_str(if i == 0 { "if " } else { " elseif " });
+					self.print_expr(c, Ctx::Top);
+					self.out.push_str(" then ");
+					self.print_expr(v, Ctx::Top);
+				}
+				self.out.push_str(" else ");
+				self.print_expr(elseb, Ctx::Top);
+				if par {
+					self.out.push(')');
+				}
+			}
 			Expr::Vararg => self.out.push_str("..."),
 			Expr::Ident { name, sym } => match sym {
 				Some(id) => self.out.push_str(self.table.name_of(*id)),
@@ -618,9 +696,59 @@ pub fn print_string_bytes(bytes: &[u8], is_binary: bool) -> String {
 	}
 }
 
+/// Compound-fold operator text (Luau). Idiv excluded: it prints as
+/// math.floor(l / r), and Concat has no `..=`.
+fn compound_sym(op: &BinOp) -> Option<&'static str> {
+	match op {
+		BinOp::Add => Some("+="),
+		BinOp::Sub => Some("-="),
+		BinOp::Mul => Some("*="),
+		BinOp::Div => Some("/="),
+		BinOp::Mod => Some("%="),
+		BinOp::Pow => Some("^="),
+		_ => None,
+	}
+}
+
+/// Pure lvalue: identifier / dot / index chains without calls or other
+/// side effects — folding keeps the lvalue evaluation count identical.
+fn foldable_target(e: &Expr) -> bool {
+	match e {
+		Expr::Ident { .. } => true,
+		Expr::Dot { obj, .. } => foldable_target(obj),
+		Expr::Index { obj, idx } => foldable_target(obj) && foldable_target(idx),
+		_ => false,
+	}
+}
+
+/// Structural equality for the compound fold (`x = x op y` detection).
+fn expr_same(a: &Expr, b: &Expr) -> bool {
+	match (a, b) {
+		(Expr::Ident { sym: sa, .. }, Expr::Ident { sym: sb, .. }) => sa == sb,
+		(Expr::Dot { obj: oa, name: na }, Expr::Dot { obj: ob, name: nb }) => {
+			na == nb && expr_same(oa, ob)
+		}
+		(
+			Expr::Index { obj: oa, idx: ia },
+			Expr::Index { obj: ob, idx: ib },
+		) => expr_same(oa, ob) && expr_same(ia, ib),
+		(Expr::Num { value: va, .. }, Expr::Num { value: vb, .. }) => va == vb,
+		(Expr::Str { bytes: ba, .. }, Expr::Str { bytes: bb, .. }) => ba == bb,
+		_ => false,
+	}
+}
+
 /// Public entry: print a whole chunk.
 pub fn print_chunk(table: &SymTable, block: &Block) -> String {
 	let mut p = Printer::new(table);
+	p.print_block(block);
+	p.out.push('\n');
+	p.out
+}
+
+/// Luau-target entry: compound-assignment folding enabled.
+pub fn print_chunk_luau(table: &SymTable, block: &Block) -> String {
+	let mut p = Printer::new_luau(table);
 	p.print_block(block);
 	p.out.push('\n');
 	p.out
