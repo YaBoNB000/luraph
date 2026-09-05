@@ -329,18 +329,31 @@ impl Names {
 			"N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y",
 			"Z", "_",
 		];
-		for b in singles {
+		for b in singles.iter() {
 			pool.push(b.to_string());
 			pool.push(format!("{}L", b));
 			pool.push(format!("{}C", b));
 		}
+		for a in singles.iter() {
+			for b in singles.iter() {
+				pool.push(format!("{}{}", a, b));
+			}
+		}
 		rng.shuffle(&mut pool);
-		// P2 constant fields + self param are reserved
+		// P2 constant fields + self param are reserved; two-letter
+		// Lua keywords banned outright (keyword-as-name = parse error).
+		// Dedup too: the singles loop's `{x}C`/`{x}L` forms collide with
+		// two-letter combos (e.g. "f"+"C" == "fC") — a duplicate pool
+		// entry hands the same name out twice and two module-table fields
+		// end up sharing a key (later wins -> a staging handler silently
+		// disappears -> state chain loops forever).
 		let reserved = [
 			"AL", "BL", "EL", "PL", "QL", "XC", "cL", "dL", "gL", "RC",
-			"pC", "h", "s", "b",
+			"pC", "h", "s", "b", "do", "if", "in", "or",
 		];
 		pool.retain(|n| !reserved.contains(&n.as_str()));
+		let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+		pool.retain(|n| seen.insert(n.clone()));
 		Names { pool, fallback: 0 }
 	}
 	fn take(&mut self) -> String {
@@ -383,13 +396,17 @@ impl Names {
 /// state `V` but not obviously so. Static analysis cannot tell which
 /// branch runs without proving the predicate; the decoy branch is dead.
 /// The direction and predicate are randomized per leaf per build.
-fn opaque_wrap(code: String, rng: &mut crate::rng::Rng) -> String {
-	const PREDS: [&str; 3] = ["(V*V)>=0", "(V-V)==0", "((V%2)==0)or((V%2)~=0)"];
-	let p = PREDS[rng.int(0, 2) as usize];
+fn opaque_wrap(code: String, rng: &mut crate::rng::Rng, vname: &str) -> String {
+	let preds: [String; 3] = [
+		format!("({v}*{v})>=0", v = vname),
+		format!("({v}-{v})==0", v = vname),
+		format!("(({v}%2)==0)or(({v}%2)~=0)", v = vname),
+	];
+	let p = &preds[rng.int(0, 2) as usize];
 	if rng.int(0, 1) == 0 {
-		format!("if {} then {} else local _=V end", p, code)
+		format!("if {} then {} else local _={} end", p, code, vname)
 	} else {
-		format!("if not({}) then local _=V else {} end", p, code)
+		format!("if not({}) then local _={} else {} end", p, vname, code)
 	}
 }
 
@@ -481,6 +498,26 @@ fn coded_name(out: &mut String, var: &str, name: &str, sc_slot: i64, rng: &mut R
 	));
 }
 
+/// P5 (staging 去重复): per-build random names for the CPS state
+/// registers (were fixed V/f1..f5 — the most repeated literal tuple in
+/// the output, ~100 identical call sites). Must avoid the entry
+/// machine's fixed locals so no accidental shadowing rewrites the state.
+fn draw_state_names(nm: &mut Names) -> [String; 6] {
+	const FIXED: &[&str] = &[
+		"b", "C", "u", "z", "Z", "o", "w", "K", "G", "q", "M", "F", "H",
+		"E", "J", "B",
+	];
+	let mut forbid: Vec<String> = FIXED.iter().map(|s| s.to_string()).collect();
+	let mut out: Vec<String> = Vec::new();
+	for _ in 0..6 {
+		let fs: Vec<&str> = forbid.iter().map(|s| s.as_str()).collect();
+		let n = nm.take_avoid(&fs);
+		forbid.push(n.clone());
+		out.push(n);
+	}
+	out.try_into().unwrap()
+}
+
 pub fn scaffold(
 	rng: &mut Rng,
 	interp_src: &str,
@@ -499,6 +536,17 @@ pub fn scaffold(
 ) -> (Vec<TableField>, String) {
 	let carrier_tokens: &[String] = &carrier.tokens;
 	let mut nm = Names::new(rng);
+	// P5: per-build state-register names (see draw_state_names)
+	let state = draw_state_names(&mut nm);
+	let sv = state[0].clone();
+	let rhs5 = format!(
+		"{},{},{},{},{}",
+		state[1], state[2], state[3], state[4], state[5]
+	);
+	let lhs6 = format!("{},{}", sv, rhs5);
+	let leaf = |name: &str| {
+		format!("{lhs6}=b:{name}(C,{rhs5});continue;")
+	};
 	let fc = nm.take(); // entry machine
 	let init = nm.take(); // initializer
 	let xl = nm.take(); // sub-dispatcher (FC -> XL -> CPS loop)
@@ -625,7 +673,7 @@ pub fn scaffold(
 		)),
 	));
 	// wide state tuple: handlers take (b, C, p1..p5) = 7 params (F6)
-	let mut fillers = vec!["p1", "p2", "p3", "p4", "p5"];
+	let mut fillers: Vec<String> = ["p1", "p2", "p3", "p4", "p5"].iter().map(|s| s.to_string()).collect();
 	let mut state_i = 0usize;
 	// (dispatch state of this step, state returned to the loop)
 	let mut step = |i: &mut usize| -> (i64, i64) {
@@ -809,8 +857,9 @@ pub fn scaffold(
 
 	for (k, chunks) in chunked.iter().enumerate() {
 		{
+			fillers = (0..5).map(|_| nm.take_avoid(&["b", "C", "Q", "R", "d"])).collect();
 			rng.shuffle(&mut fillers);
-			let (ra, rb, rc, rd, re) = (fillers[0], fillers[1], fillers[2], fillers[3], fillers[4]);
+			let (ra, rb, rc, rd, re) = (fillers[0].as_str(), fillers[1].as_str(), fillers[2].as_str(), fillers[3].as_str(), fillers[4].as_str());
 			let (st, ret) = step(&mut state_i);
 			let name = nm.take();
 			// content checksum: fold the carrier's byte SUM (the verify
@@ -819,9 +868,10 @@ pub fn scaffold(
 			let ksum: usize = carriers[k].iter().map(|&b| b as usize).sum();
 			let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
 			let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
+			let qf = nm.take_avoid(&["b", "C", "s"]);
 			let src = format!(
 				"function(b,C,{ra},{rb},{rc},{rd},{re}) local s=C[{sumslot}]; \
-				 local Q=if C[{sumslot}]>=0 then {da} else {db}; \
+				local {qf}=if C[{sumslot}]>=0 then {da} else {db}; \
 				 C[{sumslot}]=b:{modulo}(b:{mul}(s,31)+{ksum}); \
 				 return {ret},C,{rb},{rc},{rd},{re},{ra} end",
 				sumslot = sumslot,
@@ -836,16 +886,18 @@ pub fn scaffold(
 				rc = rc,
 				rd = rd,
 				re = re,
+				qf = qf,
 			);
 			fields.push(named(name.clone(), parse_expr(&src)));
 			leaves.push((
 				st,
-				format!("V,C,f1,f2,f3,f4,f5=b:{}(C,f1,f2,f3,f4,f5);continue;", name),
+				leaf(&name),
 			));
 		}
 		for (j, chunk) in chunks.iter().enumerate() {
+			fillers = (0..5).map(|_| nm.take_avoid(&["b", "C", "Q", "R", "d"])).collect();
 			rng.shuffle(&mut fillers);
-			let (ra, rb, rc, rd, re) = (fillers[0], fillers[1], fillers[2], fillers[3], fillers[4]);
+			let (ra, rb, rc, rd, re) = (fillers[0].as_str(), fillers[1].as_str(), fillers[2].as_str(), fillers[3].as_str(), fillers[4].as_str());
 			let (st, ret) = step(&mut state_i);
 			let name = nm.take();
 			// P3b: the words live SPLIT across numeric-slot arrays and
@@ -882,12 +934,14 @@ pub fn scaffold(
 			}
 			let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
 			let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
+			let qc = nm.take_avoid(&["b", "C", "t", "g", "seg", "kv", "o", "i"]);
+			let qr = nm.take_avoid(&["b", "C", "t", "g", "seg", "kv", "o", "i"]);
 			let src = format!(
 				"function(b,C,{ra},{rb},{rc},{rd},{re}) local t={{}}; local g={sw}; \
 				 {segs}\
 				 local seg=string.sub(table.concat(t),1,{blen}); \
-				 local Q=C[{idx}]~=nil and {da} or {db}; \
-				 local R=if {da}~={db} then {da} else {db}; \
+				 local {qc}=C[{idx}]~=nil and {da} or {db}; \
+				 local {qr}=if {da}~={db} then {da} else {db}; \
 				 local kv=b[{kg}](b); local o={{}}; \
 				 for i=1,#seg do o[i]=string.char(bit32.bxor(string.byte(seg,i),(kv+i)%256)) end; \
 				 C[{idx}]=table.concat(o); \
@@ -905,11 +959,13 @@ pub fn scaffold(
 				rc = rc,
 				rd = rd,
 				re = re,
+				qc = qc,
+				qr = qr,
 			);
 			fields.push(named(name.clone(), parse_expr(&src)));
 			leaves.push((
 				st,
-				format!("V,C,f1,f2,f3,f4,f5=b:{}(C,f1,f2,f3,f4,f5);continue;", name),
+				leaf(&name),
 			));
 		}
 	}
@@ -918,14 +974,19 @@ pub fn scaffold(
 	// (advance the machine, fused-conditional decoy local) that only
 	// exist when the source program is too small to fill the chain
 	for _ in 0..filler {
+		fillers = (0..5).map(|_| nm.take_avoid(&["b", "C", "Q", "R", "d"])).collect();
 		rng.shuffle(&mut fillers);
-		let (ra, rb, rc, rd, re) = (fillers[0], fillers[1], fillers[2], fillers[3], fillers[4]);
+		let (ra, rb, rc, rd, re) = (fillers[0].as_str(), fillers[1].as_str(), fillers[2].as_str(), fillers[3].as_str(), fillers[4].as_str());
 		let (st, ret) = step(&mut state_i);
 		let name = nm.take();
 		let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
 		let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
+		// P5: the filler's decoy local was a hardcoded `Q` — randomize
+		// it per handler (dead variable; fused `and/or` shape preserved
+		// for F23).
+		let qn = nm.take_avoid(&["b", "C"]);
 		let src = format!(
-			"function(b,C,{ra},{rb},{rc},{rd},{re}) local Q=C[{ss}]~=nil and {da} or {db}; \
+			"function(b,C,{ra},{rb},{rc},{rd},{re}) local {qn}=C[{ss}]~=nil and {da} or {db}; \
 			 return {ret},C,{rb},{rc},{rd},{re},{ra} end",
 			ss = sumslot,
 			da = decoy_a,
@@ -936,19 +997,21 @@ pub fn scaffold(
 			rc = rc,
 			rd = rd,
 			re = re,
+			qn = qn,
 		);
 		fields.push(named(name.clone(), parse_expr(&src)));
 		leaves.push((
 			st,
-			format!("V,C,f1,f2,f3,f4,f5=b:{}(C,f1,f2,f3,f4,f5);continue;", name),
+			leaf(&name),
 		));
 	}
 
 	// ---- interpreter-definition runner: lives in a numeric slot
 	// (sample [73] shape), not a named field
 	{
+		fillers = (0..5).map(|_| nm.take_avoid(&["b", "C", "Q", "R", "d"])).collect();
 		rng.shuffle(&mut fillers);
-		let (ra, rb, rc, rd, re) = (fillers[0], fillers[1], fillers[2], fillers[3], fillers[4]);
+		let (ra, rb, rc, rd, re) = (fillers[0].as_str(), fillers[1].as_str(), fillers[2].as_str(), fillers[3].as_str(), fillers[4].as_str());
 		let (st, ret) = step(&mut state_i);
 		let src = format!(
 			"function(b,C,{ra},{rb},{rc},{rd},{re}) {interp} \
@@ -968,15 +1031,16 @@ pub fn scaffold(
 			st,
 			// indexed call: no implicit self -- pass b explicitly
 			// (sample shape: b[73](b, ...))
-			format!("V,C,f1,f2,f3,f4,f5=b[{}](b,C,f1,f2,f3,f4,f5);continue;", runner1),
+			format!("{lhs6}=b[{}](b,C,{sv},{rhs5});continue;", runner1),
 		));
 	}
 
 	// ---- entry-builder handler: concats each carrier's chunks back and
 	// wraps the VM call in the user-facing closure
 	{
+		fillers = (0..5).map(|_| nm.take_avoid(&["b", "C", "Q", "R", "d"])).collect();
 		rng.shuffle(&mut fillers);
-		let (ra, rb, rc, rd, re) = (fillers[0], fillers[1], fillers[2], fillers[3], fillers[4]);
+		let (ra, rb, rc, rd, re) = (fillers[0].as_str(), fillers[1].as_str(), fillers[2].as_str(), fillers[3].as_str(), fillers[4].as_str());
 		let (st, ret) = step(&mut state_i);
 		let cargs: Vec<String> = (0..n)
 			.map(|k| {
@@ -1016,7 +1080,7 @@ pub fn scaffold(
 		fields.push(named(ehandler.clone(), parse_expr(&src)));
 		leaves.push((
 			st,
-			format!("V,C,f1,f2,f3,f4,f5=b:{}(C,f1,f2,f3,f4,f5);continue;", ehandler),
+			leaf(&ehandler),
 		));
 	}
 
@@ -1027,8 +1091,9 @@ pub fn scaffold(
 	// family, loop shapes vary per instance, and every check string is
 	// runtime-built from shuffled char codes.
 	{
+		fillers = (0..5).map(|_| nm.take_avoid(&["b", "C", "Q", "R", "d"])).collect();
 		rng.shuffle(&mut fillers);
-		let (ra, rb, rc, rd, re) = (fillers[0], fillers[1], fillers[2], fillers[3], fillers[4]);
+		let (ra, rb, rc, rd, re) = (fillers[0].as_str(), fillers[1].as_str(), fillers[2].as_str(), fillers[3].as_str(), fillers[4].as_str());
 		let (st, ret) = step(&mut state_i);
 		let mut body = String::from("local s=0;");
 		// Handler scope names that generated locals must never shadow:
@@ -1074,13 +1139,15 @@ pub fn scaffold(
 			// conditional keeps the sample's and/or shape (F23).
 			let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
 			let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
+			let qv = nm.take_avoid(&["b", "C", "s", "E", "i", "Q"]);
 			body.push_str(&format!(
-				"local Q=if s>=0 then {da} else {db};s=b:{mod}(b:{mul}(s,31)+{acc}+Q-Q);",
+				"local {qv}=if s>=0 then {da} else {db};s=b:{mod}(b:{mul}(s,31)+{acc}+{qv}-{qv});",
 				da = decoy_a,
 				db = decoy_b,
 				mod = modulo,
 				mul = mul,
 				acc = acc,
+				qv = qv,
 			));
 			// Integrity here = the double fold: the staging phase folded
 			// each carrier's byte SUM from the XORed chunks (into
@@ -1141,22 +1208,28 @@ pub fn scaffold(
 		fields.push(named(v1h.clone(), parse_expr(&src)));
 		leaves.push((
 			st,
-			format!("V,C,f1,f2,f3,f4,f5=b:{}(C,f1,f2,f3,f4,f5);continue;", v1h),
+			leaf(&v1h),
 		));
 	}
 	{
 		let (st, _ret) = step(&mut state_i); // ret == sdone, used below
+		let v2n: Vec<String> = (0..5).map(|_| nm.take_avoid(&["b", "C"])).collect();
 		let src = format!(
-			"function(b,C,p1,p2,p3,p4,p5) if C[{verifyslot}]==C[{sumslot}] then \
-			 return {sdone},C,p2,p3,p4,p5,p1 else while true do end end end",
+			"function(b,C,{n0},{n1},{n2},{n3},{n4}) if C[{verifyslot}]==C[{sumslot}] then \
+			 return {sdone},C,{n1},{n2},{n3},{n4},{n0} else while true do end end end",
 			verifyslot = verifyslot,
 			sumslot = sumslot,
 			sdone = sdone,
+			n0 = v2n[0],
+			n1 = v2n[1],
+			n2 = v2n[2],
+			n3 = v2n[3],
+			n4 = v2n[4],
 		);
 		fields.push(named(v2h.clone(), parse_expr(&src)));
 		leaves.push((
 			st,
-			format!("V,C,f1,f2,f3,f4,f5=b:{}(C,f1,f2,f3,f4,f5);continue;", v2h),
+			leaf(&v2h),
 		));
 	}
 
@@ -1167,9 +1240,9 @@ pub fn scaffold(
 	fields.push(named(
 		ctl.clone(),
 		parse_expr(&format!(
-			"function(b,C,V) local h=if V>={} then 2 else 1; \
+			"function(b,C,{sv}) local h=if {sv}>={} then 2 else 1; \
 			 if h==2 then return 2,C[{}] end; return 1 end",
-			sdone, entryslot
+			sdone, entryslot, sv = sv
 		)),
 	));
 
@@ -1180,14 +1253,14 @@ pub fn scaffold(
 		// handler without proving the always-true arithmetic predicate.
 		let wrapped: Vec<(i64, String)> = leaves
 			.iter()
-			.map(|(st, code)| (*st, opaque_wrap(code.clone(), rng)))
+			.map(|(st, code)| (*st, opaque_wrap(code.clone(), rng, &sv)))
 			.collect();
-		let tree = dispatch_tree("V", &wrapped, 0, wrapped.len());
+		let tree = dispatch_tree(&sv, &wrapped, 0, wrapped.len());
 		let max_leaf = leaves.last().unwrap().0;
 		let src = format!(
-			"function(b,C,V,f1,f2,f3,f4,f5) while true do if V<={} then {} \
-			 else local h,E=b:{}(C,V); if h==2 then return 2,E end; V=h end end end",
-			max_leaf, tree, ctl
+			"function(b,C,{lhs6}) while true do if {sv}<={} then {} \
+			 else local h,E=b:{}(C,{sv}); if h==2 then return 2,E end; {sv}=h end end end",
+			max_leaf, tree, ctl, lhs6 = lhs6, sv = sv
 		);
 		fields.push(named(loop_name.clone(), parse_expr(&src)));
 	}
@@ -1200,10 +1273,10 @@ pub fn scaffold(
 		let mid = states[(nsteps as usize) / 2];
 		// upper branch routes through a `[7]=` tuple slot (F30 layout)
 		let src = format!(
-			"function(b,C,V,f1,f2,f3,f4,f5) local K={{[7]='{}'}}; \
-			 while true do if V<={} then \
-			 return b[K[7]](b,C,V,f1,f2,f3,f4,f5) else return b:{}(C,V,f1,f2,f3,f4,f5) end end end",
-			loop_name, mid, loop_name
+			"function(b,C,{lhs6}) local K={{[7]='{}'}}; \
+			 while true do if {sv}<={} then \
+			 return b[K[7]](b,C,{sv},{rhs5}) else return b:{}(C,{sv},{rhs5}) end end end",
+			loop_name, mid, loop_name, lhs6 = lhs6, sv = sv, rhs5 = rhs5
 		);
 		fields.push(named(xl.clone(), parse_expr(&src)));
 	}
@@ -1223,15 +1296,18 @@ pub fn scaffold(
 	{
 		let src = format!(
 			"function(b,...) {guard}local u,z,Z,o,w,K,G,q,M,F,H,E=b:{init}(); \
-			 local V,f1,f2,f3,f4,f5,C=z,Z,o,w,K,G,{{}}; C[{ss}]=0; C[{ax}]=0; \
+			 local {lhs6},C=z,Z,o,w,K,G,{{}}; C[{ss}]=0; C[{ax}]=0; \
 			 local J={{[4]='{xl}',[7]='{xl}'}}; \
-			 while u do local h2,B=b[J[4]](b,C,V,f1,f2,f3,f4,f5); \
-			 if h2==2 then return B end end end",
+			 while u do local h2,B=b[J[4]](b,C,{sv},{rhs5}); \
+			if h2==2 then return B end end end",
 			guard = guard_src,
 			init = init,
 			ss = sumslot,
 			ax = auxslot,
 			xl = xl,
+			lhs6 = lhs6,
+			sv = sv,
+			rhs5 = rhs5,
 		);
 		fields.push(named(fc.clone(), parse_expr(&src)));
 	}
