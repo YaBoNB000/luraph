@@ -70,7 +70,8 @@
 | SoA 字节码容器 | opcode/操作数分存平行数组（luraph14/15 同款，破坏 AoS 特征） | `vmgen/isa.rs` | P0 | ✅ M5（`[ncode][OC bytes][S0..S3 varint streams]`；pc 按指令步进） |
 | opcode 随机置换（每构建） | 随机置换表 + 死指令填充 | `vmgen/isa.rs` | P0 | ✅（置换表 + Nop 死指令填充，M4 续期） |
 | AST → 字节码编译器 | 原型树/upvalue/常量池/多值协议(nresults 0/-1)/尾调用 | `vmgen/compiler.rs` | P0 | ✅ M4+续期（upvalue 单 cell 别名模型 + 循环变量 per-iteration 共享 cell + 5.1 构造器存储序 + 全变长展开） |
-| 解释器模板生成（Lua 源码） | fetch-decode-execute + 随机二分决策树（2~4 层） | `vmgen/template.rs` | P0 | ✅（随机决策树 2~4 层 + 分支序 shuffle，M4 续期） |
+| 解释器模板生成（Lua 源码） | fetch-decode-execute + 随机二分决策树（2~4 层） | `vmgen/template.rs` | P0 | ✅（随机决策树 2~4 层 + 分支序每次生成打乱，M4 续期） |
+| 指令拆文件 + 一指令多形态（建议1） | 41 条指令各一个文件（`vmgen/handlers/`），每文件返回固定解释器代码、用哪个取哪个；每指令 2~3 个语义等价形态，每构建随机各选一形 + 分派叶序/H 定义序/内联调用链序每生成打乱 | `vmgen/handlers/*` + `vmgen/strpool.rs` | P0 | ✅ 增量⑧（旧内联 `branch_code` 全量迁出为各指令 f0 形态；调用族按 token 模板改名换形；v15 Return 单形态保 CPS 改写锚点） |
 | continue 扁平分派风格（Luau 档） | 叶 = `状态=handler(); continue`（luraph15 同款，5.1 用嵌套树） | `vmgen/template.rs` | P1 | 📐 |
 | 帧运行器入场原语解包 | 数字槽→局部变量一次性解包，槽号/局部名每构建随机 | `vmgen/template.rs` | P0 | ✅ M5（15 个宿主原语进 `P[1..80]` 随机槽；VM 顶 + `run` 入场各解包一次，顺序独立 shuffle） |
 | 普通/协程双帧运行器 + UL 跨 yield 传表 | 协程帧走 coroutine.wrap + setfenv；大结构跨 yield 成对传送 | `vmgen/template.rs` | P0 | 📐 |
@@ -139,6 +140,23 @@
 
 ## 4. 更新日志
 
+- **2026-09-05（虚拟机建议·增量 ⑧：建议1 — 指令拆文件 + 一指令多形态）**
+  落地建议1「所有虚拟机指令写成独立文件，每个文件返回固定解释器代码，
+  用哪个就返回哪个」+ 进阶「每个指令随机分配几个不同格式，每次虚拟机
+  格式不同，每次生成打乱顺序指令重排」。新建 `vmgen/strpool.rs`（字符串
+  池独立）+ `vmgen/handlers/`：**41 条指令各一个文件**（`jmp.rs`…`callm.rs`），
+  每文件返回该指令的固定解释器代码，模板装配按分派用到的指令逐一向
+  文件取码。每条指令带 **2~3 个语义等价形态**（f0 = 原内联 `branch_code`
+  逐字迁出；f1/f2 = 局部改名 / 类型判定提升 / 等价 while 形 / `do` 包裹等
+  纯表面变换），每构建由种子**各随机选一形**，同一指令跨构建文本不同。
+  调用族（Call/CallE/CallM/CallT）按 `«B»«A»«O»` token 模板在局部名元组间
+  切换；v15 散布变体（`S[]`/`O` 溢出）同文件内随取。**每次生成打乱**：
+  分派决策树叶序、v15 `H[]` handler 定义序、CPS 内联调用链序均每构建洗牌
+  （wire 码本就每构建置换，三者叠加后指令排布逐构建不同）。删除模板内
+  旧 `branch_code/branch_code_v15/bin_op_code/cmp_code/nop_body` 内联表。
+  验证：204/204 + 405/405 + 多种子（5 seeds）0 失败 + 指纹抽查 18/18 个
+  32/32 + 30 个 v15 示例全部 32/32 且运行一致 + 同种子逐字节一致 +
+  纯度 0 非 ASCII + cargo test 27。**至此建议1 完成，五条建议全部落地。**
 - **2026-09-05（虚拟机建议·增量 ⑦：建议2 组织部分 — anti/ 文件夹模块化 + 每构建随机组合）**
   新建 `src/anti/mod.rs`：guard 的 5 个检查段拆成独立源片段
   （`ANTI_CORE`/`ANTI_ENV`/`ANTI_DEBUG`/`ANTI_CANARY`/`ANTI_MISC`，

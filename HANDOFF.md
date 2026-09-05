@@ -211,7 +211,11 @@ luraph/
     │   └── vmgen/            # ★ L6 VM
     │       ├── isa.rs        #   41 条 Op + OpMap + SoA + 完整 7-bit + Carrier
     │       ├── compiler.rs   #   AST→字节码（单 cell + 方言分支 + 指令下标跳转）
-    │       ├── template.rs   #   解释器（SoA/decarrier/hub/原语解包/决策树）
+    │       ├── template.rs   #   解释器装配（SoA/decarrier/hub/原语解包/决策树；
+    │       │                 #   指令体向 handlers/ 逐条取码 + 每构建选形/打乱）
+    │       ├── strpool.rs    #   解释器字符串池（v15 MS 表 / legacy 内联字面量）
+    │       ├── handlers/     #   ★ 建议1：41 条指令各一文件，每文件返回固定
+    │       │                 #   解释器代码；每指令 2~3 形态每构建随机选一
     │       └── mod.rs
     ├── tests/
     │   ├── run_tests.sh        # ★ 官方矩阵（非 VM + VM 两阶段；.tools 路径回退）
@@ -282,7 +286,8 @@ L1 名称混淆 → L2 字符串加密（5.1 无位运算 → add8 算术密码�
   管线**）+ base-94/token 载体包裹的加密字节码 + 入口
 - **每构建随机化（VMC，M5 全开）**：opcode 置换表 / 随机决策树 /
   Nop / 完整 7-bit / slot_perm / SoA / 枢纽风格与元组序 / 原语槽号 /
-  载体字母表与 token
+  载体字母表与 token / **指令多形态**（建议1：`vmgen/handlers/` 41 文件，
+  每指令 2~3 语义等价形态每构建各选一 + 分派叶序/定义序/调用链序每生成打乱）
 - 密钥流：状态机化 LCG PRNG（mod 2²⁸/2³¹-1，常数每构建随机）
 - 元表/协程/pcall：透传宿主 VM（不模拟，正确性优先）
 - **upvalue 单 cell 模型（2026-08-25 换代，动 upvalue 前必读 §8.1）**：

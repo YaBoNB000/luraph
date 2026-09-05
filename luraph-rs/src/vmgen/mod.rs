@@ -8,7 +8,9 @@
 //! readable program structure.
 
 pub mod compiler;
+pub mod handlers;
 pub mod isa;
+pub mod strpool;
 pub mod template;
 pub mod v15;
 
