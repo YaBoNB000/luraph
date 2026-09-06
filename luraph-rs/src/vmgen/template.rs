@@ -1334,6 +1334,57 @@ pub fn generate(
 		// in the output — each is runtime-built from shuffled char
 		// codes (user style), then the nativeness check runs exactly
 		// as before (hooked loader -> silent trap, never an oracle).
+		// 增量⑮ (引导桩分层): the HQ decode loop itself becomes an
+		// encrypted META fragment (HBOOT). The visible boot shrinks to
+		// a small meta-decoder with a DIFFERENT codec (additive LCG
+		// over a masked byte array, keystream assembled from the KT
+		// lookup tables). Static analysts must now: port the
+		// meta-decoder -> recover HBOOT -> port the HQ loop -> decode
+		// the 44 fragments -> port the parser (⑭). Every layer is a
+		// fresh per-build reimplementation.
+		let hboot_src = format!(
+			"return function(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM) local HW = {{}} local BSS local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - hs % 256) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - hs % 256) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - hs % 256) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - hs % 256) % 256); ti = ti + 1 end if w == 200 then BSS = SUB(table.concat(t), 1, flen) else HW[w] = LS(SUB(table.concat(t), 1, flen))() end end return HW, BSS end",
+			hseed = hseed_e, hstep = hstep_e, hm = hm_e, hc = hc_e,
+		);
+		// meta keystream: fresh random constants assembled through the
+		// same KT lookup machinery (no bare literals; a codec DISTINCT
+		// from the base-94 HQ machinery so the analyst gets no free
+		// reuse).
+		let meta_seed = rng.int(1_048_576, KEY_MOD - 1);
+		let meta_m = (rng.int(1_048_577, 33_000_001) | 1) as i64;
+		let meta_c = rng.int(1_048_576, KEY_MOD - 1);
+		let meta_seed_e = ke.key_expr(meta_seed, None, rng);
+		let meta_m_e = ke.key_expr(meta_m, None, rng);
+		let meta_c_e = ke.key_expr(meta_c, None, rng);
+		// mask HBOOT bytes with the meta keystream (Rust mirror of the
+		// visible meta-decoder).
+		let hb_bytes = hboot_src.into_bytes();
+		let mut hb_masked: Vec<u8> = Vec::with_capacity(hb_bytes.len());
+		let mut mst = meta_seed as u64;
+		for &b in hb_bytes.iter() {
+			mst = (meta_m as u64 * mst + meta_c as u64) % 268_435_456;
+			hb_masked.push(b.wrapping_add((mst % 256) as u8));
+		}
+		// emit masked bytes as <=90-entry array chunks (BW-family
+		// camouflage; no giant literal array).
+		let mut mb_lines = String::new();
+		let mut mb_names: Vec<String> = Vec::new();
+		for (ci, chunk) in hb_masked.chunks(90).enumerate() {
+			let nm = format!("MB{}", ci + 1);
+			mb_names.push(nm.clone());
+			mb_lines.push_str(&format!(
+				"local {} = {{{}}}\n  ",
+				nm,
+				chunk.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", ")
+			));
+		}
+		let mut mb_gather = String::from("local MB = {}\n");
+		for nm in &mb_names {
+			mb_gather.push_str(&format!(
+				"    for i = 1, #{} do MB[#MB + 1] = {}[i] end\n",
+				nm, nm
+			));
+		}
 		let mut boot = String::new();
 		let v_ls = "hls";
 		let v_dbg = "hdbg";
@@ -1346,7 +1397,7 @@ pub fn generate(
 		boot.push_str(&coded_name_tpl(rng, v_s, "s"));
 		boot.push_str(&coded_name_tpl(rng, v_c, "[C]"));
 		let build = format!(
-			r#"{}  local HW = {{}}
+			r#"{}  {}local HW = {{}}
   local BSS
   do
     {}local LS = GFE(0)[{v_ls}]
@@ -1359,41 +1410,17 @@ pub fn generate(
     end
     if not nlok then while true do end end
     local hqi = {{{}}}
-    local hi = 1
-    while hi <= #hqi do
-      local w = hqi[hi]
-      local seg = HQ[hqi[hi + 1]]
-      local flen = hqi[hi + 2]
-      hi = hi + 3
-      local hs = ({} + w * {}) % 268435456
-      local t = {{}}
-      local ti = 1
-      local n = #seg
-      for i = 1, n, 5 do
-        local v = 0
-        v = v * 94 + AL[BYTE(seg, i)]
-        v = v * 94 + AL[BYTE(seg, i + 1)]
-        v = v * 94 + AL[BYTE(seg, i + 2)]
-        v = v * 94 + AL[BYTE(seg, i + 3)]
-        v = v * 94 + AL[BYTE(seg, i + 4)]
-        local b1 = v % 256; v = FLR(v / 256)
-        local b2 = v % 256; v = FLR(v / 256)
-        local b3 = v % 256; v = FLR(v / 256)
-        local b4 = v % 256
-        hs = ({} * hs + {}) % 268435456; t[ti] = CHAR((b1 - hs % 256) % 256); ti = ti + 1
-        hs = ({} * hs + {}) % 268435456; t[ti] = CHAR((b2 - hs % 256) % 256); ti = ti + 1
-        hs = ({} * hs + {}) % 268435456; t[ti] = CHAR((b3 - hs % 256) % 256); ti = ti + 1
-        hs = ({} * hs + {}) % 268435456; t[ti] = CHAR((b4 - hs % 256) % 256); ti = ti + 1
-      end
-      if w == 200 then
-        BSS = SUB(table.concat(t), 1, flen)
-      else
-        HW[w] = LS(SUB(table.concat(t), 1, flen))()
-      end
+    {}    local g = {}
+    local MH = {{}}
+    for i = 1, #MB do
+      g = ({} * g + {}) % 268435456
+      MH[i] = CHAR((MB[i] - g % 256) % 256)
     end
+    HW, BSS = LS(table.concat(MH))()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM)
     PF = LS(BSS)()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP)(FN)
   end"#,
-			hq_lines, boot, hqi.join(", "), hseed_e, hstep_e, hm_e, hc_e, hm_e, hc_e, hm_e, hc_e, hm_e, hc_e,
+			hq_lines, mb_lines, boot, hqi.join(", "), mb_gather,
+			meta_seed_e, meta_m_e, meta_c_e,
 			v_ls = v_ls, v_dbg = v_dbg, v_inf = v_inf, v_s = v_s, v_c = v_c,
 		);
 		hfrag = build;
