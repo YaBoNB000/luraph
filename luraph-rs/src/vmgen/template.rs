@@ -775,23 +775,18 @@ pub fn generate(
 	// shared `for` loop, establishing the separated decode stage that the
 	// CPS pipeline builds on. Non-v15 keeps the original `for` byte-for-byte.
 	let decode_seg = if v15 {
-		// stage E3: per-prototype operand-stream checksum table (a
-		// build-time fold of every wire operand); parse re-reads the
-		// streams through the inline ladders and re-folds -- a mismatch
-		// means tamper -> silent trap (no os.clock, F18 safe)
-		// 增量⑪: checksum values obfuscated (no bare literal oracle)
-		let os_list = operand_sums
-			.iter()
-			.map(|s| obf_num(*s, rng))
-			.collect::<Vec<_>>()
-			.join(", ");
-		format!(
-			"local OS = {{{}}}\n  local di = 1\n  while di <= #FN do\n    PF[di] = parse(FN[di], di)\n    if PF[di].ck ~= OS[di] then while true do end end\n    di = di + 1\n  end",
-			os_list
-		)
+		// 增量⑭ (对抗 R002): the decode loop + OS checksum table moved
+		// INTO the encrypted bootstrap fragment (built in the hfrag
+		// section below). No visible parse loop, no visible checksum
+		// oracle — the analyst must break HQ encryption first.
+		String::new()
 	} else {
 		String::from("for i = 1, #FN do PF[i] = parse(FN[i], i) end")
 	};
+
+	// 增量⑭: v15 emits parse_fn invisibly (inside the bootstrap
+	// fragment); legacy keeps it in the visible body.
+	let parse_fn_vis = if v15 { String::new() } else { parse_fn.clone() };
 
 	// v15 (P3-B): bytecode self-modification + dead dispatch segment.
 	//   self-mod: the compiler reports every Nop site; at load time each
@@ -1244,6 +1239,23 @@ pub fn generate(
 			);
 			frags.push((*wire, src.into_bytes()));
 		}
+		// 增量⑭ (对抗 R002 — 解析器隐藏): the prototype parser + the
+		// whole decode/checksum-verify stage move into ONE MORE
+		// encrypted HQ fragment (wire marker 200). What R002 ported
+		// straight out of the visible text (section tags, LCG unmask,
+		// varint ladders, constant decode, and the OS checksum oracle)
+		// now exists only inside the same encryption as the handlers —
+		// the visible interpreter shrinks to the boot stub.
+		let os_list = operand_sums
+			.iter()
+			.map(|s| obf_num(*s, rng))
+			.collect::<Vec<_>>()
+			.join(", ");
+		let bs_src = format!(
+			"return function(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP) local OS = {{{}}} {} return function(FN_) local PF_ = {{}} local di = 1 while di <= #FN_ do PF_[di] = parse(FN_[di], di); if PF_[di].ck ~= OS[di] then while true do end end; di = di + 1 end return PF_ end end",
+			os_list, parse_fn
+		);
+		frags.push((200u8, bs_src.into_bytes()));
 		// mask + base-94 pack. Per-fragment keystream seed is derived
 		// from the wire code ((hseed + wire*hstep) % 2^28) so the
 		// decode order (shuffled HQI) is irrelevant.
@@ -1335,6 +1347,7 @@ pub fn generate(
 		boot.push_str(&coded_name_tpl(rng, v_c, "[C]"));
 		let build = format!(
 			r#"{}  local HW = {{}}
+  local BSS
   do
     {}local LS = GFE(0)[{v_ls}]
     local DBG = GFE(0)[{v_dbg}]
@@ -1372,8 +1385,13 @@ pub fn generate(
         hs = ({} * hs + {}) % 268435456; t[ti] = CHAR((b3 - hs % 256) % 256); ti = ti + 1
         hs = ({} * hs + {}) % 268435456; t[ti] = CHAR((b4 - hs % 256) % 256); ti = ti + 1
       end
-      HW[w] = LS(SUB(table.concat(t), 1, flen))()
+      if w == 200 then
+        BSS = SUB(table.concat(t), 1, flen)
+      else
+        HW[w] = LS(SUB(table.concat(t), 1, flen))()
+      end
     end
+    PF = LS(BSS)()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP)(FN)
   end"#,
 			hq_lines, boot, hqi.join(", "), hseed_e, hstep_e, hm_e, hc_e, hm_e, hc_e, hm_e, hc_e, hm_e, hc_e,
 			v_ls = v_ls, v_dbg = v_dbg, v_inf = v_inf, v_s = v_s, v_c = v_c,
@@ -1468,7 +1486,7 @@ pub fn generate(
   {ms_block}{helpers}
   {ck_consts}{parse_fn}
   {decode_seg}
-{v15_selfmod}{hfrag}
+{hfrag}{v15_selfmod}
   local G = GFE(0)
   local U = UNP
   local FLOOR = FLR
@@ -1518,7 +1536,7 @@ end
 		v15_selfmod = v15_selfmod,
 		decode_seg = decode_seg,
 		ck_consts = ck_consts,
-		parse_fn = parse_fn,
+		parse_fn = parse_fn_vis,
 		makefn_decl = makefn_decl,
 		rt_helpers = rt_helpers,
 		ms_block = ms_block,

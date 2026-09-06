@@ -347,10 +347,12 @@ def analyze(path):
                    (pcallf, wrap), (1, 2), pcallf >= 1 and wrap >= 1))
 
     # ---- F13 -128 偏置 + 128 进制重建
+    # 增量⑭ 起：解析器整体搬入加密引导碎片，可见区只剩单一 r16
+    # varint 解码器（样本族形态保留一档）；带按新架构校准。
     mb = code.count("-128")
     base = code.count("*128") + code.count("*16384") + code.count("*2097152")
     F.append(check("F13", "-128 偏置 / 128 进制乘加", (mb, base),
-                   (264, 136), mb >= 50 and base >= 20))
+                   (8, 6), mb >= 5 and base >= 3))
 
     # ---- F14 SoA 常量自写回
     sow = re.findall(r";(\w{1,2})\[(\w+)\]=(\d+);", code)
