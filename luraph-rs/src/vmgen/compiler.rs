@@ -605,12 +605,30 @@ impl<'a> Ctx<'a> {
 			blob.extend_from_slice(body);
 		}
 		// position mask: per-function keystream over the WHOLE blob
-		let mut state = ((self.program.blob_seed as u64
-			+ fn_index as u64 * self.program.blob_step as u64)
-			% 268_435_456) as u64;
+		// 增量⑬ (对抗 R002): two-phase self-referential mask. Phase 1
+		// masks the first ≤64 bytes with the base keystream; `hf` then
+		// folds that CIPHERTEXT prefix (bytes both sides possess), and
+		// phase 2 re-seeds the keystream to base+hf. The key for the
+		// bulk thus depends on the ciphertext itself — no independent
+		// key object to extract. The template's parse mirrors this
+		// exactly (unmask prefix → fold prefix → reseed → unmask rest).
 		let km = self.program.blob_km as u64;
 		let kc = self.program.blob_kc as u64;
-		for byte in blob.iter_mut() {
+		let base = (self.program.blob_seed as u64
+			+ fn_index as u64 * self.program.blob_step as u64)
+			% 268_435_456;
+		let ksplit = blob.len().min(64);
+		let mut state = base;
+		for byte in blob.iter_mut().take(ksplit) {
+			state = (km * state + kc) % 268_435_456;
+			*byte = byte.wrapping_add((state % 256) as u8);
+		}
+		let mut hf: u64 = 0;
+		for &byte in blob.iter().take(ksplit) {
+			hf = (hf * 31 + byte as u64) % 268_435_456;
+		}
+		let mut state = (base + hf) % 268_435_456;
+		for byte in blob.iter_mut().skip(ksplit) {
 			state = (km * state + kc) % 268_435_456;
 			*byte = byte.wrapping_add((state % 256) as u8);
 		}
@@ -2557,11 +2575,22 @@ mod dbg {
 		let tags = &prog.section_tags;
 		for (fi, b) in prog.fns.iter().enumerate() {
 			// P2: unmask the whole blob, then tag-walk the sections
+			// 增量⑬: two-phase self-referential mask (fold of the
+			// ciphertext prefix re-seeds the bulk keystream)
+			let base = (prog.blob_seed as u64 + fi as u64 * prog.blob_step as u64) % 268_435_456;
+			let ksplit = b.len().min(64);
 			let mut buf: Vec<u8> = b.clone();
-			let mut state = ((prog.blob_seed as u64
-				+ fi as u64 * prog.blob_step as u64)
-				% 268_435_456) as u64;
-			for byte in buf.iter_mut() {
+			let mut state = base;
+			for byte in buf.iter_mut().take(ksplit) {
+				state = (prog.blob_km as u64 * state + prog.blob_kc as u64) % 268_435_456;
+				*byte = byte.wrapping_sub((state % 256) as u8);
+			}
+			let mut hf: u64 = 0;
+			for &byte in b.iter().take(ksplit) {
+				hf = (hf * 31 + byte as u64) % 268_435_456;
+			}
+			let mut state = (base + hf) % 268_435_456;
+			for byte in buf.iter_mut().skip(ksplit) {
 				state = (prog.blob_km as u64 * state + prog.blob_kc as u64) % 268_435_456;
 				*byte = byte.wrapping_sub((state % 256) as u8);
 			}

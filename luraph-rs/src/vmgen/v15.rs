@@ -546,6 +546,28 @@ fn draw_state_names(nm: &mut Names) -> [String; 6] {
 	out.try_into().unwrap()
 }
 
+/// 增量⑬ (对抗 R002): reserve one cell pair in the scaffold lookup
+/// tables and return the `(b[s0][p1]+b[s1][p2])` expression summing to
+/// `v`. Cells hold random camouflage values until reserved.
+fn st_pair_expr(
+	st1: &mut [i64],
+	st2: &mut [i64],
+	f1: &mut Vec<usize>,
+	f2: &mut Vec<usize>,
+	s0: i64,
+	s1slot: i64,
+	v: i64,
+	rng: &mut Rng,
+) -> String {
+	let e1 = if v > 0 { rng.int(0, v) } else { 0 };
+	let e2 = v - e1;
+	let p1 = f1.pop().expect("st table exhaustion");
+	let p2 = f2.pop().expect("st table exhaustion");
+	st1[p1] = e1;
+	st2[p2] = e2;
+	format!("(b[{}][{}]+b[{}][{}])", s0, p1 + 1, s1slot, p2 + 1)
+}
+
 pub fn scaffold(
 	rng: &mut Rng,
 	interp_src: &str,
@@ -565,6 +587,9 @@ pub fn scaffold(
 	// kfrag[1..=4] = the bm0/bc0 word-mask key fragments. All blend
 	// into the numeric-slot family (values are random halves, not keys).
 	kfrag: &[i64],
+	// 增量⑬: two numeric slots holding the key-assembly lookup tables
+	// (st1/st2) used by the kg generator and the carrier fold handlers.
+	st_slots: &[i64],
 ) -> (Vec<TableField>, String) {
 	let carrier_tokens: &[String] = &carrier.tokens;
 	let mut nm = Names::new(rng);
@@ -620,11 +645,6 @@ pub fn scaffold(
 	crate::vmgen::manifest_key("KG_M3", km3 as u64);
 	crate::vmgen::manifest_key("KG_C3", kc3 as u64);
 	let mut ks_state: i64 = ks_seed;
-	// 增量⑩: split a value into an `(a+b)` two-term sum (no bare literal).
-	let split_sum = |v: i64, rng: &mut Rng| -> String {
-		let a = rng.int(1, v - 1);
-		format!("({}+{})", a, v - a)
-	};
 	// 增量⑩: store `v` in a table field as a `(u-d)` arithmetic
 	// expression (never a bare number). d stays 8-digit so u fits a
 	// double with room to spare.
@@ -634,6 +654,25 @@ pub fn scaffold(
 	};
 	let ks_frag_a = rng.int(0, 268_435_455);
 	let ks_frag_b = (ks_seed - ks_frag_a).rem_euclid(268_435_456);
+	// 增量⑬ (对抗 R002): the kg LCG constants and the per-carrier fold
+	// sums used to be two-term arithmetic — R002 folded them all offline.
+	// Now every such constant is assembled from two module numeric-slot
+	// arrays (visually identical to the BW word tables):
+	//   const == (b[st1][p1] + b[st2][p2])
+	// No closed-form arithmetic survives in the output; recovering a
+	// constant means tracing which two array cells each use site reads.
+	let mut st1: Vec<i64> = (0..48).map(|_| rng.int(1_000_000, 4_294_967_295)).collect();
+	let mut st2: Vec<i64> = (0..48).map(|_| rng.int(1_000_000, 4_294_967_295)).collect();
+	let mut st1_free: Vec<usize> = {
+		let mut v: Vec<usize> = (0..48).collect();
+		rng.shuffle(&mut v);
+		v
+	};
+	let mut st2_free: Vec<usize> = {
+		let mut v: Vec<usize> = (0..48).collect();
+		rng.shuffle(&mut v);
+		v
+	};
 
 	// ---- RT reverse-token table names (F8 pC shape below)
 	let rt_name = nm.take();
@@ -716,16 +755,20 @@ pub fn scaffold(
 	// P3b: operand order emitted as (x*m+c) and per-step local names
 	// vary — the keystream stays runtime-derived (sample [96] family)
 	// but no fixed-shape constant triple is grep-able in one function.
-	// 增量⑩: m/c constants emitted as two-term sums as well.
+	// 增量⑬ (对抗 R002): m/c constants assembled from the two module
+	// numeric-slot tables, not closed-form arithmetic.
 	fields.push(slotted(
 		kg_slot,
 		parse_expr(&format!(
 			"function(b) local x=b[{ks}];if b[{fb}]~=nil then x=(x+b[{fb}])%268435456;b[{ks}]=x;b[{fb}]=nil end;local u=0;while true do if u<=0 then x=(x*{m1}+{c1})%268435456;u=1 elseif u<=1 then local y=(x*{m2}+{c2})%268435456;x=y;u=2 else local z=(x*{m3}+{c3})%268435456;b[{ks}]=z;return z end end end",
 			ks = ks_slot,
 			fb = kfrag[0],
-			m1 = split_sum(km1, rng), c1 = split_sum(kc1, rng),
-			m2 = split_sum(km2, rng), c2 = split_sum(kc2, rng),
-			m3 = split_sum(km3, rng), c3 = split_sum(kc3, rng),
+			m1 = st_pair_expr(&mut st1, &mut st2, &mut st1_free, &mut st2_free, st_slots[0], st_slots[1], km1, rng),
+			c1 = st_pair_expr(&mut st1, &mut st2, &mut st1_free, &mut st2_free, st_slots[0], st_slots[1], kc1, rng),
+			m2 = st_pair_expr(&mut st1, &mut st2, &mut st1_free, &mut st2_free, st_slots[0], st_slots[1], km2, rng),
+			c2 = st_pair_expr(&mut st1, &mut st2, &mut st1_free, &mut st2_free, st_slots[0], st_slots[1], kc2, rng),
+			m3 = st_pair_expr(&mut st1, &mut st2, &mut st1_free, &mut st2_free, st_slots[0], st_slots[1], km3, rng),
+			c3 = st_pair_expr(&mut st1, &mut st2, &mut st1_free, &mut st2_free, st_slots[0], st_slots[1], kc3, rng),
 		)),
 	));
 	// wide state tuple: handlers take (b, C, p1..p5) = 7 params (F6)
@@ -936,6 +979,13 @@ pub fn scaffold(
 			// phase recomputes it from the stored chunks, so any
 			// tampering -- even length-preserving -- breaks the fold)
 			let ksum: usize = carriers[k].iter().map(|&b| b as usize).sum();
+			crate::vmgen::manifest_key(&format!("KSUM_{}", k), ksum as u64);
+			// 增量⑬ (对抗 R002 §4.5): the fold addend WAS a bare literal
+			// (the "14715" oracle). Now assembled from the module tables.
+			let ksum_e = st_pair_expr(
+				&mut st1, &mut st2, &mut st1_free, &mut st2_free,
+				st_slots[0], st_slots[1], ksum as i64, rng,
+			);
 			let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
 			let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
 			let qf = nm.take_avoid(&["b", "C", "s"]);
@@ -949,7 +999,7 @@ pub fn scaffold(
 				db = decoy_b,
 				modulo = modulo,
 				mul = mul,
-				ksum = ksum,
+				ksum = ksum_e,
 				ret = ret,
 				ra = ra,
 				rb = rb,
@@ -1495,6 +1545,21 @@ pub fn scaffold(
 		runner2,
 		parse_expr("function(b,E,...) return E(...) end"),
 	));
+
+	// 增量⑬: emit the two scaffold key-assembly lookup tables. Cells
+	// were reserved by st_pair_expr above; unreserved cells keep their
+	// random camouflage values. Shaped like the BW word arrays
+	// (numeric-slot fields), so they blend into the same family.
+	{
+		let mk_arr = |vals: &Vec<i64>| Expr::Table {
+			fields: vals
+				.iter()
+				.map(|&w| TableField::Array(Expr::Num { value: w as f64, isfloat: false }))
+				.collect(),
+		};
+		fields.push(slotted(st_slots[0], mk_arr(&st1)));
+		fields.push(slotted(st_slots[1], mk_arr(&st2)));
+	}
 
 	(fields, fc)
 }

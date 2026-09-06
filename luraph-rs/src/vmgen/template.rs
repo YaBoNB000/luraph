@@ -164,47 +164,71 @@ fn obf_num(n: u64, rng: &mut Rng) -> String {
 
 use super::manifest_key;
 
-/// 增量⑩ (防静态, 报告突破口 #5/#2): key material is never emitted as a
-/// literal. The R001 break came from reading the keys straight out of
-/// the output (seed literal next to the number table). Now every 28-bit
-/// key K is assembled AT RUNTIME from random fragments parked in the KF
-/// table; a per-key recipe is drawn from three shapes:
+/// 增量⑩ (防静态, 报告突破口 #5/#2) + 增量⑬ (对抗 R002 符号求值):
+/// key material is never emitted as a literal AND no key has a closed
+/// arithmetic form. R002 folded every `(A*B+C)%2^28` fragment recipe
+/// offline, so increment ⑬ moves assembly through per-build random
+/// LOOKUP TABLES: each key is a sum/product of entries from four baked
+/// tables (KA/KB/KC random 28-bit values, KM small multipliers). The
+/// tables sit in the output as plain number arrays; recovering a key
+/// now requires data-flow tracing from the use site through obfuscated
+/// indexes into the right tables — no pattern to recognize, no formula
+/// to fold. Recipes (drawn per key):
 ///
-///   additive `(KF[a] + KF[b]) % 2^28`
-///   affine   `(KF[a] * KF[b] + KF[c]) % 2^28`
-///   anchored `(KF[a] + KF[b] * <anchor>) % 2^28`
-///            (anchor = a boot-time table length, e.g. #APH / #hqi —
-///             a value that exists only after boot code ran)
+///   add2     `(KA[a] + KB[b]) % 2^28`
+///   add3     `(KA[a] + KB[b] + KC[c]) % 2^28`
+///   affine   `(KA[a] * KM[m] + KC[c]) % 2^28`   (product < 2^45, exact)
+///   anchored `(KA[a] + KM[m] * <anchor>) % 2^28` (anchor = a boot-time
+///             table length, e.g. #APH / #hqi)
 ///
-/// Fragment values are individually random and meaningless; both the
-/// stored values and the slot indexes go through obf_num, so literal
-/// scanning recovers no complete key. All arithmetic stays exact in
-/// doubles (products bounded < 2^45).
+/// Indexes go through obf_num as before. All arithmetic stays exact in
+/// doubles.
 const KEY_MOD: i64 = 268_435_456; // 2^28
+const KT_ENTRIES: usize = 64;
 
 struct KeyEmitter {
-	slots: Vec<i64>,
-	si: usize,
-	writes: Vec<String>,
+	/// table values; None = still free (filled randomly at emission)
+	ka: Vec<Option<i64>>,
+	kb: Vec<Option<i64>>,
+	kc: Vec<Option<i64>>,
+	km: Vec<Option<i64>>,
+	/// shuffled free 1-based positions per table
+	pa: Vec<usize>,
+	pb: Vec<usize>,
+	pc: Vec<usize>,
+	pm: Vec<usize>,
 }
 
 impl KeyEmitter {
 	fn new(rng: &mut Rng) -> KeyEmitter {
-		let mut slots: Vec<i64> = (1..=400).collect();
-		rng.shuffle(&mut slots);
-		KeyEmitter { slots, si: 0, writes: Vec::new() }
+		let mut mk = || {
+			let mut p: Vec<usize> = (1..=KT_ENTRIES).collect();
+			rng.shuffle(&mut p);
+			p
+		};
+		KeyEmitter {
+			ka: vec![None; KT_ENTRIES],
+			kb: vec![None; KT_ENTRIES],
+			kc: vec![None; KT_ENTRIES],
+			km: vec![None; KT_ENTRIES],
+			pa: mk(),
+			pb: mk(),
+			pc: mk(),
+			pm: mk(),
+		}
 	}
-	/// Park one fragment: obfuscated value at an obfuscated slot index.
-	/// Returns the slot number (the recipe re-obfuscates its own index).
-	fn frag(&mut self, v: i64, rng: &mut Rng) -> i64 {
-		let slot = self.slots[self.si];
-		self.si += 1;
-		self.writes.push(format!(
-			"KF[{}] = {}",
-			obf_num(slot as u64, rng),
-			obf_num(v as u64, rng)
-		));
-		slot
+	/// Reserve one entry in `tab` and store `v`; returns its 1-based
+	/// position (the recipe re-obfuscates the index on emission).
+	fn put(&mut self, tab: u8, v: i64) -> usize {
+		let (vals, poss) = match tab {
+			0 => (&mut self.ka, &mut self.pa),
+			1 => (&mut self.kb, &mut self.pb),
+			2 => (&mut self.kc, &mut self.pc),
+			_ => (&mut self.km, &mut self.pm),
+		};
+		let pos = poss.pop().expect("key-table exhaustion");
+		vals[pos - 1] = Some(v);
+		pos
 	}
 	/// Assembly expression that evaluates to `key` at runtime.
 	/// `anchor` = (Lua expression, its build-known runtime value).
@@ -217,59 +241,119 @@ impl KeyEmitter {
 		if std::env::var("LURAPH_KEY_DBG").is_ok() {
 			return format!("{}", key);
 		}
-		let idx = |v: i64, rng: &mut Rng| obf_num(v as u64, rng);
-		let form = if anchor.is_some() { rng.int(0, 2) } else { rng.int(0, 1) };
+		let idx = |v: usize, rng: &mut Rng| obf_num(v as u64, rng);
+		let form = if anchor.is_some() { rng.int(0, 3) } else { rng.int(0, 2) };
 		match form {
 			0 => {
-				// additive: K = (A + B) % M
-				let a = rng.int(0, KEY_MOD - 1);
+				// add2: K = (A + B) % M
+				let a = rng.int(1_048_576, KEY_MOD - 1);
 				let b = (key - a).rem_euclid(KEY_MOD);
-				let sa = self.frag(a, rng);
-				let sb = self.frag(b, rng);
+				let ia = self.put(0, a);
+				let ib = self.put(1, b);
 				format!(
-					"((KF[{}] + KF[{}]) % {})",
-					idx(sa, rng),
-					idx(sb, rng),
+					"((KA[{}] + KB[{}]) % {})",
+					idx(ia, rng),
+					idx(ib, rng),
 					KEY_MOD
 				)
 			}
 			1 => {
-				// affine: K = (A*B + C) % M (B small odd, product exact)
-				let b = rng.int(1, 16383) | 1;
-				let a = rng.int(0, KEY_MOD - 1);
-				let c = (key - a * b).rem_euclid(KEY_MOD);
-				let sa = self.frag(a, rng);
-				let sb = self.frag(b, rng);
-				let sc = self.frag(c, rng);
+				// add3: K = (A + B + C) % M
+				let a = rng.int(1_048_576, KEY_MOD - 1);
+				let b = rng.int(1_048_576, KEY_MOD - 1);
+				let c = (key - a - b).rem_euclid(KEY_MOD);
+				let ia = self.put(0, a);
+				let ib = self.put(1, b);
+				let ic = self.put(2, c);
 				format!(
-					"((KF[{}] * KF[{}] + KF[{}]) % {})",
-					idx(sa, rng),
-					idx(sb, rng),
-					idx(sc, rng),
+					"((KA[{}] + KB[{}] + KC[{}]) % {})",
+					idx(ia, rng),
+					idx(ib, rng),
+					idx(ic, rng),
+					KEY_MOD
+				)
+			}
+			2 => {
+				// affine: K = (A*m + C) % M (m small, product exact)
+				let a = rng.int(1_048_576, KEY_MOD - 1);
+				let m = rng.int(1, 16383) | 1;
+				let c = (key - a * m).rem_euclid(KEY_MOD);
+				let ia = self.put(0, a);
+				let im = self.put(3, m);
+				let ic = self.put(2, c);
+				format!(
+					"((KA[{}] * KM[{}] + KC[{}]) % {})",
+					idx(ia, rng),
+					idx(im, rng),
+					idx(ic, rng),
 					KEY_MOD
 				)
 			}
 			_ => {
-				// anchored: K = (A + B*anchor) % M
+				// anchored: K = (A + m*anchor) % M
 				let (ae, av) = anchor.unwrap();
-				let b = rng.int(1, 999);
-				let a = (key - b * av).rem_euclid(KEY_MOD);
-				let sa = self.frag(a, rng);
-				let sb = self.frag(b, rng);
+				let m = rng.int(1, 999);
+				let a = (key - m * av).rem_euclid(KEY_MOD);
+				let ia = self.put(0, a);
+				let im = self.put(3, m);
 				format!(
-					"((KF[{}] + KF[{}] * {}) % {})",
-					idx(sa, rng),
-					idx(sb, rng),
+					"((KA[{}] + KM[{}] * {}) % {})",
+					idx(ia, rng),
+					idx(im, rng),
 					ae,
 					KEY_MOD
 				)
 			}
 		}
 	}
-	/// `local KF = {}` + the (shuffled) fragment writes.
+	/// 增量⑬ (R002 §3.37 — dead-stage proof): an expression that is 0
+	/// at runtime but PROVABLY so only by fetching three table values:
+	/// the reserved KA/KB/KC entries sum to 0 mod 7 by construction.
+	fn dead_zero(&mut self, rng: &mut Rng) -> String {
+		let a = rng.int(1_048_576, KEY_MOD - 1);
+		let b = rng.int(1_048_576, KEY_MOD - 1);
+		let base = rng.int(1_048_576, KEY_MOD - 1);
+		let fix = (7 - (a + b + base).rem_euclid(7)) % 7;
+		let c = base + fix;
+		let ia = self.put(0, a);
+		let ib = self.put(1, b);
+		let ic = self.put(2, c);
+		format!(
+			"((KA[{}] + KB[{}] + KC[{}]) % 7)",
+			obf_num(ia as u64, rng),
+			obf_num(ib as u64, rng),
+			obf_num(ic as u64, rng)
+		)
+	}
+	/// Emit the four lookup tables (free entries filled with random
+	/// camouflage values).
 	fn block(mut self, rng: &mut Rng) -> String {
-		rng.shuffle(&mut self.writes);
-		format!("local KF = {{}}\n  {}\n  ", self.writes.join("\n  "))
+		let fill = |vals: &mut Vec<Option<i64>>, lo: i64, hi: i64, rng: &mut Rng| {
+			for v in vals.iter_mut() {
+				if v.is_none() {
+					*v = Some(rng.int(lo, hi));
+				}
+			}
+		};
+		fill(&mut self.ka, 1_048_576, KEY_MOD - 1, rng);
+		fill(&mut self.kb, 1_048_576, KEY_MOD - 1, rng);
+		fill(&mut self.kc, 1_048_576, KEY_MOD - 1, rng);
+		fill(&mut self.km, 1, 16383, rng);
+		let emit = |name: &str, vals: &Vec<Option<i64>>| {
+			let body = vals
+				.iter()
+				.map(|v| v.unwrap().to_string())
+				.collect::<Vec<_>>()
+				.join(", ");
+			format!("local {} = {{{}}}", name, body)
+		};
+		format!(
+			"{}\n  {}\n  {}\n  {}\n  ",
+			emit("KA", &self.ka),
+			emit("KB", &self.kb),
+			emit("KC", &self.kc),
+			emit("KM", &self.km)
+		)
 	}
 }
 
@@ -542,9 +626,21 @@ pub fn generate(
 		tags[0], tags[1], tags[2], tags[3], tags[4], tags[6], if v15 { 6 } else { 5 }
 	);
 	let unmask_pre = r#"s = decarrier(s)
-    local g = (BSEED + (fi - 1) * BSTEP) % 268435456
+    local n = #s
+    local ksplit = n
+    if ksplit > 64 then ksplit = 64 end
     local um = {}
-    for i = 1, #s do
+    local g = (BSEED + (fi - 1) * BSTEP) % 268435456
+    for i = 1, ksplit do
+      g = (BKM * g + BKC) % 268435456
+      um[i] = CHAR((BYTE(s, i) - g % 256) % 256)
+    end
+    local hf = 0
+    for i = 1, ksplit do
+      hf = (hf * 31 + BYTE(s, i)) % 268435456
+    end
+    g = (BSEED + (fi - 1) * BSTEP + hf) % 268435456
+    for i = ksplit + 1, n do
       g = (BKM * g + BKC) % 268435456
       um[i] = CHAR((BYTE(s, i) - g % 256) % 256)
     end
@@ -726,10 +822,15 @@ pub fn generate(
 		// 增量⑫ (防静态, 报告突破口 #14): the dead-dispatch decoy used a
 		// literal `DF = 0`, so static dead-code elimination proved the
 		// loop unreachable and discarded it (zero-reference decoy spotted).
-		// Derive DF from RUNTIME data instead: `PF[#FN].ck % 1` is 0 for
-		// every run (integer checksum mod 1) but is not foldable without
-		// modeling the runtime, so the decoy stays "possibly live".
-		sm.push_str("  local DA = {}\n  local DP = 1\n  local DF = PF[#FN].ck % 1\n  while DF > 0 do\n    local f = DA[DP]\n    if f >= 4 then\n      if f < 6 then\n        if f ~= 5 then DF = 0 else DF = 0 end\n      else DF = 0 end\n    elseif f < 2 then DF = 0\n    else DF = 0 end\n");
+		// 增量⑬ (对抗 R002 §3.37): the attacker proved `ck % 1 == 0`
+		// algebraically and discarded the whole decoy stage. Derive DF
+		// from the key-lookup tables instead: three reserved KA/KB/KC
+		// entries sum to 0 mod 7 BY CONSTRUCTION, so DF is still 0 at
+		// runtime, but proving it dead now requires fetching those table
+		// values through obfuscated indexes — no universal identity to
+		// fold away.
+		let df_e = ke.dead_zero(rng);
+		sm.push_str(&format!("  local DA = {{}}\n  local DP = 1\n  local DF = {}\n  while DF > 0 do\n    local f = DA[DP]\n    if f >= 4 then\n      if f < 6 then\n        if f ~= 5 then DF = 0 else DF = 0 end\n      else DF = 0 end\n    elseif f < 2 then DF = 0\n    else DF = 0 end\n", df_e));
 		// P3c: decoy fetch points — the sample ships several dispatch
 		// loops (golden F11 = 19); these dead fetch shapes raise the
 		// family resemblance and multiply the "which loop is real"
@@ -1119,6 +1220,23 @@ pub fn generate(
 			body = body.replace("lastbase", "E.lb").replace("lastn", "E.ln");
 			if matches!(name.as_str(), "Jmp" | "Jf" | "Jt") {
 				body = body.replace("pc = b", "return {j = b}");
+			}
+			// 增量⑬ (对抗 R002 §3.4-18): the four Call-family HQ copies
+			// are unreachable decoys (the inline chain catches those
+			// wires first). R002 exploited their VERBATIM equivalence
+			// with the inline fast paths as a free cross-check of its
+			// handler decryption. Break the equivalence: append one of
+			// several plausible-but-dead computations, varied per
+			// opcode, so equality-based validation dies.
+			if matches!(name.as_str(), "Call" | "CallE" | "CallM" | "CallT") {
+				let junks = [
+					"; local _ = (a + c) * (b - d)",
+					"; local _ = a * d + b * c",
+					"; local _ = (b + d) * (a - c)",
+					"; local _ = c * a - d",
+				];
+				let ji = OP_NAMES.iter().position(|n| n == name).unwrap();
+				body.push_str(junks[ji % 4]);
 			}
 			let src = format!(
 				"return function(E,a,b,c,d) local {} = {} {} end",
