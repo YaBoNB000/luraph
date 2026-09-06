@@ -886,11 +886,14 @@ pub fn scaffold(
 			ks_state = (km2 * ks_state + kc2) % 268435456;
 			ks_state = (km3 * ks_state + kc3) % 268435456;
 			let ks_const: i64 = ks_state;
+			// 增量⑰-B: fold all four state bytes into the key base
+			// (mirrors the bit32.extract fold in the chunk handler).
+			let kf = crate::vmgen::isa::fold_key(ks_const as u64) as i64;
 			let mut xb: Vec<u8> = chunk
 				.iter()
 				.enumerate()
 				.map(|(i, &c)| {
-					let key = ((ks_const + (i as i64 + 1)) % 256) as u8;
+					let key = ((kf + (i as i64 + 1)) % 256) as u8;
 					c ^ key
 				})
 				.collect();
@@ -1134,9 +1137,17 @@ pub fn scaffold(
 					seg = nseg, t = nt, blen = blen
 				)
 			};
+			// 增量⑰-B: fold all four bytes of the full LCG state `kv`
+			// into the key byte (low-byte-only would collapse the seed
+			// space to 256 classes — R003-Q2 定理). Chunk handlers are
+			// v15/Luau-only, so bit32.extract is available.
+			let fk = format!(
+				"(({kv} % 256) + bit32.extract({kv},8,8) + bit32.extract({kv},16,8) + bit32.extract({kv},24,4)) % 256",
+				kv = nkv
+			);
 			let xor_line = format!(
-				"{o}[{i}]=string.char(bit32.bxor(string.byte({seg},{i}),({kv}+{i})%256))",
-				o = no, i = ni, seg = nseg, kv = nkv
+				"{o}[{i}]=string.char(bit32.bxor(string.byte({seg},{i}),({fk}+{i})%256))",
+				o = no, i = ni, seg = nseg, fk = fk
 			);
 			let xor_loop = match xor_style {
 				0 => format!("for {i}=1,#{seg} do {line} end", i = ni, seg = nseg, line = xor_line),
@@ -1145,8 +1156,8 @@ pub fn scaffold(
 					i = ni, seg = nseg, line = xor_line
 				),
 				_ => format!(
-					"for {i}=1,#{seg} do local {bx}=string.byte({seg},{i});{o}[{i}]=string.char(bit32.bxor({bx},({kv}+{i})%256)) end",
-					i = ni, seg = nseg, bx = nbx, o = no, kv = nkv
+					"for {i}=1,#{seg} do local {bx}=string.byte({seg},{i});{o}[{i}]=string.char(bit32.bxor({bx},({fk}+{i})%256)) end",
+					i = ni, seg = nseg, bx = nbx, o = no, fk = fk
 				),
 			};
 			let src = format!(
@@ -1327,7 +1338,11 @@ pub fn scaffold(
 		// already-reserved b/s). Shadowing C corrupts `C[aux]=s`.
 		// "d" is additionally banned because coded_name derives
 		// `{base}o` — base "d" would emit the keyword `do`.
-		const V1H_FORBID: &[&str] = &["C", "E", "i", "Q", "d"];
+		// 增量⑰: "eo" is hardcoded inside the body (pcall ok/sr
+		// locals); a drawn name "eo" for the debug-table alias got
+		// shadowed by it (seed 1 stress_bigtable: "index boolean with
+		// loadstring"). Forbid it so no drawn name can collide.
+		const V1H_FORBID: &[&str] = &["C", "E", "i", "Q", "d", "eo"];
 		let mut accs: Vec<String> = Vec::new();
 		for _k in 0..n {
 			accs.push(nm.take_avoid(V1H_FORBID));

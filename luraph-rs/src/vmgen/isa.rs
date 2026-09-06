@@ -406,16 +406,29 @@ impl ConstLcg {
 		ConstLcg { state: seed, km, kc }
 	}
 	/// Advance and return the key byte for the next payload byte.
+	/// 增量⑰-B (R003-Q2 定理): byte-consuming an LCG as `state % 256`
+	/// collapses the effective seed space to 256 classes — every output
+	/// byte depends only on seed mod 256. Fold ALL four state bytes
+	/// instead so the full 28-bit state feeds each key byte.
 	pub fn next_key(&mut self) -> u8 {
 		self.state = ((self.km as u64 * self.state as u64 + self.kc as u64)
 			% 268_435_456) as u32;
-		(self.state % 256) as u8
+		fold_key(self.state as u64)
 	}
 	pub fn mask(&mut self, plain: u8) -> u8 {
 		// wrapping add == (plain + key) mod 256; parse mirrors with
 		// (x - key) % 256 (Lua % is non-negative for positive modulus)
 		plain.wrapping_add(self.next_key())
 	}
+}
+
+/// 增量⑰-B: full-state key-byte fold (mirror of the Lua consumer).
+pub(crate) fn fold_key(state: u64) -> u8 {
+	(((state % 256)
+		+ ((state / 256) % 256)
+		+ ((state / 65536) % 256)
+		+ (state / 16777216))
+		% 256) as u8
 }
 
 /// Exact dyadic split of a double: v = ± m · 2^k with integer

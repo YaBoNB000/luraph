@@ -621,7 +621,7 @@ impl<'a> Ctx<'a> {
 		let mut state = base;
 		for byte in blob.iter_mut().take(ksplit) {
 			state = (km * state + kc) % 268_435_456;
-			*byte = byte.wrapping_add((state % 256) as u8);
+			*byte = byte.wrapping_add(isa::fold_key(state));
 		}
 		let mut hf: u64 = 0;
 		for &byte in blob.iter().take(ksplit) {
@@ -630,7 +630,7 @@ impl<'a> Ctx<'a> {
 		let mut state = (base + hf) % 268_435_456;
 		for byte in blob.iter_mut().skip(ksplit) {
 			state = (km * state + kc) % 268_435_456;
-			*byte = byte.wrapping_add((state % 256) as u8);
+			*byte = byte.wrapping_add(isa::fold_key(state));
 		}
 		(blob, nops, osum)
 	}
@@ -2583,7 +2583,7 @@ mod dbg {
 			let mut state = base;
 			for byte in buf.iter_mut().take(ksplit) {
 				state = (prog.blob_km as u64 * state + prog.blob_kc as u64) % 268_435_456;
-				*byte = byte.wrapping_sub((state % 256) as u8);
+				*byte = byte.wrapping_sub(isa::fold_key(state));
 			}
 			let mut hf: u64 = 0;
 			for &byte in b.iter().take(ksplit) {
@@ -2592,7 +2592,7 @@ mod dbg {
 			let mut state = (base + hf) % 268_435_456;
 			for byte in buf.iter_mut().skip(ksplit) {
 				state = (prog.blob_km as u64 * state + prog.blob_kc as u64) % 268_435_456;
-				*byte = byte.wrapping_sub((state % 256) as u8);
+				*byte = byte.wrapping_sub(isa::fold_key(state));
 			}
 			let mut p = 0usize;
 			let mut nregs = 0usize;

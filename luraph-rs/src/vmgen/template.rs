@@ -22,7 +22,7 @@
 
 use crate::rng::Rng;
 use crate::vmgen::handlers;
-use crate::vmgen::isa::{Carrier, OpMap, CARRIER_SPECIALS, N_OPS};
+use crate::vmgen::isa::{fold_key, Carrier, OpMap, CARRIER_SPECIALS, N_OPS};
 use crate::vmgen::strpool::StrPool;
 
 /// Opcode names in base order (must match isa::op_index).
@@ -554,7 +554,7 @@ pub fn generate(
 	// Numbers stay dyadic (type 4: m·2^k exact, no digit text in blob).
 	let const_loop = r#"local function mb()
       cks = (CKM * cks + CKC) % 268435456
-      local b = (BYTE(s, p) - cks % 256) % 256
+      local b = (BYTE(s, p) - ((cks % 256) + (FLR(cks / 256) % 256) + (FLR(cks / 65536) % 256) + FLR(cks / 16777216)) % 256) % 256
       p = p + 1
       return b
     end
@@ -633,7 +633,7 @@ pub fn generate(
     local g = (BSEED + (fi - 1) * BSTEP) % 268435456
     for i = 1, ksplit do
       g = (BKM * g + BKC) % 268435456
-      um[i] = CHAR((BYTE(s, i) - g % 256) % 256)
+      um[i] = CHAR((BYTE(s, i) - (((g % 256) + (FLR(g / 256) % 256) + (FLR(g / 65536) % 256) + FLR(g / 16777216)) % 256)) % 256)
     end
     local hf = 0
     for i = 1, ksplit do
@@ -642,7 +642,7 @@ pub fn generate(
     g = (BSEED + (fi - 1) * BSTEP + hf) % 268435456
     for i = ksplit + 1, n do
       g = (BKM * g + BKC) % 268435456
-      um[i] = CHAR((BYTE(s, i) - g % 256) % 256)
+      um[i] = CHAR((BYTE(s, i) - (((g % 256) + (FLR(g / 256) % 256) + (FLR(g / 65536) % 256) + FLR(g / 16777216)) % 256)) % 256)
     end
     s = table.concat(um)
     __TAGS__local p = 1
@@ -901,7 +901,7 @@ pub fn generate(
 		.iter()
 		.map(|&ch| {
 			astate = (akm as u64 * astate + akc as u64) % 268_435_456;
-			ch.wrapping_add((astate % 256) as u8).to_string()
+			ch.wrapping_add(fold_key(astate)).to_string()
 		})
 		.collect();
 	// 增量⑩: rebuild keys KF-assembled, anchored on #APH (the masked
@@ -913,7 +913,7 @@ pub fn generate(
 	manifest_key("APH_KM", akm as u64);
 	manifest_key("APH_KC", akc as u64);
 	let al_lines = format!(
-		"local APH = {{{}}}\n  local AL = {{}}\n  do\n    local ast = {}\n    for i = 1, 94 do\n      ast = ({} * ast + {}) % 268435456\n      AL[(APH[i] - ast % 256) % 256] = i - 1\n    end\n  end\n",
+		"local APH = {{{}}}\n  local AL = {{}}\n  do\n    local ast = {}\n    for i = 1, 94 do\n      ast = ({} * ast + {}) % 268435456\n      AL[(APH[i] - (((ast % 256) + (FLR(ast / 256) % 256) + (FLR(ast / 65536) % 256) + FLR(ast / 16777216)) % 256)) % 256] = i - 1\n    end\n  end\n",
 		masked_alpha.join(", "), aseed_e, akm_e, akc_e
 	);
 	// 增量⑨-2 (防静态): the 10-token escape table is also stored
@@ -931,7 +931,7 @@ pub fn generate(
 		.iter()
 		.map(|&b| {
 			tkstate = (tkm as u64 * tkstate + tkc as u64) % 268_435_456;
-			b.wrapping_add((tkstate % 256) as u8).to_string()
+			b.wrapping_add(fold_key(tkstate)).to_string()
 		})
 		.collect();
 	// 增量⑩: token-table rebuild keys KF-assembled, anchored on #TKD.
@@ -942,7 +942,7 @@ pub fn generate(
 	manifest_key("TK_KM", tkm as u64);
 	manifest_key("TK_KC", tkc as u64);
 	let tk_lines = format!(
-		"local TKD = {{{}}}\n  local TK = {{}}\n  do\n    local tst = {}\n    local tb = {{}}\n    for i = 1, 60 do\n      tst = ({} * tst + {}) % 268435456\n      tb[i] = (TKD[i] - tst % 256) % 256\n    end\n    for i = 0, 9 do\n      TK[CHAR(tb[i * 5 + 1], tb[i * 5 + 2], tb[i * 5 + 3], tb[i * 5 + 4], tb[i * 5 + 5])] = CHAR(tb[50 + i + 1])\n    end\n  end\n",
+		"local TKD = {{{}}}\n  local TK = {{}}\n  do\n    local tst = {}\n    local tb = {{}}\n    for i = 1, 60 do\n      tst = ({} * tst + {}) % 268435456\n      tb[i] = (TKD[i] - (((tst % 256) + (FLR(tst / 256) % 256) + (FLR(tst / 65536) % 256) + FLR(tst / 16777216)) % 256)) % 256\n    end\n    for i = 0, 9 do\n      TK[CHAR(tb[i * 5 + 1], tb[i * 5 + 2], tb[i * 5 + 3], tb[i * 5 + 4], tb[i * 5 + 5])] = CHAR(tb[50 + i + 1])\n    end\n  end\n",
 		masked_tk.join(", "), tkseed_e, tkm_e, tkc_e
 	);
 
@@ -1272,7 +1272,7 @@ pub fn generate(
 				.iter()
 				.map(|&b| {
 					state = (hm as u64 * state + hc as u64) % 268_435_456;
-					b.wrapping_add((state % 256) as u8)
+					b.wrapping_add(fold_key(state))
 				})
 				.collect();
 			let blen = xb.len();
@@ -1343,7 +1343,7 @@ pub fn generate(
 		// the 44 fragments -> port the parser (⑭). Every layer is a
 		// fresh per-build reimplementation.
 		let hboot_src = format!(
-			"return function(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM) local HW = {{}} local BSS local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - hs % 256) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - hs % 256) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - hs % 256) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - hs % 256) % 256); ti = ti + 1 end if w == 200 then BSS = SUB(table.concat(t), 1, flen) else HW[w] = LS(SUB(table.concat(t), 1, flen))() end end return HW, BSS end",
+			"return function(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM) local HW = {{}} local BSS local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end if w == 200 then BSS = SUB(table.concat(t), 1, flen) else HW[w] = LS(SUB(table.concat(t), 1, flen))() end end return HW, BSS end",
 			hseed = hseed_e, hstep = hstep_e, hm = hm_e, hc = hc_e,
 		);
 		// meta keystream: fresh random constants assembled through the
@@ -1363,7 +1363,7 @@ pub fn generate(
 		let mut mst = meta_seed as u64;
 		for &b in hb_bytes.iter() {
 			mst = (meta_m as u64 * mst + meta_c as u64) % 268_435_456;
-			hb_masked.push(b.wrapping_add((mst % 256) as u8));
+			hb_masked.push(b.wrapping_add(fold_key(mst)));
 		}
 		// emit masked bytes as <=90-entry array chunks (BW-family
 		// camouflage; no giant literal array).
@@ -1438,7 +1438,7 @@ pub fn generate(
     local MH = {{}}
     for i = 1, #MB do
       g = ({} * g + {}) % 268435456
-      MH[i] = CHAR((MB[i] - g % 256) % 256)
+      MH[i] = CHAR((MB[i] - (((g % 256) + (FLR(g / 256) % 256) + (FLR(g / 65536) % 256) + FLR(g / 16777216)) % 256)) % 256)
     end
     HW, BSS = LS(table.concat(MH))()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM)
     do
