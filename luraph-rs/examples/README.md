@@ -73,6 +73,10 @@ CARGO_NET_OFFLINE=true /home/user/luraph/.tools/bin/cargo build --release
 tests/gen_examples.sh
 ```
 
+> 注意：`gen_examples.sh` 会先 `rm -f examples/*.lua` 再从 `tests/cases/`
+> 重建。`real_*` 样本已入语料会自动重建；**手工补充的样本（如
+> `local_a`）会被清掉，需重新生成**。
+
 ## 当前已实现的混淆（M1–M5 全开）
 
 - **L1 名称混淆**：所有局部变量/参数/循环变量/local function 名 → 随机名
