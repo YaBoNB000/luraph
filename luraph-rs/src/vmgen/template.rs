@@ -357,6 +357,262 @@ impl KeyEmitter {
 	}
 }
 
+/// 增量⑰-A (对抗 R003 — 引导迷你 VM): the meta keystream generation +
+/// HBOOT unmask loop is emitted as a small custom bytecode program run
+/// by a visible dispatcher. R003's whitelist folder handles arithmetic
+/// expressions but NOT opcode-dispatch semantics: recovering this layer
+/// requires ISA extraction + emulation with indirect memory access,
+/// self-modification and data-dependent branches (their stated 3-6x
+/// band). Per build: opcode numbering permuted, memory bases randomized.
+///
+/// ISA (2-operand, registers R[0..7], memory MM):
+///   LDI d,x : R[d] = MP[x]       LDM d,a: R[d] = MM[MP[a]]
+///   STM a,s : MM[MP[a]] = R[s]   LD d,s : R[d] = MM[R[s]]
+///   ST s,d  : MM[R[s]] = R[d]    MOV d,s: R[d] = R[s]
+///   ADD/SUB/MUL d,s              DIV d,s: R[d]=FLR(R[d]/R[s])
+///   MOD d,s : R[d] = R[d]%R[s]   (Lua %, non-negative result)
+///   JZ s,off: if R[s]==0 pc+=off else pc+=3
+///   JMP off : pc += off          STP x,s: MP[x] = R[s]
+///   HALT
+/// Program computes: for i=1..n: state=(m*state+c)%2^28;
+/// out[i] = (in[i] - fold4(state)) % 256. The fold divisor 256 is
+/// computed at RUNTIME (repeated doubling) and SELF-MODIFIED into the
+/// program array (STP) before first use.
+fn emit_metavm(seed_e: &str, m_e: &str, c_e: &str, mb_count: usize, rng: &mut Rng) -> String {
+	// randomized opcode numbering (1..=15 permuted)
+	let names = [
+		"LDI", "LDM", "STM", "LD", "ST", "MOV", "ADD", "SUB", "MUL", "DIV",
+		"MOD", "JZ", "JMP", "STP", "HALT",
+	];
+	let mut nums: Vec<i64> = (1..=15).collect();
+	rng.shuffle(&mut nums);
+	let n: std::collections::HashMap<&str, i64> = names
+		.iter()
+		.zip(nums.iter())
+		.map(|(a, b)| (*a, *b))
+		.collect();
+	let in_base: i64 = 100 + rng.int(0, 400);
+	let out_base: i64 = in_base + mb_count as i64 + 50 + rng.int(0, 200);
+	let scratch: i64 = out_base + mb_count as i64 + 20 + rng.int(0, 40);
+
+	// ---- fixed program layout (word offsets; 0-based) -------------
+	// regs: 0=state 1=m 2=c 3=i 4=n 5..7 temps
+	let mut p: Vec<i64> = Vec::new();
+	// helpers: absolute const positions resolved after code gen
+	// code:
+	// 0..26  load state/m/c/n from MM[1..4]; i=1
+	// 27..53 r7 = 256 by doubling
+	// 54     STP c256_slot, r7   (self-mod)
+	// 57=loop: LCG step + fold4 + byte IO + i++ + branch
+	//
+	// word counts: LDI/LDM/STM/LD/ST/MOV/ADD/SUB/MUL/DIV/MOD/STP = 3,
+	// JZ = 3, JMP = 2, HALT = 1.
+	let o3 = |p: &mut Vec<i64>, op: i64, a: i64, b: i64| p.extend_from_slice(&[op, a, b]);
+	// init: LDI r7, <1> ; LD r0, r7 ; ... addresses 1..4 as constants
+	// (the constant value doubles as the MM address it names)
+	// -- const slots appended later; use symbolic refs patched below
+	const FIXUP: i64 = -1;
+	let ldi = |p: &mut Vec<i64>, n: &std::collections::HashMap<&str, i64>, d: i64, sym: i64| {
+		o3(p, n["LDI"], d, sym); // sym = FIXUP placeholder index marker
+	};
+	let _ = ldi;
+	// Emit with raw markers: const refs encoded as -(marker) and patched
+	// marker ids: 1=one 2=two 3=three 4=four 5=zero 6=mod28 7=ib 8=ob
+	//             9=c256 10=sa
+	macro_rules! ins {
+		($op:expr, $a:expr, $b:expr) => {
+			p.extend_from_slice(&[n[$op], $a, $b])
+		};
+	}
+	macro_rules! ins1 {
+		($op:expr, $a:expr) => {
+			p.extend_from_slice(&[n[$op], $a])
+		};
+	}
+	macro_rules! ins0 {
+		($op:expr) => {
+			p.push(n[$op])
+		};
+	}
+	// markers as negative x-operand for LDI/STP; patched after layout
+	// (positions are 1-based in the final array)
+	let mk = |id: i64| -id; // symbolic
+	// --- init ---
+	ins!("LDI", 7, mk(1)); // r7 = 1
+	ins!("LD", 0, 7);      // state = MM[1]
+	ins!("LDI", 7, mk(2)); // r7 = 2
+	ins!("LD", 1, 7);      // m = MM[2]
+	ins!("LDI", 7, mk(3)); // r7 = 3
+	ins!("LD", 2, 7);      // c = MM[3]
+	ins!("LDI", 7, mk(4)); // r7 = 4
+	ins!("LD", 4, 7);      // n = MM[4]
+	ins!("LDI", 3, mk(1)); // i = 1
+	ins!("LDI", 7, mk(1)); // r7 = 1 (doubling seed)
+	for _ in 0..8 {
+		ins!("ADD", 7, 7); // r7 *= 2
+	}
+	ins!("STP", mk(9), 7); // MP[c256] = 256  (self-modify)
+	// --- loop ---
+	let loop_pos = p.len() as i64;
+	ins!("MUL", 0, 1);
+	ins!("ADD", 0, 2);
+	ins!("LDI", 7, mk(6)); // 2^28
+	ins!("MOD", 0, 7);     // state %= 2^28
+	// fold4(state) -> r5
+	ins!("LDI", 7, mk(9)); // 256 (self-modified slot)
+	ins!("MOV", 6, 0);     // t = state
+	ins!("LDI", 5, mk(5)); // acc = 0
+	for _ in 0..4 {
+		ins!("STM", mk(10), 6); // MM[scratch] = t
+		ins!("MOD", 6, 7);      // t % 256
+		ins!("ADD", 5, 6);      // acc +=
+		ins!("LDM", 6, mk(10)); // t = MM[scratch]
+		ins!("DIV", 6, 7);      // t /= 256
+	}
+	ins!("MOD", 5, 7);     // key = acc % 256
+	// byte IO: out[i] = (in[i] - key) % 256
+	ins!("LDI", 6, mk(7)); // IB
+	ins!("ADD", 6, 3);     // IB + i
+	ins!("LDI", 7, mk(1)); // 1
+	ins!("SUB", 6, 7);     // addr_in = IB + i - 1
+	ins!("LD", 6, 6);      // in = MM[addr_in]
+	ins!("SUB", 6, 5);     // in - key
+	ins!("LDI", 7, mk(9)); // 256
+	ins!("MOD", 6, 7);     // % 256 (Lua handles negatives)
+	ins!("LDI", 7, mk(8)); // OB
+	ins!("ADD", 7, 3);     // OB + i
+	ins!("LDI", 5, mk(1)); // 1 (key consumed)
+	ins!("SUB", 7, 5);     // addr_out = OB + i - 1
+	ins!("ST", 7, 6);      // MM[addr_out] = byte
+	ins!("ADD", 3, 5);     // i += 1
+	// branch: continue while n - i + 1 != 0
+	ins!("MOV", 6, 4);
+	ins!("SUB", 6, 3);
+	ins!("ADD", 6, 5);
+	let jz_pos = p.len() as i64;
+	ins!("JZ", 6, FIXUP); // offset patched: skip over JMP to HALT
+	ins1!("JMP", FIXUP);  // offset patched: back to loop
+	ins0!("HALT");
+	let halt_pos = p.len() as i64 - 1;
+	// ---- constants appended after code ------------------------------
+	let mut const_pos: [i64; 11] = [0; 11];
+	let vals: [i64; 10] = [
+		1, 2, 3, 4, 0, 268435456, in_base, out_base, 0, scratch,
+	];
+	for (k, v) in vals.iter().enumerate() {
+		const_pos[k + 1] = p.len() as i64 + 1; // 1-based position
+		p.push(*v);
+	}
+	// patch symbolic markers (operands stored as -id) FIRST, then
+	// JZ/JMP relative offsets (which may be negative words)
+	for w in p.iter_mut() {
+		if *w < 0 {
+			let id = (-*w) as usize;
+			*w = const_pos[id];
+		}
+	}
+	p[jz_pos as usize + 2] = halt_pos - jz_pos; // JZ: land on HALT
+	p[jz_pos as usize + 4] = loop_pos - (jz_pos + 3); // JMP: back to loop
+	// ---- emit -------------------------------------------------------
+	let mut mp = String::from("local MP = {");
+	mp.push_str(
+		&p.iter()
+			.map(|v| v.to_string())
+			.collect::<Vec<_>>()
+			.join(", "),
+	);
+	mp.push_str("}\n");
+	let gather = format!(
+		"local MM = {{}}\n    MM[1] = {}\n    MM[2] = {}\n    MM[3] = {}\n    MM[4] = #MB\n    for i = 1, #MB do MM[{} + i] = MB[i] end\n",
+		seed_e, m_e, c_e, in_base - 1
+	);
+	let mut disp = String::from(
+		"    local MR = {0, 0, 0, 0, 0, 0, 0, 0}\n    local mpc = 1\n    while true do\n      local mop = MP[mpc]\n",
+	);
+	let d3 = format!(
+		"      if mop == {} then local d = MP[mpc + 1]; MR[d] = MP[MP[mpc + 2]]; mpc = mpc + 3\n",
+		n["LDI"]
+	);
+	let ldm3 = format!(
+		"      elseif mop == {} then local d = MP[mpc + 1]; MR[d] = MM[MP[MP[mpc + 2]]]; mpc = mpc + 3\n",
+		n["LDM"]
+	);
+	let stm3 = format!(
+		"      elseif mop == {} then MM[MP[MP[mpc + 1]]] = MR[MP[mpc + 2]]; mpc = mpc + 3\n",
+		n["STM"]
+	);
+	let ld3 = format!(
+		"      elseif mop == {} then local d = MP[mpc + 1]; MR[d] = MM[MR[MP[mpc + 2]]]; mpc = mpc + 3\n",
+		n["LD"]
+	);
+	let st3 = format!(
+		"      elseif mop == {} then MM[MR[MP[mpc + 1]]] = MR[MP[mpc + 2]]; mpc = mpc + 3\n",
+		n["ST"]
+	);
+	let mov3 = format!(
+		"      elseif mop == {} then MR[MP[mpc + 1]] = MR[MP[mpc + 2]]; mpc = mpc + 3\n",
+		n["MOV"]
+	);
+	let add3 = format!(
+		"      elseif mop == {} then MR[MP[mpc + 1]] = MR[MP[mpc + 1]] + MR[MP[mpc + 2]]; mpc = mpc + 3\n",
+		n["ADD"]
+	);
+	let sub3 = format!(
+		"      elseif mop == {} then MR[MP[mpc + 1]] = MR[MP[mpc + 1]] - MR[MP[mpc + 2]]; mpc = mpc + 3\n",
+		n["SUB"]
+	);
+	let mul3 = format!(
+		"      elseif mop == {} then MR[MP[mpc + 1]] = MR[MP[mpc + 1]] * MR[MP[mpc + 2]]; mpc = mpc + 3\n",
+		n["MUL"]
+	);
+	let div3 = format!(
+		"      elseif mop == {} then MR[MP[mpc + 1]] = FLR(MR[MP[mpc + 1]] / MR[MP[mpc + 2]]); mpc = mpc + 3\n",
+		n["DIV"]
+	);
+	let mod3 = format!(
+		"      elseif mop == {} then MR[MP[mpc + 1]] = MR[MP[mpc + 1]] % MR[MP[mpc + 2]]; mpc = mpc + 3\n",
+		n["MOD"]
+	);
+	let jz3 = format!(
+		"      elseif mop == {} then if MR[MP[mpc + 1]] == 0 then mpc = mpc + MP[mpc + 2] else mpc = mpc + 3 end\n",
+		n["JZ"]
+	);
+	let jmp2 = format!(
+		"      elseif mop == {} then mpc = mpc + MP[mpc + 1]\n",
+		n["JMP"]
+	);
+	let stp3 = format!(
+		"      elseif mop == {} then MP[MP[mpc + 1]] = MR[MP[mpc + 2]]; mpc = mpc + 3\n",
+		n["STP"]
+	);
+	disp.push_str(&d3);
+	disp.push_str(&ldm3);
+	disp.push_str(&stm3);
+	disp.push_str(&ld3);
+	disp.push_str(&st3);
+	disp.push_str(&mov3);
+	disp.push_str(&add3);
+	disp.push_str(&sub3);
+	disp.push_str(&mul3);
+	disp.push_str(&div3);
+	disp.push_str(&mod3);
+	disp.push_str(&jz3);
+	disp.push_str(&jmp2);
+	disp.push_str(&stp3);
+	disp.push_str("      else break end\n    end\n");
+	let mh = format!(
+		"    local MH = {{}}\n    for i = 1, MM[4] do MH[i] = CHAR(MM[{} + i]) end\n",
+		out_base - 1
+	);
+	let out = format!("{}{}{}{}", mp, gather, disp, mh);
+	if std::env::var("LURAPH_MVM_DBG").is_ok() {
+		let map_txt: Vec<String> = names.iter().map(|k| format!("{}={}", k, n[k])).collect();
+		eprintln!("MVMOPS {} INB {} OUTB {} SCR {}", map_txt.join(","), in_base, out_base, scratch);
+		eprintln!("MVM>>>{}<<<MVM", out);
+	}
+	out
+}
+
 /// P4 (防御代码隐藏): runtime string-builder for the interpreter
 /// scope — char codes stored SHUFFLED in a table plus an order list,
 /// concatenated through CHAR. Returns Lua declarations; the built
@@ -1413,6 +1669,14 @@ pub fn generate(
 		let probe_mix = rng.int(1_048_576, KEY_MOD - 1);
 		let probe_mix_e = ke.key_expr(probe_mix, None, rng);
 		let strlit = pool.lit("string");
+		// 增量⑰-A: the keystream generation + HBOOT unmask loop become
+		// a mini-VM bytecode program (visible dispatcher only). The
+		// seed keeps the ⑯-1 probe-keyed form, fed as MM[1].
+		let meta_seed_full = format!(
+			"({} + (pb - {}) * {}) % 268435456",
+			meta_seed_e, c_fold, probe_mix_e
+		);
+		let metavm = emit_metavm(&meta_seed_full, &meta_m_e, &meta_c_e, hb_masked.len(), rng);
 		let build = format!(
 			r#"{}  {}local HW = {{}}
   local BSS
@@ -1434,12 +1698,7 @@ pub fn generate(
     end
     if not nlok then while true do end end
     local hqi = {{{}}}
-    {}    local g = ({} + (pb - {}) * {}) % 268435456
-    local MH = {{}}
-    for i = 1, #MB do
-      g = ({} * g + {}) % 268435456
-      MH[i] = CHAR((MB[i] - (((g % 256) + (FLR(g / 256) % 256) + (FLR(g / 65536) % 256) + FLR(g / 16777216)) % 256)) % 256)
-    end
+    {}    {}
     HW, BSS = LS(table.concat(MH))()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM)
     do
       local avt = {{}}
@@ -1449,8 +1708,7 @@ pub fn generate(
     for w, f in pairs(HW) do HW2[(w + AV) % 256] = f end
     PF = LS(BSS)()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP)(FN)
   end"#,
-			hq_lines, mb_lines, boot, hqi.join(", "), mb_gather,
-			meta_seed_e, c_fold, probe_mix_e, meta_m_e, meta_c_e,
+			hq_lines, mb_lines, boot, hqi.join(", "), mb_gather, metavm,
 			strlit = strlit,
 			v_ls = v_ls, v_ts = v_ts, v_dbg = v_dbg, v_inf = v_inf,
 			v_s = v_s, v_c = v_c,

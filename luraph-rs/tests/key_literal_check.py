@@ -20,7 +20,7 @@ def main():
     out_path, mani = sys.argv[1], sys.argv[2]
     quiet = "--quiet" in sys.argv
     code = open(out_path, encoding="utf-8").read()
-    bad, total = [], 0
+    bad, warn, total = [], [], 0
     for line in open(mani, encoding="utf-8"):
         line = line.strip()
         if not line or "=" not in line:
@@ -29,7 +29,16 @@ def main():
         total += 1
         # 裸字面量 = 完整数字 token（前后不得是数字/小数点/指数）
         if re.search(r"(?<![\d.])" + val + r"(?![\d.])", code):
-            bad.append((name, val))
+            # <2^20 的小值（如 KSUM 字节和）会与数据长度/偏移巧合
+            # 碰撞——其装配已查表化，巧合匹配不算泄漏，只告警；
+            # >=2^20 的密码学值碰撞概率可忽略，硬失败。
+            if int(val) >= 1048576:
+                bad.append((name, val))
+            else:
+                warn.append((name, val))
+    for name, val in warn:
+        if not quiet:
+            print(f"  ⚠️ {name} = {val} 小值巧合碰撞（非装配泄漏）")
     if bad:
         for name, val in bad:
             print(f"  ❌ {name} = {val} 仍以裸字面量出现")

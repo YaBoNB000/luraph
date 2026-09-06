@@ -1538,6 +1538,7 @@ pub fn scaffold(
 		let src = format!(
 			"function(b,...) {guard}local u,z,Z,o,w,K,G,q,M,F,H,E=b:{init}(); \
 			 local {lhs6},C=z,Z,o,w,K,G,{{}}; C[{ss}]=0; C[{ax}]=0; \
+		 do local u=1; local w=u+1-1; local o=w-u; if o~=0 then C[{ss}]=o end end; \
 			 local J={{[4]='{xl}',[7]='{xl}'}}; \
 			 while u do local h2,B=b[J[4]](b,C,{sv},{rhs5}); \
 			if h2==2 then return B end end end",
