@@ -1391,37 +1391,69 @@ pub fn generate(
 		let v_inf = "hinf";
 		let v_s = "hsarg";
 		let v_c = "hcb";
+		let v_ts = "hts";
+		boot.push_str(&coded_name_tpl(rng, v_ts, "tostring"));
 		boot.push_str(&coded_name_tpl(rng, v_ls, "loadstring"));
 		boot.push_str(&coded_name_tpl(rng, v_dbg, "debug"));
 		boot.push_str(&coded_name_tpl(rng, v_inf, "info"));
 		boot.push_str(&coded_name_tpl(rng, v_s, "s"));
 		boot.push_str(&coded_name_tpl(rng, v_c, "[C]"));
+		// 增量⑯-1 (探针钥匙化): base-31 fold of the clean-environment
+		// loadstring source ("[C]"). In a clean run pb == C_FOLD and the
+		// extra term vanishes; a hooked loader shifts pb, silently
+		// corrupting the meta keystream (HBOOT decodes to garbage ->
+		// death by wrong key, independent of the explicit nlok trap).
+		let c_fold: i64 = {
+			let mut h: i64 = 0;
+			for &b in b"[C]".iter() {
+				h = (h * 31 + b as i64) % KEY_MOD;
+			}
+			h
+		};
+		let probe_mix = rng.int(1_048_576, KEY_MOD - 1);
+		let probe_mix_e = ke.key_expr(probe_mix, None, rng);
+		let strlit = pool.lit("string");
 		let build = format!(
 			r#"{}  {}local HW = {{}}
   local BSS
+  local AV = 0
+  local HW2 = {{}}
   do
     {}local LS = GFE(0)[{v_ls}]
+    local TSTR = GFE(0)[{v_ts}]
     local DBG = GFE(0)[{v_dbg}]
     local INF = DBG and DBG[{v_inf}]
     local nlok = false
+    local pb = 0
     do
       local ok, sr = PCAL(function() return INF(LS, {v_s}) end)
       if ok and sr == {v_c} then nlok = true end
+      if ok and TYP(sr) == {strlit} then
+        for i = 1, #sr do pb = (pb * 31 + BYTE(sr, i)) % 268435456 end
+      end
     end
     if not nlok then while true do end end
     local hqi = {{{}}}
-    {}    local g = {}
+    {}    local g = ({} + (pb - {}) * {}) % 268435456
     local MH = {{}}
     for i = 1, #MB do
       g = ({} * g + {}) % 268435456
       MH[i] = CHAR((MB[i] - g % 256) % 256)
     end
     HW, BSS = LS(table.concat(MH))()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM)
+    do
+      local avt = {{}}
+      local ats = TSTR(avt)
+      for i = 1, #ats do AV = (AV * 31 + BYTE(ats, i)) % 268435456 end
+    end
+    for w, f in pairs(HW) do HW2[(w + AV) % 256] = f end
     PF = LS(BSS)()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP)(FN)
   end"#,
 			hq_lines, mb_lines, boot, hqi.join(", "), mb_gather,
-			meta_seed_e, meta_m_e, meta_c_e,
-			v_ls = v_ls, v_dbg = v_dbg, v_inf = v_inf, v_s = v_s, v_c = v_c,
+			meta_seed_e, c_fold, probe_mix_e, meta_m_e, meta_c_e,
+			strlit = strlit,
+			v_ls = v_ls, v_ts = v_ts, v_dbg = v_dbg, v_inf = v_inf,
+			v_s = v_s, v_c = v_c,
 		);
 		hfrag = build;
 		String::new()
@@ -1458,7 +1490,7 @@ pub fn generate(
 			cond.push_str(&format!("oc == OCt[{}] then {}", idx, body));
 		}
 		let cps_fetch = format!(
-			"local oc = W[pc];if oc then local a = {sa}[pc];local b = {sb}[pc];local c = {sc}[pc];local d = {sd}[pc];pc = pc + 1;if {cond} else local r = HW[oc](E,a,b,c,d); if r then if r.j then pc = r.j else return U(r[1], 1, r[2]) end end end end",
+			"local oc = W[pc];if oc then local a = {sa}[pc];local b = {sb}[pc];local c = {sc}[pc];local d = {sd}[pc];pc = pc + 1;if {cond} else local r = HW2[(oc + AV) % 256](E,a,b,c,d); if r then if r.j then pc = r.j else return U(r[1], 1, r[2]) end end end end",
 			sa = sa, sb = sb, sc = sc, sd = sd, cond = cond,
 		);
 		(cps_fetch, String::new())
