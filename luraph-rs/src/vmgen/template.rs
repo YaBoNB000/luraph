@@ -164,6 +164,23 @@ fn obf_num(n: u64, rng: &mut Rng) -> String {
 
 use super::manifest_key;
 
+/// 增量⑳ (选项B·激活值多因子化): nonlinear activation hash shared by
+/// the compile-time AK fold (Rust) and the runtime gate (Lua/bit32).
+/// Must stay byte-for-byte identical to the Lua mirror in the boot gate:
+///   h ^= b; h = lrotate(h, rot); h ^= (h*mul + b) & 0xFFFFFFFF
+/// The xor/rotate/multiply mix is nonlinear (fold31 was linear and
+/// algebraically foldable), and two independent (seed,rot,mul) factors
+/// are mixed so a collision must satisfy both at once.
+fn activation_hash(key: &[u8], seed: u32, rot: u32, mul: u32) -> u32 {
+	let mut h: u32 = seed;
+	for &b in key {
+		h ^= b as u32;
+		h = h.rotate_left(rot);
+		h ^= h.wrapping_mul(mul).wrapping_add(b as u32);
+	}
+	h
+}
+
 /// 增量⑩ (防静态, 报告突破口 #5/#2) + 增量⑬ (对抗 R002 符号求值):
 /// key material is never emitted as a literal AND no key has a closed
 /// arithmetic form. R002 folded every `(A*B+C)%2^28` fragment recipe
@@ -1945,30 +1962,47 @@ pub fn generate(
 		// behind this one gate; the compile-time masking mirror is
 		// untouched (its seed is the constant meta_seed).
 		let mut ak_fold: i64 = 0;
+		let mut ak2_fold: i64 = 0;
 		if let Some(key) = bind_key {
-			for &b in key.as_bytes() {
-				ak_fold = (ak_fold * 31 + b as i64) % KEY_MOD;
-			}
+			// 增量⑳: two independent nonlinear factors (mirror in the gate)
+			ak_fold = (activation_hash(key.as_bytes(), 0x811c_9dc5, 7, 31)
+				% 268_435_456) as i64;
+			ak2_fold = (activation_hash(key.as_bytes(), 0x0100_0193, 13, 37)
+				% 268_435_456) as i64;
 			assert!(ak_fold != 0, "activation fold collapsed to 0 (== no-input fold)");
 		}
 		let (ak_gate, meta_seed_full) = if bind_key.is_some() {
 			let ak_e = ke.key_expr(ak_fold, Some(("#hqi", n_hqi)), rng);
+			let ak2_e = ke.key_expr(ak2_fold, Some(("#hqi", n_hqi)), rng);
 			let bind_mix = rng.int(1_048_576, KEY_MOD - 1);
 			let bind_mix_e = ke.key_expr(bind_mix, Some(("#hqi", n_hqi)), rng);
+			let bind_mix2 = rng.int(1_048_576, KEY_MOD - 1);
+			let bind_mix2_e = ke.key_expr(bind_mix2, Some(("#hqi", n_hqi)), rng);
 			manifest_key("BIND_AK", ak_fold as u64);
+			manifest_key("BIND_AK2", ak2_fold as u64);
 			manifest_key("BIND_MIX", bind_mix as u64);
+			manifest_key("BIND_MIX2", bind_mix2 as u64);
 			let dbg = if std::env::var("LURAPH_BIND_DBG").is_ok() {
-				"print('DBGAK', TYP(akv), TSTR(akv), ak)\n    "
+				"print('DBGAK', TYP(akv), TSTR(akv), ak1, ak2)\n    "
 			} else {
 				""
 			};
+			// 增量⑳: nonlinear two-factor fold (bit32). Seeds are emitted
+			// through obf_num (no recognizable FNV constant in output);
+			// the gate lives in the visible boot but its TARGET (AK1/AK2)
+			// stays assembled in the key tables.
+			let seed1_e = obf_num(0x811c_9dc5, rng);
+			let seed2_e = obf_num(0x0100_0193, rng);
 			let gate = format!(
-				"local akv = ...\n    local ak = 0\n    if TYP(akv) == {} then\n      for aki = 1, #akv do\n        ak = (ak * 31 + BYTE(akv, aki)) % 268435456\n      end\n    end\n    {}    ",
-				strlit, dbg
+				"local akv = ...\n    local ak1 = {seed1}\n    local ak2 = {seed2}\n    if TYP(akv) == {strlit} then\n      for aki = 1, #akv do\n        local b = BYTE(akv, aki)\n        ak1 = bit32.bxor(ak1, b)\n        ak1 = bit32.lrotate(ak1, 7)\n        ak1 = bit32.bxor(ak1, bit32.band(ak1 * 31 + b, 4294967295))\n        ak2 = bit32.bxor(ak2, b)\n        ak2 = bit32.lrotate(ak2, 13)\n        ak2 = bit32.bxor(ak2, bit32.band(ak2 * 37 + b, 4294967295))\n      end\n      ak1 = ak1 % 268435456\n      ak2 = ak2 % 268435456\n    end\n    {dbg}    ",
+				seed1 = seed1_e,
+				seed2 = seed2_e,
+				strlit = strlit,
+				dbg = dbg,
 			);
 			let seed = format!(
-				"({} + (pb - {}) * {} + (ak - {}) * {}) % 268435456",
-				meta_seed_e, c_fold, probe_mix_e, ak_e, bind_mix_e
+				"({} + (pb - {}) * {} + (ak1 - {}) * {} + (ak2 - {}) * {}) % 268435456",
+				meta_seed_e, c_fold, probe_mix_e, ak_e, bind_mix_e, ak2_e, bind_mix2_e
 			);
 			(gate, seed)
 		} else {
