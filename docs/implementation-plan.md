@@ -170,6 +170,12 @@
   值应有授权码级熵；⑲⑳ 叠加后静态攻击面 = 破 KT 装配 + 双哈希反演。
   门禁：246/246 + 465/465 + 多种子 0 失败 + 绑定门 10/10 + 钥匙扫描 31 组
   0 泄漏 + cargo test 27。
+  **附带（S5 口径校准）**：安全指纹 S5 是 P3 时代口径（明文
+  `["loadstring"]` + `debug.info` 配对），P4 防御名运行时装配后恒红
+  属「防御变强的副产品」。按 F13 先例校准 `load_attack.py` 为结构配对：
+  (a) 原生性探针 `<pcall>(function() return f(x, y) end)`；(b) 静默陷阱
+  `if not v then while true do end end`——mangle/flatten/minify 后形状
+  不变，多种子实测恒 probe=1/trap=1。安全指纹首次 **34/34 × 5/5 全绿**。
 - **2026-09-07（选项B路线二·增量⑲：CPS 去中心化尾调用链 + 蹦床 —— 消灭全局 hook 咽喉点）**
   R006 三壁垒之②「全局 hook 咽喉点消失」：中心 `while true do fetch
   dispatch end` 是攻击方单点挂钩即可追踪全部指令的咽喉。⑲ 把它彻底拆掉：

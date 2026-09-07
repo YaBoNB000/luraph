@@ -8,7 +8,7 @@
   S2 字节码不规则      tests/attack/structure_attack.py
   S3 指令语义不可见    tests/attack/interp_attack.py
   S4 自描述消除        tests/attack/interp_attack.py
-  S5 动态加载防护      （P3 引入 load 后启用；当前 N/A）
+  S5 动态加载防护      （load_attack.py；增量⑳ 口径校准为 P4 形态）
   S6 运行等价          由官方矩阵/多种子承担（此处仅记录）
 
 用法: python3 tests/security_fingerprint.py <obf.lua> <src.lua> [--quiet]
