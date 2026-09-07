@@ -37,6 +37,12 @@ CARGO_NET_OFFLINE=true cargo build --release
 ./target/release/luraph-rs --preset vm     --seed 42 in.lua out.vm.lua
 ./target/release/luraph-rs --preset max    --seed 42 in.lua out.vm.lua
 
+# v15 结构同族档（Luau/Roblox-only，克隆 Luraph v15 形态）
+./target/release/luraph-rs --preset v15 --dialect luau --seed 42 in.lua out.v15.luau.lua
+
+# 增量⑱ 输入绑定/激活门（仅 v15）：把引导链门控到一个激活值上
+./target/release/luraph-rs --preset v15 --dialect luau --bind-key "LICENSE-KEY" --seed 42 in.lua out.v15.luau.lua
+
 # 等价写法
 ./target/release/luraph-rs --vm --dialect 5.1 --seed 42 in.lua out.vm.lua
 ```
@@ -48,6 +54,35 @@ CARGO_NET_OFFLINE=true cargo build --release
 | `high`（默认） | medium + L4 + L5 + L7 | 数十 KB | 商业级非 VM：整段密文 + 反篡改 |
 | `vm` | high + L6 | ~130–160 KB | 反编译器失效；Lua-on-Lua |
 | `max` | 当前 = `vm` | 同 `vm` | 最强在售档；v2（CPS 帧/超级指令）预留 |
+| `v15` | Luraph-v15 结构同族（Luau/Roblox） | ~40–50 KB/函数 | 形态克隆 + 选项B安全增量 |
+
+### 增量⑱：输入绑定 / 激活门（`--bind-key`，仅 v15）
+
+把引导链的第一层（HBOOT 元钥匙流）门控到一个**激活值**上。编译期已知
+激活值 `S`，运行时把**第一个变长参数**做 31 进折叠 `ak`，混进元钥匙流
+种子：`g = (meta_seed + (pb-fold)*pmix + (ak - AK)*bind_mix) % 2²⁸`
+（`AK = fold31(S)` 经钥匙表装配，产物中无字面量）。
+
+- 递送正确激活值 → 扰动项归零，引导正常解码，程序跑通；
+- 递送错误 / 缺失激活值 → 元钥匙流错位，HBOOT 解出垃圾，`loadstring`
+  得 `nil`，**任何字节码（44 个 HQ 碎片 + 解析器）都还没露面就崩溃**。
+
+**交付通道**：激活值必须以**第一个变长参数**递送进产物（沙箱 Luau CLI
+不转发命令行参数、全局只读、无 io，这是唯一通道）：
+
+```lua
+-- 生产交付形态：加载器以第一变长参递送激活值，其余转发给程序
+local f = loadstring(obfuscated_src)
+f("LICENSE-KEY", ...)           -- 第 2+ 个变长参会转发给原程序
+```
+
+lua51 CLI 会直接转发命令行参数，故 `lua51 out.lua KEY ...` 也可用；
+Luau CLI 需按上式包一层加载器（`tests/bind_gate_test.sh` 的 `mkwrap`
+给出了参考包装）。
+
+**诚实局限**：挡的是**离线静态脱壳**与**无钥匙运行**；挡不住「持正确
+激活值真跑、再挂钩子/转储运行时状态」的攻击者（那是运行时防护的范畴，
+见 `docs/plan-resemblance-and-security.md` 增量⑱）。
 
 同 `--seed` → 输出逐字节一致；不同 seed → 编码完全不同。  
 分层开关：`--no-mangle` / `--no-minify` / `--no-strings` / `--no-flatten` /
@@ -59,14 +94,17 @@ Luau 输入支持 `//`、`continue`、复合赋值、反引号插值、类型注
 
 ```bash
 cd luraph-rs
-bash tests/run_tests.sh      # 官方矩阵：30 语料 × 双方言 ×（high + vm）= 204 项
-bash tests/run_presets.sh    # 五档预设 × 全语料（405 项）
-bash tests/multiseed.sh      # VM/编码改动必跑
+bash tests/run_tests.sh      # 官方矩阵：全语料 × 双方言 ×（high + vm + v15）
+                             #   + 增量⑱ 绑定门控 10 项 = 246 项
+bash tests/run_presets.sh    # 预设 × 全语料（465 项）
+bash tests/multiseed.sh      # VM/编码改动必跑（含绑定 5 种子扫描）
+bash tests/bind_gate_test.sh # 增量⑱ 激活门独立跑法（已内嵌 run_tests.sh）
 bash tests/bench_presets.sh  # 性能快照（见 docs/performance.md）
 bash tests/gen_examples.sh   # 重生成 luraph-rs/examples/
 ```
 
-当前（2026-08-25）：官方矩阵 **204/204**，预设矩阵 **405/405**，多种子回归 0 失败。
+当前（2026-09-07）：官方矩阵 **246/246**，预设矩阵 **465/465**，多种子回归
+0 失败（含绑定扫描），绑定门控 10/10。
 
 ## 性能（摘要）
 

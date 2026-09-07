@@ -33,4 +33,11 @@ for case in "$ROOT"/tests/cases/*.lua; do
 	base="$(basename "$case" .lua)"
 	"$TOOL" --preset v15 --dialect luau --seed $SEED "$case" "$OUT/$base.v15.luau.lua"
 done
+
+# 增量⑱ (输入绑定/激活门): bound artifact for the gate target.
+# NOTE: the activation string used here is a DEMO value (documented in
+# examples/README.md); a real deployment keeps it out of the repo.
+# The bound artifact itself contains NO trace of the activation.
+"$TOOL" --preset v15 --dialect luau --bind-key "luraph-2026" --seed $SEED \
+	"$ROOT/tests/cases/bind_gate.lua" "$OUT/bind_gate.bound.v15.luau.lua"
 echo "generated $(ls "$OUT" | wc -l) examples in $OUT"

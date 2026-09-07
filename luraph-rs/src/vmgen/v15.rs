@@ -590,6 +590,11 @@ pub fn scaffold(
 	// 增量⑬: two numeric slots holding the key-assembly lookup tables
 	// (st1/st2) used by the kg generator and the carrier fold handlers.
 	st_slots: &[i64],
+	// 增量⑱ (输入绑定): forward the user-facing varargs through the
+	// entry closure into the VM (first vararg = activation key, the
+	// rest is handed to the program). Off = the historical shape, so
+	// unbound output stays byte-identical.
+	bind_passthrough: bool,
 ) -> (Vec<TableField>, String) {
 	let carrier_tokens: &[String] = &carrier.tokens;
 	let mut nm = Names::new(rng);
@@ -1294,14 +1299,22 @@ pub fn scaffold(
 		// then aliases itself over to the entry closure (runtime
 		// named-field write, F26).
 		let wrap_n: i64 = rng.int(4, 40);
+		// 增量⑱ (输入绑定): when bound, the entry closure appends the
+		// user-facing varargs after the carrier params, so the VM's own
+		// `...` carries (activation, data...) into the boot gate.
+		let vm_args = if bind_passthrough {
+			format!("{},...", cargs.join(","))
+		} else {
+			cargs.join(",")
+		};
 		let src = format!(
 			"function(b,C,{ra},{rb},{rc},{rd},{re}) \
-			 local E=function(...) return C[{vmslot}]({cargs}) end; \
+			 local E=function(...) return C[{vmslot}]({vm_args}) end; \
 			 C[{auxslot}],C[{entryslot}]={wrap_n},function(...) return b[{r2}](b,E,...) end; \
 			 b.{ehandler}=C[{entryslot}]; \
 			 return {ret},C,{ra},{rc},{rd},{re},{rb} end",
 			vmslot = vmslot,
-			cargs = cargs.join(","),
+			vm_args = vm_args,
 			auxslot = auxslot,
 			entryslot = entryslot,
 			wrap_n = wrap_n,

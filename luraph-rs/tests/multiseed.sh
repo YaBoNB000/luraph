@@ -53,5 +53,34 @@ for seed in $SEEDS; do
 		done
 	done
 done
+# 增量⑱ (选项B路线一) — activation-gate seed sweep. The gate rides the
+# v15 boot chain; per-build the AK fold, the mix key, and the key-table
+# recipes are all seed-shaped, so sweep bound builds across seeds:
+# correct key must reproduce the raw default path, wrong key must die.
+BGATE="$ROOT/tests/cases/bind_gate.lua"
+if [[ -f "$BGATE" ]]; then
+	for seed in $SEEDS; do
+		if ! timeout 60 "$TOOL" --preset v15 --dialect luau --bind-key "luraph-2026" \
+			--seed "$seed" "$BGATE" /tmp/ms_bind.lua 2>/dev/null; then
+			echo "FAIL [bind:tool] seed=$seed"; fail=$((fail+1)); continue
+		fi
+		o1="$(timeout 60 "$LUAU" "$BGATE" 2>&1)"; c1=$?
+		printf 'local _f=function(...)\n' > /tmp/ms_bind_ok.lua
+		cat /tmp/ms_bind.lua >> /tmp/ms_bind_ok.lua
+		printf '\nend\nreturn _f("luraph-2026")\n' >> /tmp/ms_bind_ok.lua
+		printf 'local _f=function(...)\n' > /tmp/ms_bind_bad.lua
+		cat /tmp/ms_bind.lua >> /tmp/ms_bind_bad.lua
+		printf '\nend\nreturn _f("wrong-%s")\n' "$seed" >> /tmp/ms_bind_bad.lua
+		o2="$(timeout 60 "$LUAU" /tmp/ms_bind_ok.lua 2>&1)"; c2=$?
+		o3="$(timeout 60 "$LUAU" /tmp/ms_bind_bad.lua 2>&1)"; c3=$?
+		if [[ "$c2" != "0" || "$o2" != "$o1" ]]; then
+			echo "FAIL [bind:ok] seed=$seed correct-key run diverges (rc $c1 vs $c2)"; fail=$((fail+1))
+		fi
+		if [[ "$c3" == "0" ]]; then
+			echo "FAIL [bind:bad] seed=$seed WRONG KEY RAN"; fail=$((fail+1))
+		fi
+	done
+fi
+
 echo "multiseed done: FAIL=$fail"
 [ "$fail" -eq 0 ]

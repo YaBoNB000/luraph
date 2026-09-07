@@ -649,7 +649,14 @@ pub fn generate(
 	mk: (u16, u16),
 	blobk: (u32, u32, u32, u32),
 	tags: [u8; 7],
+	// 增量⑱ (选项B路线一 — 输入绑定/激活门): activation string known
+	// at obfuscation time. v15 only (asserted below).
+	bind_key: Option<&str>,
 ) -> String {
+	assert!(
+		bind_key.is_none() || v15,
+		"--bind-key rides the v15 boot chain (legacy VM has no gate)"
+	);
 	let mut oc_items = Vec::new();
 	for (i, name) in OP_NAMES.iter().enumerate() {
 		oc_items.push(format!("{name} = {}", map.to_wire[i]));
@@ -1672,10 +1679,53 @@ pub fn generate(
 		// 增量⑰-A: the keystream generation + HBOOT unmask loop become
 		// a mini-VM bytecode program (visible dispatcher only). The
 		// seed keeps the ⑯-1 probe-keyed form, fed as MM[1].
-		let meta_seed_full = format!(
-			"({} + (pb - {}) * {}) % 268435456",
-			meta_seed_e, c_fold, probe_mix_e
-		);
+		//
+		// 增量⑱ (选项B路线一 — 输入绑定): when bound, the seed gains a
+		// term `(ak - AK) * mix` where ak = fold31(first vararg) is
+		// computed at boot and AK = fold31(activation) is assembled
+		// from the key tables (no literal). Correct activation -> the
+		// term vanishes and HBOOT decodes; wrong/missing input shifts
+		// the meta keystream -> HBOOT decodes to garbage -> loadstring
+		// yields nil -> death before ANY bytecode surfaces. The whole
+		// decode pipeline (HBOOT -> HQ fragments -> parser) sits
+		// behind this one gate; the compile-time masking mirror is
+		// untouched (its seed is the constant meta_seed).
+		let mut ak_fold: i64 = 0;
+		if let Some(key) = bind_key {
+			for &b in key.as_bytes() {
+				ak_fold = (ak_fold * 31 + b as i64) % KEY_MOD;
+			}
+			assert!(ak_fold != 0, "activation fold collapsed to 0 (== no-input fold)");
+		}
+		let (ak_gate, meta_seed_full) = if bind_key.is_some() {
+			let ak_e = ke.key_expr(ak_fold, Some(("#hqi", n_hqi)), rng);
+			let bind_mix = rng.int(1_048_576, KEY_MOD - 1);
+			let bind_mix_e = ke.key_expr(bind_mix, Some(("#hqi", n_hqi)), rng);
+			manifest_key("BIND_AK", ak_fold as u64);
+			manifest_key("BIND_MIX", bind_mix as u64);
+			let dbg = if std::env::var("LURAPH_BIND_DBG").is_ok() {
+				"print('DBGAK', TYP(akv), TSTR(akv), ak)\n    "
+			} else {
+				""
+			};
+			let gate = format!(
+				"local akv = ...\n    local ak = 0\n    if TYP(akv) == {} then\n      for aki = 1, #akv do\n        ak = (ak * 31 + BYTE(akv, aki)) % 268435456\n      end\n    end\n    {}    ",
+				strlit, dbg
+			);
+			let seed = format!(
+				"({} + (pb - {}) * {} + (ak - {}) * {}) % 268435456",
+				meta_seed_e, c_fold, probe_mix_e, ak_e, bind_mix_e
+			);
+			(gate, seed)
+		} else {
+			(
+				String::new(),
+				format!(
+					"({} + (pb - {}) * {}) % 268435456",
+					meta_seed_e, c_fold, probe_mix_e
+				),
+			)
+		};
 		let metavm = emit_metavm(&meta_seed_full, &meta_m_e, &meta_c_e, hb_masked.len(), rng);
 		let build = format!(
 			r#"{}  {}local HW = {{}}
@@ -1697,7 +1747,7 @@ pub fn generate(
       end
     end
     if not nlok then while true do end end
-    local hqi = {{{}}}
+    {ak_gate}local hqi = {{{}}}
     {}    {}
     HW, BSS = LS(table.concat(MH))()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM)
     do
@@ -1709,6 +1759,7 @@ pub fn generate(
     PF = LS(BSS)()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP)(FN)
   end"#,
 			hq_lines, mb_lines, boot, hqi.join(", "), mb_gather, metavm,
+			ak_gate = ak_gate,
 			strlit = strlit,
 			v_ls = v_ls, v_ts = v_ts, v_dbg = v_dbg, v_inf = v_inf,
 			v_s = v_s, v_c = v_c,
@@ -1794,8 +1845,25 @@ pub fn generate(
 	// 增量⑩: the key-fragment table + all fragment writes land at the
 	// very top of the VM body (before the first key use in oc_boot).
 	let kf_block = ke.block(rng);
+	// 增量⑱ (输入绑定): bound output gives the VM a vararg tail — the
+	// entry closure forwards (activation, data...) after the carriers;
+	// the boot gate folds the first vararg, the program receives the
+	// rest (see entry_tail below). Unbound output keeps the exact
+	// historical signature.
+	let vm_params = if bind_key.is_some() {
+		format!("{}, ...", params)
+	} else {
+		params.clone()
+	};
+	let entry_tail = if bind_key.is_some() {
+		String::from(
+			"local _bt = { ... }\n  local vargs = {}\n  for _bi = 2, #_bt do\n    vargs[_bi - 1] = _bt[_bi]\n  end\n  local V2 = {}\n  return run(PF[#FN], V2, {}, vargs, #vargs)",
+		)
+	} else {
+		String::from("local vargs = {}\n  local V2 = {}\n  return run(PF[#FN], V2, {}, vargs, 0)")
+	};
 	format!(
-		r#"local VM = function({params})
+		r#"local VM = function({vm_params})
   {kf_block}{oc_table}
   local FN = {{{params}}}
   local PF = {{}}
@@ -1827,12 +1895,12 @@ pub fn generate(
       {branches}
     end
   end
-  local vargs = {{}}
-  local V2 = {{}}
-  return run(PF[#FN], V2, {{}}, vargs, 0)
+  {entry_tail}
 end
 "#,
-		params = params,
+	vm_params = vm_params,
+	entry_tail = entry_tail,
+	params = params,
 		kf_block = kf_block,
 		oc_table = oc_table,
 		p_fill = p_fill,

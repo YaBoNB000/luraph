@@ -144,6 +144,15 @@ for case in "$ROOT"/tests/cases/*.lua; do
 	done
 done
 
+# ---------------------------------------------------------------
+# 增量⑱ (选项B路线一) — input binding / activation gate phase.
+# Sourced (not executed) so it shares the pass/fail/failed counters;
+# validates the --bind-key v15 artifact: correct key runs, wrong or
+# missing key dies, no activation leak, unbound control stays keyless,
+# multi-seed + loadstring-delivery stability.
+# ---------------------------------------------------------------
+source "$ROOT/tests/bind_gate_test.sh"
+
 echo "=================================================="
 echo "PASS checks: $pass   FAIL: $fail"
 if [[ $fail -gt 0 ]]; then

@@ -54,6 +54,11 @@ struct Options {
 	/// How many junk blocks to inject at each function head (max preset
 	/// raises this; VM templates stay at 2 to keep the 200-local budget).
 	junk_n: usize,
+	/// 增量⑱ (选项B路线一 — 输入绑定/激活门): activation string known
+	/// at obfuscation time. The v15 boot keystream is tied to the
+	/// runtime fold of the FIRST vararg; only a run that supplies the
+	/// matching activation decodes the bootstrap. v15-only.
+	bind_key: Option<String>,
 }
 
 /// Named strength presets. Individual `--no-*` / `--vm` flags that
@@ -197,6 +202,12 @@ Options:
   --no-strings           disable L2 string encryption (default: enabled)
   --no-flatten           disable L3 loop desugar + CFG flattening (default: enabled)
   --no-junk              disable L3 junk code injection (default: enabled)
+  --bind-key <activation>  增量⑱ input binding (v15 preset only): tie the
+                         boot keystream to the FIRST runtime vararg. Only a
+                         run that passes this exact activation string decodes
+                         the bootstrap; wrong/missing input dies before any
+                         bytecode is recovered. Remaining varargs are
+                         forwarded to the program.
   -h, --help             show this help
   --version              show version
 ",
@@ -223,6 +234,7 @@ fn main() -> ExitCode {
 		do_flatten: true,
 		do_junk: true,
 		junk_n: 2,
+		bind_key: None,
 	};
 	let mut i = 0;
 	let mut positional: Vec<String> = Vec::new();
@@ -295,6 +307,14 @@ fn main() -> ExitCode {
 			"--no-strings" => opts.do_strings = false,
 			"--no-flatten" => opts.do_flatten = false,
 			"--no-junk" => opts.do_junk = false,
+			"--bind-key" => {
+				i += 1;
+				if i >= args.len() {
+					eprintln!("error: --bind-key requires an activation string");
+					return ExitCode::FAILURE;
+				}
+				opts.bind_key = Some(args[i].clone());
+			}
 			s if s.starts_with('-') => {
 				eprintln!("error: unknown option '{}'", s);
 				print_help();
@@ -322,6 +342,24 @@ fn main() -> ExitCode {
 			 run. Use `--preset vm` for the dual-target output."
 		);
 		return ExitCode::FAILURE;
+	}
+	// 增量⑱ (输入绑定): the activation gate rides the v15 boot chain
+	// (HBOOT meta keystream + entry vararg passthrough), so it is a
+	// v15-only feature. An empty activation folds to 0 == the no-input
+	// fold, which would accept unauthenticated runs — reject it.
+	if let Some(k) = &opts.bind_key {
+		if !(opts.do_vm && opts.do_v15) {
+			eprintln!(
+				"error: --bind-key requires --preset v15\n  \
+				 activation binding is wired through the v15 boot \
+				 chain (module table + FC entry)."
+			);
+			return ExitCode::FAILURE;
+		}
+		if k.trim().is_empty() {
+			eprintln!("error: --bind-key activation string must be non-empty");
+			return ExitCode::FAILURE;
+		}
 	}
 
 	let luau = opts.dialect == "luau";
@@ -372,6 +410,7 @@ fn main() -> ExitCode {
 					program.blob_step,
 				),
 				program.section_tags,
+				opts.bind_key.as_deref(),
 			);
 			if std::env::var("LURAPH_VM_TSRC").is_ok() {
 				std::fs::write("/tmp/vm_tsrc.lua", &tsrc).unwrap();
@@ -520,6 +559,7 @@ fn main() -> ExitCode {
 					(sb_slot, sc_slot),
 					&kfrag,
 					&st_slots,
+					opts.bind_key.is_some(),
 				);
 				let mut exclude: Vec<i64> = vec![r1, r2, ks, kg, d1, d2, sb_slot, sc_slot];
 				exclude.extend_from_slice(&bw_slots);
