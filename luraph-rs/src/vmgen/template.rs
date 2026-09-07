@@ -636,6 +636,58 @@ fn coded_name_tpl(rng: &mut Rng, var: &str, name: &str) -> String {
 	out
 }
 
+/// 增量⑲ (选项B路线二 — CPS 去中心化): one handler's fetch+dispatch
+/// epilogue — a PROPER tail call into the next handler (pc threads
+/// through E.pc). One of five semantics-identical shapes with fresh
+/// per-epilogue temp names; every handler fragment carries its own
+/// copy, so the dispatch logic is scattered across all 43 encrypted
+/// bodies (no single hookable choke point, R006 barrier ②).
+fn chain_epilogue(rng: &mut Rng, s0: &str, s1: &str, s2: &str, s3: &str) -> String {
+	// temp names that never collide with handler-body locals
+	// (_/b0/c0/cf/d0/eqv/f/fn/i/j/k/m0/ms/msk/mt/n/nargs/.../x/y) nor
+	// with the env prelude (V/C/S/O/G/U/MS/W/SA../AV/HW2/CHAR/...)
+	const NP_POOL: [&str; 6] = ["np", "gz", "hz", "kz", "pz", "wz"];
+	const OC_POOL: [&str; 6] = ["oc", "jz", "qz", "xz", "yz", "nz"];
+	const H_POOL: [&str; 6] = ["hx", "fx", "zx", "vx", "mx", "jx"];
+	let np = NP_POOL[rng.int(0, 5) as usize];
+	let oc = OC_POOL[rng.int(0, 5) as usize];
+	let h = H_POOL[rng.int(0, 5) as usize];
+	// 平台事实（实测+官方）：Luau 已删除正确尾调用（devforum 3307934:
+	// "Tail calls were removed from Luau... no plans to revive"），调用
+	// 链每步积 1 帧、~16k 帧溢栈。纯尾链跑不了任意循环——故每个分派
+	// 点先消费预算 `E.b`：预算耗尽时空返回，整条链解开回落到蹦床循环
+	// （深度恒 ≤ K，嵌套调用安全）；蹦床重置预算后从 E.pc 重入。K 步
+	// 一次解链，额外开销 ~3%；重入点本体也是加密碎片（同形状），可见
+	// 区只剩无操作码语义的蹦床（R006 壁垒② 的 Luau-可行形态）。
+	let budget = if rng.int(0, 1) == 0 {
+		"E.b = E.b - 1; if E.b == 0 then return end; "
+	} else {
+		"E.b = E.b - 1; if E.b <= 0 then return end; "
+	};
+	match rng.int(0, 4) {
+		0 => format!(
+			"{budget}local {np} = E.pc; local {oc} = W[{np}]; E.pc = {np} + 1; return HW2[({oc} + AV) % 256](E, {s0}[{np}], {s1}[{np}], {s2}[{np}], {s3}[{np}])",
+			budget = budget, np = np, oc = oc, s0 = s0, s1 = s1, s2 = s2, s3 = s3
+		),
+		1 => format!(
+			"{budget}local {np} = E.pc; E.pc = {np} + 1; local {oc} = W[{np}]; local {h} = HW2[({oc} + AV) % 256]; return {h}(E, {s0}[{np}], {s1}[{np}], {s2}[{np}], {s3}[{np}])",
+			budget = budget, np = np, oc = oc, h = h, s0 = s0, s1 = s1, s2 = s2, s3 = s3
+		),
+		2 => format!(
+			"{budget}local {np}, {oc} = E.pc, W[E.pc]; E.pc = {np} + 1; return HW2[({oc} + AV) % 256](E, {s0}[{np}], {s1}[{np}], {s2}[{np}], {s3}[{np}])",
+			budget = budget, np = np, oc = oc, s0 = s0, s1 = s1, s2 = s2, s3 = s3
+		),
+		3 => format!(
+			"{budget}local {np} = E.pc; local {h} = HW2[(W[{np}] + AV) % 256]; E.pc = {np} + 1; return {h}(E, {s0}[{np}], {s1}[{np}], {s2}[{np}], {s3}[{np}])",
+			budget = budget, np = np, h = h, s0 = s0, s1 = s1, s2 = s2, s3 = s3
+		),
+		_ => format!(
+			"{budget}local {np} = E.pc; local {oc} = W[{np}]; local oa, ob, od2, oe = {s0}[{np}], {s1}[{np}], {s2}[{np}], {s3}[{np}]; E.pc = {np} + 1; return HW2[({oc} + AV) % 256](E, oa, ob, od2, oe)",
+			budget = budget, np = np, oc = oc, s0 = s0, s1 = s1, s2 = s2, s3 = s3
+		),
+	}
+}
+
 pub fn generate(
 	map: &OpMap,
 	slot_perm: &[u8; 4],
@@ -1093,7 +1145,11 @@ pub fn generate(
 		// loops (golden F11 = 19); these dead fetch shapes raise the
 		// family resemblance and multiply the "which loop is real"
 		// question for an analyst. Never executed (DF stays 0).
-		let n_decoys = rng.int(1, 3);
+		// 增量⑲: the REAL fetch left the visible surface (encrypted
+		// chain epilogues), so the decoys alone must keep the F11 band
+		// (>= 4) — and they are now the ONLY visible fetch shapes, which
+		// makes "which loop is real" a dead-end by construction.
+		let n_decoys = rng.int(4, 6);
 		for _ in 0..n_decoys {
 			let i1 = rng.int(0, (N_OPS - 1) as i64);
 			let i2 = rng.int(0, (N_OPS - 1) as i64);
@@ -1143,7 +1199,7 @@ pub fn generate(
 		.iter()
 		.map(|&i| format!("P[{}]", slots[i]))
 		.collect();
-	let run_unpack = format!(
+	let mut run_unpack = format!(
 		"local {} = {}",
 		run_lhs.join(", "),
 		run_rhs.join(", ")
@@ -1278,7 +1334,7 @@ pub fn generate(
 		fields.push("S");
 	}
 	rng.shuffle(&mut fields);
-	let run_soa = format!(
+	let mut run_soa = format!(
 		"local {} = {}",
 		fields.join(", "),
 		fields
@@ -1293,6 +1349,22 @@ pub fn generate(
 		params.push(format!("F{i}"));
 	}
 	let params = params.join(", ");
+
+	// 增量⑲ (递归帧预算): Luau 每调用积 1 个 C 侧帧、~20k 帧溢栈
+	// （无 TCO，devforum 3307934）。旧设计每层递归 4 持久帧（闭包+
+	// run+callcap+w）恰好贴线过 tail(5000)。新架构必须 ≤4：蹦床循环
+	// 直接内联进 makefn 闭包（省掉 wrapper 之外的 run 帧），v15
+	// callcap 用 table.pack 省掉 w 帧（见 rt_helpers）。
+	let trampoline_src = if v15 {
+		const CHAIN_BUDGET: i64 = 16;
+		let budget_e = obf_num(CHAIN_BUDGET as u64, rng);
+		Some(format!(
+			"local ti = 0\n    while true do\n      E.b = {}\n      if E.callx > 0 then\n        local cx = CX[E.callx]\n        E.callx = 0\n        cx(E)\n      else\n        CT[(ti % 4) + 1](E)\n        ti = ti + 1\n      end\n      if E.done then return U(E.out, 1, E.total) end\n    end",
+			budget_e
+		))
+	} else {
+		None
+	};
 
 	// makefn: v15 stage A variant translates upvalue descriptors and
 	// parameter fills through the scattered slot tables (the PARENT's
@@ -1321,12 +1393,14 @@ pub fn generate(
       for i = 1, vargc do vargs[i] = all[pf.nparams + i] end
       local V2 = {}
       for i = 1, pf.nparams do V2[pf.S[i]] = all[i] end
-      -- real TCO: tail call into run so deep tail recursion reuses the
-      -- frame instead of stacking one per level
-      return run(pf, V2, c, vargs, vargc)
+      -- 增量⑲: the trampoline lives INSIDE the closure (one frame per
+      -- recursion level instead of closure+run)
+      local E = newE(pf, V2, c, vargs, vargc)
+      TRAMPOLINE
     end
   end",
 		)
+		.replace("TRAMPOLINE", trampoline_src.as_deref().unwrap())
 	} else {
 		String::from(
 			"local function makefn(idx, V, upsf)
@@ -1437,19 +1511,38 @@ pub fn generate(
 	// base-94 packed and stored as a long-string HQ fragment; boot
 	// decodes + `loadstring`s them into HW (wire -> function), after a
 	// loadstring-nativeness recheck (hooked loader -> silent trap).
-	// Jump handlers return `{j = target}` signals (pc is the loop's
-	// local); Call/CallE/CallM/CallT stay inline in the CPS chain.
+	//
+	// 增量⑲ (选项B路线二 — CPS 去中心化尾调用链, 对抗 R006): the
+	// central `while true do fetch dispatch end` loop is GONE. Every
+	// handler ends with its own fetch+dispatch epilogue that TAIL-CALLS
+	// the next handler (pc lives in E.pc); the Return handler exits the
+	// chain with `return U(out, 1, total)`, whose values propagate back
+	// through the all-tail-called chain with zero frame accumulation.
+	// Dispatch is now scattered across 43 per-build encrypted handler
+	// bodies — no single hookable choke point remains (R006 barrier ②:
+	// 全局 hook 咽喉点消失). Handlers therefore need the streams +
+	// dispatch table in their env.
+	// 增量⑲: operand k lives in stream operand_stream[k] (slot_perm
+	// permutation) — the chain epilogues must fetch (a,b,c,d) through
+	// the SAME mapping the old op_prefix used.
+	let s_of = [
+		stream_names[operand_stream[0] as usize],
+		stream_names[operand_stream[1] as usize],
+		stream_names[operand_stream[2] as usize],
+		stream_names[operand_stream[3] as usize],
+	];
 	let env_names = [
 		"V", "C", "S", "O", "G", "vargs", "vargc", "ups", "makefn", "mget",
 		"resolve_call", "callcap", "HAS_LEN_META", "CHAR", "FLOOR", "ERR",
 		"TYP", "GMT", "RGET", "RSET", "U", "MS",
+		"W", "SA", "SB", "SC", "SD", "AV", "HW2",
 	];
 	let prelude_lhs = env_names.join(", ");
 	let prelude_rhs: Vec<String> =
 		(0..env_names.len()).map(|i| format!("E[{}]", i + 1)).collect();
 	let prelude_rhs = prelude_rhs.join(", ");
-	let e_ctor = format!(
-		"local E = {{{}, ln = 0, lb = 0}}",
+	let e_table = format!(
+		"{{{}, ln = 0, lb = 0, pc = 1, b = 0, callx = 0, done = false, out = {{}}, total = 0, tp = TP}}",
 		env_names.join(", ")
 	);
 	let hfrag: String;
@@ -1457,50 +1550,211 @@ pub fn generate(
 		let hm = (rng.int(1_048_577, 33_000_001) | 1) as u32;
 		let hc = (rng.int(1_048_576, 268_000_000) | 1) as u32;
 		let hseed = rng.int(1_048_576, 268_435_455) as u32;
-		let mut frags: Vec<(u8, Vec<u8>)> = Vec::new(); // (wire, source bytes)
+		let mut frags: Vec<(u16, Vec<u8>)> = Vec::new(); // (wire, source bytes)
+		// 增量⑲ (CPS 去中心化, Call 浅化): Luau 无正确尾调用，调用点
+		// 若在链深处执行，用户递归每层会叠 ~K 个链帧 → 深递归溢栈。
+		// 故 Call 家族拆两相：链相位（参数打包 → 暂存 E → return 解链
+		// 回蹦床）+ 执行器碎片（蹦床在浅层调用，callcap 之后接标准尾
+		// 链附言继续执行）。递归帧剖面回到旧设计量级，而分派逻辑仍全
+		// 在加密碎片里。执行器 wire 305-308（避开 0..255 操作数 wire
+		// 与 BSS 标记 200）。
+		let call_names = ["Call", "CallE", "CallM", "CallT"];
+		// 增量⑲ (递归帧瘦身): Luau 无 TCO，用户递归每层叠数个链帧，
+		// 每帧的 env prelude 绑定是栈槽大头。按 body（含尾链附言）实际
+		// 引用做**选择性绑定**——平均帧槽从 29 降到个位数，深递归极限
+		// 抬升数倍。word-boundary 判定（std-only，无 regex crate）。
+		fn word_in(h: &str, n: &str) -> bool {
+			let hb = h.as_bytes();
+			let nb = n.as_bytes();
+			let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+			let mut start = 0usize;
+			while start + nb.len() <= hb.len() {
+				match h[start..].find(n) {
+					Some(off) => {
+						let i = start + off;
+						let before_ok = i == 0 || !is_ident(hb[i - 1]);
+						let j = i + nb.len();
+						let after_ok = j >= hb.len() || !is_ident(hb[j]);
+						if before_ok && after_ok {
+							return true;
+						}
+						start = i + 1;
+					}
+					None => return false,
+				}
+			}
+			false
+		}
+		let selective_prelude = |body: &str| -> String {
+			let mut lhs: Vec<&str> = Vec::new();
+			let mut rhs: Vec<String> = Vec::new();
+			for (i, nm) in env_names.iter().enumerate() {
+				if word_in(body, nm) {
+					lhs.push(nm);
+					rhs.push(format!("E[{}]", i + 1));
+				}
+			}
+			if lhs.is_empty() {
+				String::new()
+			} else {
+				format!("local {} = {} ", lhs.join(", "), rhs.join(", "))
+			}
+		};
+		// word-boundary replace (std-only, no regex crate)
+		fn replace_word(s: &str, from: &str, to: &str) -> String {
+			let mut out = String::with_capacity(s.len());
+			let mut rest = s;
+			while let Some(i) = rest.find(from) {
+				let before_ok = i == 0
+					|| !rest.as_bytes()[i - 1].is_ascii_alphanumeric()
+						&& rest.as_bytes()[i - 1] != b'_';
+				let end = i + from.len();
+				let after_ok = end == rest.len()
+					|| !rest.as_bytes()[end].is_ascii_alphanumeric()
+						&& rest.as_bytes()[end] != b'_';
+				out.push_str(&rest[..i]);
+				if before_ok && after_ok {
+					out.push_str(to);
+				} else {
+					out.push_str(from);
+				}
+				rest = &rest[end..];
+			}
+			out.push_str(rest);
+			out
+		}
 		for (name, wire) in &items {
-			// 增量⑫ (防静态, 报告突破口 #9): the Call family is inlined
-			// in the CPS chain, but it STILL gets an HQ fragment — the
-			// dispatch key set must be complete (0..42 with no holes),
-			// otherwise the 4 missing wires identify the inline family
-			// instantly. The inline chain catches those wires first, so
-			// these four handlers are decoded but never executed.
 			let mut body = if name == "Nop" || name == "NopA" {
 				nop.clone()
 			} else {
 				handlers::gen(name, fmt_of[name], true, &mut pool, mk)
 			};
-			if name == "Return" {
-				// CPS signal form; frame bookkeeping moves into E
-				body = body
-					.replace("return U(out, 1, total)", "return {out, total}");
-			}
 			body = body.replace("lastbase", "E.lb").replace("lastn", "E.ln");
+			// 增量⑲ (CPS 去中心化尾调用链): the central dispatch loop is
+			// gone — every non-Return handler ends with its own
+			// fetch+dispatch epilogue tail-calling the next handler (pc
+			// threads through E.pc); jumps write E.pc in place; Return
+			// exits the chain with `return U(out, 1, total)`, whose
+			// values propagate back through the all-tail-called chain.
+			// The Call family is NO LONGER inline: with real tail calls
+			// its handler frames never accumulate, so the four Call
+			// handlers run from their HQ fragments like any other
+			// opcode (they were inlined only to dodge per-instruction
+			// frame growth in the old loop — and ⑬'s equivalence-
+			// breaking junk dies with the decoy status).
 			if matches!(name.as_str(), "Jmp" | "Jf" | "Jt") {
-				body = body.replace("pc = b", "return {j = b}");
+				body = body.replace("pc = b", "E.pc = b");
 			}
-			// 增量⑬ (对抗 R002 §3.4-18): the four Call-family HQ copies
-			// are unreachable decoys (the inline chain catches those
-			// wires first). R002 exploited their VERBATIM equivalence
-			// with the inline fast paths as a free cross-check of its
-			// handler decryption. Break the equivalence: append one of
-			// several plausible-but-dead computations, varied per
-			// opcode, so equality-based validation dies.
-			if matches!(name.as_str(), "Call" | "CallE" | "CallM" | "CallT") {
-				let junks = [
-					"; local _ = (a + c) * (b - d)",
-					"; local _ = a * d + b * c",
-					"; local _ = (b + d) * (a - c)",
-					"; local _ = c * a - d",
-				];
-				let ji = OP_NAMES.iter().position(|n| n == name).unwrap();
-				body.push_str(junks[ji % 4]);
+			if name == "Return" {
+				// 增量⑲: the chain cannot hand results back through a
+				// bounded-depth unwind — Return stores them in E and
+				// sets the done flag; the trampoline exits with
+				// U(E.out, 1, E.total).
+				body = body
+					.replace(
+						"return U(out, 1, total)",
+						"E.out = out; E.total = total; E.done = true; return",
+					)
+					.replace(
+						"return U(ov, 1, tot)",
+						"E.out = ov; E.total = tot; E.done = true; return",
+					);
+			} else if let Some(ci) =
+				call_names.iter().position(|n| *n == name.as_str())
+			{
+				// ---- split the Call body at the callcap invocation ----
+				let marker = ", nout = callcap(fn, ";
+				let mi = body.find(marker).expect("callcap marker");
+				let ls = body[..mi].rfind("local ").expect("callcap local");
+				let (pre, post) = body.split_at(ls);
+				let after = &body[mi + marker.len()..];
+				let aname = after[..after.find(", nargs)").unwrap()].to_string();
+				let mut stash = format!(
+					"E.cf = fn; E.ca = {}; E.cn = nargs; E.oa = a; E.ob = b; E.oc2 = c; E.od = d",
+					aname
+				);
+				let mut post_s = post.to_string();
+				let mut exec_pre = String::new();
+				// «B» base local (Call/CallE/CallM): recompute in the
+				// executor from the stashed `a` operand
+				if let Some(bi) = pre.find(" = a + 1;") {
+					let bstart = pre[..bi].rfind("local ").unwrap() + 6;
+					let bname = &pre[bstart..bi];
+					exec_pre = format!("local {} = a + 1; ", bname);
+				}
+				if name == "CallT" {
+					// «T»/«N» are read BEFORE the call but consumed after
+					// — the call may mutate V, so stash the VALUES
+					let p1 = pre.find(" = V[b + 1]; local ").unwrap();
+					let tstart = pre[..p1].rfind("local ").unwrap() + 6;
+					let tname = pre[tstart..p1].to_string();
+					let p2 = pre.find(" = V[c + 1]").unwrap();
+					let nstart = pre[..p2].rfind("local ").unwrap() + 6;
+					let nname = pre[nstart..p2].to_string();
+					stash.push_str(&format!(
+						"; E.ctt = {}; E.cnt = {}",
+						tname, nname
+					));
+					post_s = replace_word(&post_s, &tname, "E.ctt");
+					post_s = replace_word(&post_s, &nname, "E.cnt");
+				}
+				// 增量⑲ (帧预算): inline the multi-return capture into
+				// the executor (table.pack via E.tp) — the separate
+				// callcap frame would persist through the whole nested
+				// call (recursion frame budget).
+				let split_marker =
+					format!(", nout = callcap(fn, {}, nargs)", aname);
+				let si = post_s.find(&split_marker).expect("callcap head");
+				let oname = post_s["local ".len()..si].to_string();
+				post_s = format!(
+					"local {} = E.tp(fn(U(E.ca, 1, E.cn))); local nout = {}.n{}",
+					oname,
+					oname,
+					&post_s[si + split_marker.len()..]
+				);
+				// executor fragment: shallow call + result placement +
+				// chain continuation
+				let exec_src = format!(
+					"return function(E) local a, b, c, d = E.oa, E.ob, E.oc2, E.od; local fn, {}, nargs = E.cf, E.ca, E.cn; local V, S, O, U, W, SA, SB, SC, SD, AV, HW2 = E[1], E[3], E[4], E[21], E[23], E[24], E[25], E[26], E[27], E[28], E[29]; {}{} {} end",
+					aname,
+					exec_pre,
+					post_s,
+					chain_epilogue(rng, s_of[0], s_of[1], s_of[2], s_of[3]),
+				);
+				frags.push(((305 + ci) as u16, exec_src.into_bytes()));
+				// chain phase: pack args, stash, unwind to the trampoline
+				body = format!(
+					"{}; E.callx = {}; return",
+					format!("{};{}", pre.trim_end_matches(|c| c == ';' || c == ' '), stash),
+					ci + 1
+				);
+			} else {
+				body.push(' ');
+				body.push_str(&chain_epilogue(rng, s_of[0], s_of[1], s_of[2], s_of[3]));
 			}
 			let src = format!(
-				"return function(E,a,b,c,d) local {} = {} {} end",
-				prelude_lhs, prelude_rhs, body
+				"return function(E,a,b,c,d) {}{} end",
+				selective_prelude(&body),
+				body
 			);
-			frags.push((*wire, src.into_bytes()));
+			frags.push((*wire as u16, src.into_bytes()));
+		}
+		// 增量⑲ (蹦床重入点入密): the chain re-entry points are
+		// continuation fragments — epilogue-shaped bodies (budget +
+		// fetch E.pc + dispatch) with NO opcode semantics, emitted as
+		// four more encrypted fragments (wires 201-204). The trampoline
+		// loop rotates through them; nothing in the visible code ever
+		// fetches W[..] or touches HW2.
+		let n_cont = 4usize;
+		for i in 0..n_cont {
+			let body =
+				chain_epilogue(rng, s_of[0], s_of[1], s_of[2], s_of[3]);
+			let src = format!(
+				"return function(E) local W, SA, SB, SC, SD, AV, HW2 = E[23], E[24], E[25], E[26], E[27], E[28], E[29] {} end",
+				body
+			);
+			// 301+ clears every opcode wire (0..=255) and the BSS marker 200
+			frags.push((301 + i as u16, src.into_bytes()));
 		}
 		// 增量⑭ (对抗 R002 — 解析器隐藏): the prototype parser + the
 		// whole decode/checksum-verify stage move into ONE MORE
@@ -1518,7 +1772,7 @@ pub fn generate(
 			"return function(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP) local OS = {{{}}} {} return function(FN_) local PF_ = {{}} local di = 1 while di <= #FN_ do PF_[di] = parse(FN_[di], di); if PF_[di].ck ~= OS[di] then while true do end end; di = di + 1 end return PF_ end end",
 			os_list, parse_fn
 		);
-		frags.push((200u8, bs_src.into_bytes()));
+		frags.push((200u16, bs_src.into_bytes()));
 		// mask + base-94 pack. Per-fragment keystream seed is derived
 		// from the wire code ((hseed + wire*hstep) % 2^28) so the
 		// decode order (shuffled HQI) is irrelevant.
@@ -1727,11 +1981,28 @@ pub fn generate(
 			)
 		};
 		let metavm = emit_metavm(&meta_seed_full, &meta_m_e, &meta_c_e, hb_masked.len(), rng);
+		// 增量⑲: build-time-shuffled continuation wiring (which CT slot
+		// holds which encrypted re-entry fragment is per-build random).
+		let mut cont_wires: Vec<u16> = (301..305).collect();
+		rng.shuffle(&mut cont_wires);
+		let ct_fill: String = (0..4)
+			.map(|i| format!("CT[{}] = HW[{}]\n    ", i + 1, cont_wires[i]))
+			.collect();
+		// call executors: fixed callx->wire mapping (the chain phases
+		// stash E.callx = 1..4), emit order shuffled (cosmetic)
+		let mut cx_order: Vec<usize> = (0..4).collect();
+		rng.shuffle(&mut cx_order);
+		let cx_fill: String = cx_order
+			.iter()
+			.map(|&i| format!("CX[{}] = HW[{}]\n    ", i + 1, 305 + i))
+			.collect();
 		let build = format!(
 			r#"{}  {}local HW = {{}}
   local BSS
   local AV = 0
   local HW2 = {{}}
+  local CT = {{}}
+  local CX = {{}}
   do
     {}local LS = GFE(0)[{v_ls}]
     local TSTR = GFE(0)[{v_ts}]
@@ -1750,12 +2021,12 @@ pub fn generate(
     {ak_gate}local hqi = {{{}}}
     {}    {}
     HW, BSS = LS(table.concat(MH))()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM)
-    do
+    {ct_fill}{cx_fill}do
       local avt = {{}}
       local ats = TSTR(avt)
       for i = 1, #ats do AV = (AV * 31 + BYTE(ats, i)) % 268435456 end
     end
-    for w, f in pairs(HW) do HW2[(w + AV) % 256] = f end
+    for w, f in pairs(HW) do if w < 256 then HW2[(w + AV) % 256] = f end end
     PF = LS(BSS)()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP)(FN)
   end"#,
 			hq_lines, mb_lines, boot, hqi.join(", "), mb_gather, metavm,
@@ -1771,44 +2042,43 @@ pub fn generate(
 		String::new()
 	};
 	let (fetch, branches) = if v15 {
-		// Inline the Call-family opcodes (Call/CallE/CallM/CallT) directly in
-		// the CPS loop instead of dispatching them through H[]. Real TCO makes
-		// the closure->run call a tail call, but CPS would still add an H[Call]
-		// frame per call; inlining removes that frame so deep tail recursion
-		// does not overflow the stack. Non-call opcodes still dispatch via H.
-		let sa = stream_names[operand_stream[0] as usize];
-		let sb = stream_names[operand_stream[1] as usize];
-		let sc = stream_names[operand_stream[2] as usize];
-		let sd = stream_names[operand_stream[3] as usize];
-		// F11 fetch shape: `local oc=W[pc];if oc then ... end`.
-		// 建议1: the inline call-family chain order is drawn per build
-		// (equality tests on unique wire codes — order is neutral).
-		let mut chain: Vec<&str> = vec!["Call", "CallE", "CallM", "CallT"];
-		rng.shuffle(&mut chain);
-		let mut cond = String::new();
-		for (i, name) in chain.iter().enumerate() {
-			if i > 0 {
-				cond.push_str(" elseif ");
-			}
-			// P3a: frame bookkeeping moves into the per-frame env E so
-			// the (encrypted) Return handler can read it back
-			let body = handlers::gen(name, fmt_of[*name], true, &mut pool, mk)
-				.replace("lastbase = a + 1", "E.lb = a + 1")
-				.replace("lastn = nout", "E.ln = nout");
-			let idx = OP_NAMES.iter().position(|n| n == name).unwrap();
-			cond.push_str(&format!("oc == OCt[{}] then {}", idx, body));
-		}
-		let cps_fetch = format!(
-			"local oc = W[pc];if oc then local a = {sa}[pc];local b = {sb}[pc];local c = {sc}[pc];local d = {sd}[pc];pc = pc + 1;if {cond} else local r = HW2[(oc + AV) % 256](E,a,b,c,d); if r then if r.j then pc = r.j else return U(r[1], 1, r[2]) end end end end",
-			sa = sa, sb = sb, sc = sc, sd = sd, cond = cond,
-		);
-		(cps_fetch, String::new())
+		// 增量⑲ (CPS 去中心化): the old fetch string is dead — run() is
+		// now the trampoline loop (see run_loop below); every dispatch
+		// step lives inside the encrypted handler epilogues / the four
+		// encrypted continuation fragments.
+		(String::new(), String::new())
 	} else {
 		(fetch, branches)
 	};
 
 	// runtime helpers with pool-routed literals (resolve_call's type/
 	// meta names, callcap's '#' vararg selector)
+	// 增量⑲: v15 callcap captures multi-returns through table.pack (one
+	// C frame, pops immediately) instead of the `w` wrapper closure (a
+	// persistent Lua frame for the whole nested call — recursion frame
+	// budget). Legacy (Lua 5.1, no table.pack) keeps `w`.
+	let callcap_src = if v15 {
+		format!(
+			"local TP = GFE(0)[{table}][{pack}]
+  local function callcap(f, args, nargs)
+    local r = TP(f(U(args, 1, nargs)))
+    return r, r.n
+  end",
+			table = pool.lit("table"),
+			pack = pool.lit("pack"),
+		)
+	} else {
+		format!(
+			"local function callcap(f, args, nargs)
+    local w = function(...)
+      local t = {{ ... }}
+      return t, SEL({hash}, ...)
+    end
+    return w(f(U(args, 1, nargs)))
+  end",
+			hash = pool.lit("#"),
+		)
+	};
 	let rt_helpers = format!(
 		"local function mget(x, k)
     local mt = GMT(x)
@@ -1826,19 +2096,13 @@ pub fn generate(
     end
     ERR({callmsg} .. TYP(f) .. {value}, 0)
   end
-  local function callcap(f, args, nargs)
-    local w = function(...)
-      local t = {{ ... }}
-      return t, SEL({hash}, ...)
-    end
-    return w(f(U(args, 1, nargs)))
-  end",
+  {callcap}",
 		function = pool.lit("function"),
 		call = pool.lit("__call"),
 		table = pool.lit("table"),
 		callmsg = pool.lit("attempt to call a "),
 		value = pool.lit(" value"),
-		hash = pool.lit("#"),
+		callcap = callcap_src,
 	);
 	let ms_block = if v15 { pool.boot_block() } else { String::new() };
 
@@ -1862,6 +2126,46 @@ pub fn generate(
 	} else {
 		String::from("local vargs = {}\n  local V2 = {}\n  return run(PF[#FN], V2, {}, vargs, 0)")
 	};
+	// 增量⑲: v15 run() = chain entry (E.pc lives in the E constructor;
+	// the body is ONE chain epilogue tail-calling the first handler).
+	// Legacy keeps the pc local + the fetch/dispatch while loop.
+	// 增量⑲ (CPS 去中心化, Luau-可行形态): Luau 无正确尾调用
+	// （devforum 3307934 官方确认移除），纯尾链每指令积 1 帧、~16k 帧
+	// 溢栈，跑不了任意循环。故采用**预算有界尾链 + 蹦床**：每条链最多
+	// 走 ~CHAIN_BUDGET 条指令（预算耗尽即空返回、整链解开），蹦床循环
+	// 重置预算、轮转 4 个加密重入碎片之一从 E.pc 续跑；Call 家族拆两相，
+	// 实际调用在蹦床浅层执行（深递归帧剖面回到旧设计量级）。分派逻辑
+	// 全在 43 个加密 handler + 4 个重入碎片 + 4 个执行器碎片里，可见
+	// 蹦床无操作码语义（R006 壁垒②）。run() 本体瘦成蹦床（帧开销留给
+	// 用户递归：E 构造移入 newE，其帧随返即销）。
+	let (run_head, newe_fwd, newe_decl, pc_decl, run_loop) = if v15 {
+		// newE's body builds E (references makefn/mget/... — declared
+		// above it), while the makefn closures call newE: forward-declare
+		// the local, define it after makefn.
+		let newe = format!(
+			"newE = function(pf, V, ups, vargs, vargc)\n    {}\n    {}\n    local O = {{}}\n    return {}\n  end\n  ",
+			run_unpack, run_soa, e_table
+		);
+		// the unpack/SoA lines now live inside newE — keep them out of
+		// run's frame (recursion frame budget)
+		run_unpack = String::new();
+		run_soa = String::new();
+		(
+			String::from("local E = newE(pf, V, ups, vargs, vargc)\n    "),
+			String::from("local newE\n  "),
+			newe,
+			String::new(),
+			trampoline_src.clone().unwrap(),
+		)
+	} else {
+		(
+			String::new(),
+			String::new(),
+			String::new(),
+			String::from("local pc = 1\n    "),
+			format!("while true do\n      {}\n      {}\n    end", fetch, branches),
+		)
+	};
 	format!(
 		r#"local VM = function({vm_params})
   {kf_block}{oc_table}
@@ -1883,23 +2187,21 @@ pub fn generate(
   end
   {rt_helpers}
   {hub_decl}
-  local run
+  {newe_fwd}local run
   {makefn_decl}
-  run = function(pf, V, ups, vargs, vargc)
-    {run_unpack}
+  {newe_decl}run = function(pf, V, ups, vargs, vargc)
+    {run_head}{run_unpack}
     {run_soa}
-    local pc = 1
-    {o_decl}{ln_decl}{handler_defs}
-    while true do
-      {fetch}
-      {branches}
-    end
+    {pc_decl}{o_decl}{ln_decl}{handler_defs}{run_loop}
   end
   {entry_tail}
 end
 "#,
 	vm_params = vm_params,
 	entry_tail = entry_tail,
+	newe_fwd = newe_fwd,
+	pc_decl = pc_decl,
+	run_loop = run_loop,
 	params = params,
 		kf_block = kf_block,
 		oc_table = oc_table,
@@ -1911,13 +2213,13 @@ end
 		run_soa = run_soa,
 		handler_defs = handler_defs,
 		hfrag = hfrag,
+		newe_decl = newe_decl,
+		run_head = run_head,
 		ln_decl = if v15 {
-			e_ctor
+			String::new()
 		} else {
-			"local lastn = 0\n    local lastbase = 0".to_string()
+			"local lastn = 0\n    local lastbase = 0\n    ".to_string()
 		},
-		fetch = fetch,
-		branches = branches,
 		v15_selfmod = v15_selfmod,
 		decode_seg = decode_seg,
 		ck_consts = ck_consts,
@@ -1925,12 +2227,6 @@ end
 		makefn_decl = makefn_decl,
 		rt_helpers = rt_helpers,
 		ms_block = ms_block,
-		o_decl = if v15 {
-			// stage A: overflow table for nres=255 results spilling past
-			// the scattered register allocation
-			"local O = {}\n    ".to_string()
-		} else {
-			String::new()
-		},
+		o_decl = String::new(),
 	)
 }
