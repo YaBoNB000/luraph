@@ -37,11 +37,13 @@ CARGO_NET_OFFLINE=true cargo build --release
 ./target/release/luraph-rs --preset vm     --seed 42 in.lua out.vm.lua
 ./target/release/luraph-rs --preset max    --seed 42 in.lua out.vm.lua
 
-# v15 结构同族档（Luau/Roblox-only，克隆 Luraph v15 形态）
+# v15 结构同族档（Luau/Roblox-only，克隆 Luraph v15 形态）——推荐
+# 产物零参数、直接可运行（丢进 Luau CLI / Roblox 执行器即可）
 ./target/release/luraph-rs --preset v15 --dialect luau --seed 42 in.lua out.v15.luau.lua
 
-# 增量⑱ 输入绑定/激活门（仅 v15）：把引导链门控到一个激活值上
-./target/release/luraph-rs --preset v15 --dialect luau --bind-key "LICENSE-KEY" --seed 42 in.lua out.v15.luau.lua
+# [已弃用] 增量⑱ 输入绑定/激活门：需变长参递送激活值、产物无法直接运行，
+# 与「混淆后直接可运行」的产品需求冲突，仅加载器授权场景保留
+# ./target/release/luraph-rs --preset v15 --dialect luau --bind-key "KEY" in.lua out.lua
 
 # 等价写法
 ./target/release/luraph-rs --vm --dialect 5.1 --seed 42 in.lua out.vm.lua
@@ -54,35 +56,32 @@ CARGO_NET_OFFLINE=true cargo build --release
 | `high`（默认） | medium + L4 + L5 + L7 | 数十 KB | 商业级非 VM：整段密文 + 反篡改 |
 | `vm` | high + L6 | ~130–160 KB | 反编译器失效；Lua-on-Lua |
 | `max` | 当前 = `vm` | 同 `vm` | 最强在售档；v2（CPS 帧/超级指令）预留 |
-| `v15` | Luraph-v15 结构同族（Luau/Roblox） | ~40–50 KB/函数 | 形态克隆 + 选项B安全增量 |
+| `v15` | Luraph-v15 结构同族（Luau/Roblox） | ~140 KB | **推荐**：纯结构防护、零参数直接可运行 |
 
-### 增量⑱：输入绑定 / 激活门（`--bind-key`，仅 v15）
+### 产品形态：混淆后零参数直接可运行（`--preset v15`）
 
-把引导链的第一层（HBOOT 元钥匙流）门控到一个**激活值**上。编译期已知
-激活值 `S`，运行时把**第一个变长参数**做 31 进折叠 `ak`，混进元钥匙流
-种子：`g = (meta_seed + (pb-fold)*pmix + (ak - AK)*bind_mix) % 2²⁸`
-（`AK = fold31(S)` 经钥匙表装配，产物中无字面量）。
+**核心承诺**：`--preset v15` 产物**不需要任何参数**，丢进 Luau CLI 或
+Roblox 执行器即可直接运行，输出与源码逐字节一致。防护全部来自**结构层**
+（⑲⑳）：
 
-- 递送正确激活值 → 扰动项归零，引导正常解码，程序跑通；
-- 递送错误 / 缺失激活值 → 元钥匙流错位，HBOOT 解出垃圾，`loadstring`
-  得 `nil`，**任何字节码（44 个 HQ 碎片 + 解析器）都还没露面就崩溃**。
+- **加密解释器**：43 个指令 handler + 字节码解析器全部加密成碎片，运行时
+  经 `loadstring` 装配，可见代码里没有指令语义；
+- **去中心化尾链 + 蹦床**（⑲）：没有中心 `while..dispatch` 分派循环，
+  每条指令的分派散在各加密 handler 尾部的尾链附言里，全局 hook 咽喉点消失；
+- **多层编码 + 每构建随机**：载体、转义、钥匙表、指令编号、槽位、命名
+  每个 `--seed` 全量重随机。
 
-**交付通道**：激活值必须以**第一个变长参数**递送进产物（沙箱 Luau CLI
-不转发命令行参数、全局只读、无 io，这是唯一通道）：
+此形态与真实 Luraph v15 同属「纯结构防护」路线（真实 v15 本就无运行时
+防御，见 `docs/redteam-luraph15-recon.md`），但本产品把解释器/解析器/分派
+全部入密，结构强度更高。
 
-```lua
--- 生产交付形态：加载器以第一变长参递送激活值，其余转发给程序
-local f = loadstring(obfuscated_src)
-f("LICENSE-KEY", ...)           -- 第 2+ 个变长参会转发给原程序
-```
+### [已弃用] 增量⑱：输入绑定 / 激活门（`--bind-key`）
 
-lua51 CLI 会直接转发命令行参数，故 `lua51 out.lua KEY ...` 也可用；
-Luau CLI 需按上式包一层加载器（`tests/bind_gate_test.sh` 的 `mkwrap`
-给出了参考包装）。
-
-**诚实局限**：挡的是**离线静态脱壳**与**无钥匙运行**；挡不住「持正确
-激活值真跑、再挂钩子/转储运行时状态」的攻击者（那是运行时防护的范畴，
-见 `docs/plan-resemblance-and-security.md` 增量⑱）。
+曾把引导链第一层门控到「变长参递送的激活值」上（错/缺钥匙即引导层崩溃）。
+**因要求运行时传参、产物无法直接运行，与产品核心需求冲突，已弃用**——
+代码保留（`--bind-key` 仍可用，仅供加载器授权这一特定场景），但**默认即
+直接可运行形态，不要再依赖激活门做防护**。详见
+`docs/plan-resemblance-and-security.md`。
 
 同 `--seed` → 输出逐字节一致；不同 seed → 编码完全不同。  
 分层开关：`--no-mangle` / `--no-minify` / `--no-strings` / `--no-flatten` /

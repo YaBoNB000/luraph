@@ -202,12 +202,10 @@ Options:
   --no-strings           disable L2 string encryption (default: enabled)
   --no-flatten           disable L3 loop desugar + CFG flattening (default: enabled)
   --no-junk              disable L3 junk code injection (default: enabled)
-  --bind-key <activation>  增量⑱ input binding (v15 preset only): tie the
-                         boot keystream to the FIRST runtime vararg. Only a
-                         run that passes this exact activation string decodes
-                         the bootstrap; wrong/missing input dies before any
-                         bytecode is recovered. Remaining varargs are
-                         forwarded to the program.
+  --bind-key <activation>  [DEPRECATED/实验] 激活门（⑱⑳）：需以第一个变长参
+                         递送激活值，产物无法直接运行。与「混淆后直接可运行」
+                         的产品需求冲突，已弃用——默认（不带本项）产物零参数
+                         直接可运行，防护靠 ⑲⑳ 结构层。仅在加载器授权场景保留。
   -h, --help             show this help
   --version              show version
 ",
