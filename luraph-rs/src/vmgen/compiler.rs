@@ -111,6 +111,13 @@ pub struct VmProgram {
 	/// stream with inline 7-bit ladders and folds the same checksum
 	/// (F13 shape); a mismatch traps the decode loop.
 	pub operand_sums: Vec<u64>,
+	/// ㉒ (选项B — B-2 碎片即用即毁): every numeric constant is
+	/// maskable (integers mask additively; other finite doubles ride
+	/// the Luau shortest-roundtrip tostring/tonumber path). False only
+	/// when NaN/inf literals appear — then the v15 template keeps
+	/// constant tables plaintext inside the encoded prototypes (the
+	/// five instruction streams stay encoded either way).
+	pub consts_mask_safe: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -214,6 +221,13 @@ impl<'a> Ctx<'a> {
 	}
 
 	fn kidx(&mut self, c: Const) -> u16 {
+		// ㉒: track mask safety — only NaN/inf fall outside the
+		// tostring/tonumber round-trip used for non-integral doubles
+		if let Const::Num(v) = c {
+			if !v.is_finite() {
+				self.program.consts_mask_safe = false;
+			}
+		}
 		let k = const_key(&c);
 		if let Some(&i) = self.const_map.get(&k) {
 			return i;
@@ -1103,6 +1117,7 @@ fn compile_chunk(
 		blob_seed,
 		blob_step,
 		section_tags,
+		consts_mask_safe: true,
 	};
 	{
 		// main chunk index = slot count (children fill 0..total-1)

@@ -447,6 +447,7 @@ fn main() -> ExitCode {
 					program.blob_step,
 				),
 				program.section_tags,
+				program.consts_mask_safe,
 				opts.bind_key.as_deref(),
 			);
 			if std::env::var("LURAPH_VM_TSRC").is_ok() {

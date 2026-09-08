@@ -160,6 +160,15 @@ source "$ROOT/tests/bind_gate_test.sh"
 # ---------------------------------------------------------------
 source "$ROOT/tests/env_bind_test.sh"
 
+# ---------------------------------------------------------------
+# 增量㉒ (选项B — B-2 碎片即用即毁): prototypes live ENCODED at rest;
+# boot destroys the flat decoded table, per-call DDEC materializes one
+# frame's bytecode into fresh tables. Verifies template shape (ENC/
+# DDEC wiring, PF=nil, MPF entry, no flat-table refs), fragment count,
+# nested-closure equivalence, constant round-trip, deep recursion.
+# ---------------------------------------------------------------
+source "$ROOT/tests/proto_enc_test.sh"
+
 echo "=================================================="
 echo "PASS checks: $pass   FAIL: $fail"
 if [[ $fail -gt 0 ]]; then

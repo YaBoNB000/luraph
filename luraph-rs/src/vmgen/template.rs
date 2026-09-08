@@ -718,6 +718,9 @@ pub fn generate(
 	mk: (u16, u16),
 	blobk: (u32, u32, u32, u32),
 	tags: [u8; 7],
+	// ㉒ (选项B — B-2 碎片即用即毁): numeric constants are exact-
+	// additive-mask safe (see VmProgram::consts_mask_safe). v15 only.
+	consts_safe: bool,
 	// 增量⑱ (选项B路线一 — 输入绑定/激活门): activation string known
 	// at obfuscation time. v15 only (asserted below).
 	bind_key: Option<&str>,
@@ -1129,6 +1132,13 @@ pub fn generate(
 	//   stream. Both writes and semantics are neutral (Nop -> Nop).
 	//   dead segment: a site1-shaped fetch tree (sample's never-hit
 	//   decode path) guarded by an always-false flag.
+	// ㉒ (B-2 碎片即用即毁): the Nop-alias self-modification writes
+	// move INSIDE the boot `do` block (emitted into the `build` string
+	// below) — they must land while PF is still decoded, right before
+	// the ENC fragment encodes every prototype into ciphertext. The
+	// visible F14/F27 shape is preserved; only its home shifts a few
+	// lines earlier.
+	let mut v15_zw = String::new();
 	let v15_selfmod = if v15 {
 		let mut sm = String::new();
 		for (fi, sites) in nop_sites.iter().enumerate() {
@@ -1137,9 +1147,9 @@ pub fn generate(
 			}
 			// bind the opcode array to a local and write through it
 			// (sample shape: direct array constant writes, F14)
-			sm.push_str(&format!("  local ZW{} = PF[{}].W\n", fi + 1, fi + 1));
+			v15_zw.push_str(&format!("  local ZW{} = PF[{}].W\n", fi + 1, fi + 1));
 			for &p in sites {
-				sm.push_str(&format!(
+				v15_zw.push_str(&format!(
 					"  ZW{}[{}] = NOPA\n",
 					fi + 1,
 					p as usize + 1,
@@ -1396,8 +1406,7 @@ pub fn generate(
 	// parameter registers). Legacy keeps the dense layout.
 	let makefn_decl = if v15 {
 		String::from(
-			"local function makefn(idx, V, upsf, S)
-    local pf = PF[idx]
+			"local function makefn(pf, V, upsf, S)
     local c = {}
     for i = 1, #pf.upsrc do
       local src = pf.upsrc[i]
@@ -1566,7 +1575,7 @@ pub fn generate(
 		(0..env_names.len()).map(|i| format!("E[{}]", i + 1)).collect();
 	let prelude_rhs = prelude_rhs.join(", ");
 	let e_table = format!(
-		"{{{}, ln = 0, lb = 0, pc = 1, b = 0, callx = 0, done = false, out = {{}}, total = 0, tp = TP}}",
+		"{{{}, k = pf.k, ln = 0, lb = 0, pc = 1, b = 0, callx = 0, done = false, out = {{}}, total = 0, tp = TP}}",
 		env_names.join(", ")
 	);
 	let hfrag: String;
@@ -1797,6 +1806,88 @@ pub fn generate(
 			os_list, parse_fn
 		);
 		frags.push((200u16, bs_src.into_bytes()));
+		// ㉒ (选项B — B-2 碎片即用即毁, R006 壁垒①): prototypes live
+		// ENCODED at rest. Boot parses PF exactly as before, then the
+		// ENC fragment (wire 207) masks every prototype's five streams
+		// + constant pool with a per-prototype LCG keystream, links the
+		// parent→child prototype tree through encrypted handles, and
+		// returns only the tree root — the flat decoded PF is destroyed
+		// in the same breath. Each call decodes ONE frame's worth of
+		// bytecode through the DDEC fragment (wire 206) into fresh
+		// tables owned by the frame; when the frame unwinds, decoded
+		// bytecode becomes garbage. No moment in the process lifetime
+		// holds the complete decoded program: resident state shrinks to
+		// ciphertext + live frames (HW2/CT/CX executable handlers stay
+		// resident — dispatch hot path).
+		let pseed = rng.int(1_048_576, 268_435_455) as i64;
+		let pstep = rng.int(1_048_576, 268_435_455) as i64;
+		let pkm = (rng.int(1_048_577, 33_000_001) | 1) as i64;
+		let pkc = rng.int(1_048_576, 268_000_000) as i64;
+		let pseed_e = ke.key_expr(pseed, None, rng);
+		let pstep_e = ke.key_expr(pstep, None, rng);
+		let pkm_e = ke.key_expr(pkm, None, rng);
+		let pkc_e = ke.key_expr(pkc, None, rng);
+		manifest_key("PF_SEED", pseed as u64);
+		manifest_key("PF_STEP", pstep as u64);
+		manifest_key("PF_KM", pkm as u64);
+		manifest_key("PF_KC", pkc as u64);
+		// operand-b stream (carries the Closure child index) + the
+		// Closure wire byte — both baked into the ENC scan
+		let closure_wire = map.to_wire
+			[OP_NAMES.iter().position(|n| *n == "Closure").unwrap()];
+		// ENC: P = decoded prototype list, NOPA = self-mod alias (ZW
+		// writes already applied visibly in the boot block), FLR/TYP/
+		// BYTE passed from boot locals. Stream entries are u16; the
+		// keystream advances once per masked unit. Constants: type
+		// folded into the masked type slot (0=nil 1=num 2=str 3=true
+		// 4=false); numbers masked additively (exact when consts_safe);
+		// string bytes masked per-byte.
+		let c_block_enc = if consts_safe {
+			format!(
+				"local Ct = pf.C local m = 0 for j in pairs(Ct) do if j > m then m = j end end local ct, cn, csb, csl = {{}}, {{}}, {{}}, {{}} local si = 1 for j = 1, m do st = ({pkm} * st + {pkc}) % 268435456 local v = Ct[j] local tv = TYP(v) if tv == \"number\" then if v % 1 == 0 and v > -1125899906842624 and v < 1125899906842624 then ct[j] = (1 + st) % 65536 cn[j] = v + st else local ns = TOSTR(v) ct[j] = (5 + st) % 65536 csl[j] = #ns for cb = 1, #ns do st = ({pkm} * st + {pkc}) % 268435456 csb[si] = (BYTE(ns, cb) + st % 256) % 256 si = si + 1 end end elseif tv == \"string\" then ct[j] = (2 + st) % 65536 csl[j] = #v for cb = 1, #v do st = ({pkm} * st + {pkc}) % 268435456 csb[si] = (BYTE(v, cb) + st % 256) % 256 si = si + 1 end elseif tv == \"boolean\" then if v then ct[j] = (3 + st) % 65536 else ct[j] = (4 + st) % 65536 end else ct[j] = st % 65536 end end",
+				pkm = pkm_e, pkc = pkc_e,
+			)
+		} else {
+			String::from(
+				"local Ct = pf.C local m = 0 for j in pairs(Ct) do if j > m then m = j end end local ct, cn, csb, csl = nil, nil, nil, nil",
+			)
+		};
+		let c_fields_enc = if consts_safe {
+			"m = m, ct = ct, cn = cn, csb = csb, csl = csl"
+		} else {
+			"m = m, C = Ct"
+		};
+		let enc_src = format!(
+			"return function(P, FLR, TYP, BYTE, TOSTR, KA, KB, KC, KM) local EP = {{}} for i = 1, #P do local pf = P[i] local Wt, ks = pf.W, pf.{bs} local n = #Wt local km = {{}} local st = ({pseed} + i * {pstep}) % 268435456 local e = {{}} local ei = 1 for j = 1, n do local w = Wt[j] if w == {cw} then km[#km + 1] = ks[j] + 1 end st = ({pkm} * st + {pkc}) % 268435456 e[ei] = (w + st % 65536) % 65536 ei = ei + 1 st = ({pkm} * st + {pkc}) % 268435456 e[ei] = (pf.SA[j] + st % 65536) % 65536 ei = ei + 1 st = ({pkm} * st + {pkc}) % 268435456 e[ei] = (pf.SB[j] + st % 65536) % 65536 ei = ei + 1 st = ({pkm} * st + {pkc}) % 268435456 e[ei] = (pf.SC[j] + st % 65536) % 65536 ei = ei + 1 st = ({pkm} * st + {pkc}) % 268435456 e[ei] = (pf.SD[j] + st % 65536) % 65536 ei = ei + 1 end {cblock} EP[i] = {{ e = e, n = n, sd = i, S = pf.S, upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP] end",
+			bs = s_of[1],
+			pseed = pseed_e,
+			pstep = pstep_e,
+			pkm = pkm_e,
+			pkc = pkc_e,
+			cw = closure_wire,
+			cblock = c_block_enc,
+			cfields = c_fields_enc,
+		);
+		// DDEC: per-call frame decode (fresh tables; the frame owns
+		// them and they die with it). Mirrors the ENC keystream exactly.
+		let c_block_dec = if consts_safe {
+			String::from(
+				"local C = {} local ct, cn, csb, csl = q.ct, q.cn, q.csb, q.csl local si = 1 for j = 1, q.m do st = (KM * st + KC) % 268435456 local t = (ct[j] - st) % 65536 if t == 1 then C[j] = cn[j] - st elseif t == 2 or t == 5 then local l = csl[j] local b = {} for x = 1, l do st = (KM * st + KC) % 268435456 b[x] = (csb[si] - st % 256) % 256 si = si + 1 end if t == 2 then C[j] = CHAR(UNP(b, 1, l)) else C[j] = TONUM(CHAR(UNP(b, 1, l))) end elseif t == 3 then C[j] = true elseif t == 4 then C[j] = false end end",
+			)
+		} else {
+			String::from("local C = q.C")
+		};
+		// NOTE: DDEC runs on EVERY call — long after the boot cleanup
+		// nils the KA/KB/KC key tables. The keystream constants are
+		// therefore injected as BOOT-TIME closure upvalues (factory
+		// form): the key-fragment expressions evaluate once while KA is
+		// alive, the compiled decoder captures four plain numbers.
+		let dec_src = format!(
+			"return function(PS, PT, KM, KC) return function(q, FLR, CHAR, UNP, TONUM) local st = (PS + q.sd * PT) % 268435456 local n = q.n local W, SA, SB, SC, SD = {{}}, {{}}, {{}}, {{}}, {{}} local e = q.e local ei = 1 for i = 1, n do st = (KM * st + KC) % 268435456 W[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SA[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SB[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SC[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SD[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 end {cblock} return W, SA, SB, SC, SD, C end end",
+			cblock = c_block_dec,
+		);
+		frags.push((206u16, dec_src.into_bytes()));
+		frags.push((207u16, enc_src.into_bytes()));
 		// mask + base-94 pack. Per-fragment keystream seed is derived
 		// from the wire code ((hseed + wire*hstep) % 2^28) so the
 		// decode order (shuffled HQI) is irrelevant.
@@ -2044,6 +2135,8 @@ pub fn generate(
   local HW2 = {{}}
   local CT = {{}}
   local CX = {{}}
+  local DDEC
+  local MPF
   do
     {}local LS = GFE(0)[{v_ls}]
     local TSTR = GFE(0)[{v_ts}]
@@ -2063,7 +2156,9 @@ pub fn generate(
     {}    {}
     HW, BSS = LS(table.concat(MH))()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM)
     HQ = nil; hqi = nil
-    {ct_fill}{cx_fill}do
+    {ct_fill}{cx_fill}DDEC = HW[206]({pseed}, {pstep}, {pkm}, {pkc})
+    local ENCF = HW[207]
+    do
       local avt = {{}}
       local ats = TSTR(avt)
       for i = 1, #ats do AV = (AV * 31 + BYTE(ats, i)) % 268435456 end
@@ -2072,12 +2167,16 @@ pub fn generate(
     HW = nil
     PF = LS(BSS)()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP)(FN)
     BSS = nil
+    {zw_lines}MPF = ENCF(PF, FLR, TYP, BYTE, TSTR, KA, KB, KC, KM)
+    PF = nil
   end"#,
 			hq_lines, mb_lines, boot, hqi.join(", "), mb_gather, metavm,
 			ak_gate = ak_gate,
 			strlit = strlit,
 			v_ls = v_ls, v_ts = v_ts, v_dbg = v_dbg, v_inf = v_inf,
 			v_s = v_s, v_c = v_c,
+			zw_lines = v15_zw,
+			pseed = pseed_e, pstep = pstep_e, pkm = pkm_e, pkc = pkc_e,
 		);
 		hfrag = build;
 		String::new()
@@ -2163,12 +2262,16 @@ pub fn generate(
 	} else {
 		params.clone()
 	};
+	// ㉒: v15 entry runs the encoded ROOT prototype (MPF) — PF itself
+	// was destroyed at boot. Legacy keeps the historical PF[#FN] form.
+	let entry_pf = if v15 { "MPF" } else { "PF[#FN]" };
 	let entry_tail = if bind_key.is_some() {
-		String::from(
-			"local _bt = { ... }\n  local vargs = {}\n  for _bi = 2, #_bt do\n    vargs[_bi - 1] = _bt[_bi]\n  end\n  local V2 = {}\n  return run(PF[#FN], V2, {}, vargs, #vargs)",
+		format!(
+			"local _bt = {{ ... }}\n  local vargs = {{}}\n  for _bi = 2, #_bt do\n    vargs[_bi - 1] = _bt[_bi]\n  end\n  local V2 = {{}}\n  return run({}, V2, {{}}, vargs, #vargs)",
+			entry_pf
 		)
 	} else {
-		String::from("local vargs = {}\n  local V2 = {}\n  return run(PF[#FN], V2, {}, vargs, 0)")
+		format!("local vargs = {{}}\n  local V2 = {{}}\n  return run({}, V2, {{}}, vargs, 0)", entry_pf)
 	};
 	// 增量⑲: v15 run() = chain entry (E.pc lives in the E constructor;
 	// the body is ONE chain epilogue tail-calling the first handler).
@@ -2187,8 +2290,8 @@ pub fn generate(
 		// above it), while the makefn closures call newE: forward-declare
 		// the local, define it after makefn.
 		let newe = format!(
-			"newE = function(pf, V, ups, vargs, vargc)\n    {}\n    {}\n    local O = {{}}\n    return {}\n  end\n  ",
-			run_unpack, run_soa, e_table
+			"newE = function(pf, V, ups, vargs, vargc)\n    {}\n    local W, SA, SB, SC, SD, C = DDEC(pf, FLR, CHAR, UNP, TONUM)\n    local S = pf.S\n    local O = {{}}\n    return {}\n  end\n  ",
+			run_unpack, e_table
 		);
 		// the unpack/SoA lines now live inside newE — keep them out of
 		// run's frame (recursion frame budget)
