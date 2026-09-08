@@ -153,6 +153,13 @@ done
 # ---------------------------------------------------------------
 source "$ROOT/tests/bind_gate_test.sh"
 
+# ---------------------------------------------------------------
+# 增量㉑ — environment binding (--bind-env): bound output only loads
+# in the target runtime; generic sandbox dies at load. Verifies syntax
+# passes + CLI load fails (binding works) + unbound stays runnable.
+# ---------------------------------------------------------------
+source "$ROOT/tests/env_bind_test.sh"
+
 echo "=================================================="
 echo "PASS checks: $pass   FAIL: $fail"
 if [[ $fail -gt 0 ]]; then

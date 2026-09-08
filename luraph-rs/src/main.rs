@@ -59,6 +59,12 @@ struct Options {
 	/// runtime fold of the FIRST vararg; only a run that supplies the
 	/// matching activation decodes the bootstrap. v15-only.
 	bind_key: Option<String>,
+	/// 增量㉑ (选项B·环境绑定): bind the output to the target runtime
+	/// (currently "roblox"). Embeds target-runtime API refs into the
+	/// primitive slots so module-table construction fails outside the
+	/// target runtime (real-Luraph mechanism). v15-only. Output then
+	/// only loads in the target runtime (not the CLI test matrix).
+	bind_env: Option<String>,
 }
 
 /// Named strength presets. Individual `--no-*` / `--vm` flags that
@@ -202,10 +208,14 @@ Options:
   --no-strings           disable L2 string encryption (default: enabled)
   --no-flatten           disable L3 loop desugar + CFG flattening (default: enabled)
   --no-junk              disable L3 junk code injection (default: enabled)
-  --bind-key <activation>  [DEPRECATED/实验] 激活门（⑱⑳）：需以第一个变长参
+  --bind-key <activation>  [已弃用/实验] 激活门（⑱⑳）：需以第一个变长参
                          递送激活值，产物无法直接运行。与「混淆后直接可运行」
                          的产品需求冲突，已弃用——默认（不带本项）产物零参数
                          直接可运行，防护靠 ⑲⑳ 结构层。仅在加载器授权场景保留。
+  --bind-env <roblox>    增量㉑ 环境绑定（仅 v15）：把目标运行时 API
+                         (Vector3/Vector2/task) 嵌进原语槽，产物只在目标运行
+                         时可加载，通用分析沙箱加载期即失败。绑定态产物不进
+                         通用运行等价矩阵（只语法校验）。
   -h, --help             show this help
   --version              show version
 ",
@@ -233,6 +243,7 @@ fn main() -> ExitCode {
 		do_junk: true,
 		junk_n: 2,
 		bind_key: None,
+		bind_env: None,
 	};
 	let mut i = 0;
 	let mut positional: Vec<String> = Vec::new();
@@ -313,6 +324,14 @@ fn main() -> ExitCode {
 				}
 				opts.bind_key = Some(args[i].clone());
 			}
+			"--bind-env" => {
+				i += 1;
+				if i >= args.len() {
+					eprintln!("error: --bind-env requires a target (roblox)");
+					return ExitCode::FAILURE;
+				}
+				opts.bind_env = Some(args[i].clone());
+			}
 			s if s.starts_with('-') => {
 				eprintln!("error: unknown option '{}'", s);
 				print_help();
@@ -356,6 +375,26 @@ fn main() -> ExitCode {
 		}
 		if k.trim().is_empty() {
 			eprintln!("error: --bind-key activation string must be non-empty");
+			return ExitCode::FAILURE;
+		}
+	}
+	// 增量㉑ (环境绑定): v15-only (the mechanism embeds target-runtime
+	// API refs into the v15 module table). Only "roblox" is a known
+	// target. Bound output only loads in the target runtime.
+	if let Some(e) = &opts.bind_env {
+		if !(opts.do_vm && opts.do_v15) {
+			eprintln!(
+				"error: --bind-env requires --preset v15\n  \
+				 environment binding embeds target-runtime API refs into \
+				 the v15 module table."
+			);
+			return ExitCode::FAILURE;
+		}
+		if e != "roblox" {
+			eprintln!(
+				"error: --bind-env target '{e}' unknown (only 'roblox')\n  \
+				 the target must be a runtime whose APIs we can reference."
+			);
 			return ExitCode::FAILURE;
 		}
 	}
@@ -563,8 +602,11 @@ fn main() -> ExitCode {
 				exclude.extend_from_slice(&bw_slots);
 				exclude.extend_from_slice(&kfrag);
 				exclude.extend_from_slice(&st_slots);
-				let mut fields =
-					vmgen::v15::module_fields(&mut rng, &exclude);
+				let mut fields = vmgen::v15::module_fields(
+					&mut rng,
+					&exclude,
+					opts.bind_env.as_deref(),
+				);
 				fields.extend(scaffold_fields);
 				rng.shuffle(&mut fields);
 				let module = ast::Expr::Table { fields };

@@ -12,10 +12,13 @@
 //! - boot handler name from the v15 alphabet scheme (base + `C` suffix,
 //!   entry-machine family, sample `FC`).
 //!
-//! Vector3.new / Vector2.new are NOT emitted: Roblox-only globals, absent
-//! from the Luau CLI, and table construction evaluates every RHS. The
-//! dual-target product constraint is documented in the parity plan §2;
-//! `vector.create` covers fingerprint F19.
+//! Vector3.new / Vector2.new are NOT emitted by default: Roblox-only
+//! globals, absent from the Luau CLI, and table construction evaluates
+//! every RHS. The dual-target product constraint is documented in the
+//! parity plan §2; `vector.create` covers fingerprint F19.
+//! 增量㉑ (环境绑定): `--bind-env roblox` OPTS IN to emitting
+//! Vector3.new/Vector2.new/task.defer as primitive slots — deliberately
+//! making construction fail outside Roblox (environment binding).
 //!
 //! Fields land in the table AFTER the interpreter block's obfuscation
 //! passes (main.rs), so their constants/names stay verbatim like the
@@ -172,7 +175,17 @@ fn lcg_factory(rng: &mut Rng, states: usize) -> Expr {
 /// All P2 module-table fields (primitives + LCG factories + mutable
 /// constant slot + named constants). Slot numbers are a Fisher-Yates
 /// sample of 1..=126 (sparse, per build).
-pub fn module_fields(rng: &mut Rng, exclude: &[i64]) -> Vec<TableField> {	let mut slots: Vec<i64> = (1..=126)
+pub fn module_fields(
+	rng: &mut Rng,
+	exclude: &[i64],
+	// 增量㉑ (选项B·环境绑定): Some("roblox") 时把目标运行时 API
+	// (Vector3.new/Vector2.new/task.defer) 嵌进原语槽——表构造会对每个
+	// RHS 求值，故**构造本身**在非目标环境即失败（真实 Luraph 同款机
+	// 制）：绑定态产物只在 Roblox 能加载，通用分析沙箱在加载期即死，
+	// 任何解码都还没开始。
+	bind_env: Option<&str>,
+) -> Vec<TableField> {
+	let mut slots: Vec<i64> = (1..=126)
 		.filter(|n| !exclude.contains(n))
 		.collect();
 	rng.shuffle(&mut slots);
@@ -196,6 +209,18 @@ pub fn module_fields(rng: &mut Rng, exclude: &[i64]) -> Vec<TableField> {	let mu
 			},
 			value,
 		});
+	}
+	// 增量㉑ (环境绑定): 目标运行时 API 引用——只在目标运行时存在，
+	// 非目标环境构造即失败。点式原语形态混入原语槽家族（不经 mangle）。
+	if bind_env == Some("roblox") {
+		for path in ["Vector3.new", "Vector2.new", "task.defer"] {
+			if let Some(n) = it.next() {
+				fields.push(TableField::Key {
+					key: Expr::Num { value: n as f64, isfloat: false },
+					value: dot_value(path),
+				});
+			}
+		}
 	}
 	// 2 LCG factory slots (2-state and 3-state machines)
 	for states in [2usize, 3usize] {

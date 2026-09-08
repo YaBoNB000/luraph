@@ -83,6 +83,25 @@ Roblox 执行器即可直接运行，输出与源码逐字节一致。防护全�
 直接可运行形态，不要再依赖激活门做防护**。详见
 `docs/plan-resemblance-and-security.md`。
 
+### 增量㉑：环境绑定（`--bind-env roblox`，仅 v15）
+
+真实 Luraph v15 的最外层防御。把目标运行时 API（`Vector3.new`/
+`Vector2.new`/`task.defer`）嵌进解释器原语槽——表构造对每个 RHS 求值，
+于是产物**只在目标运行时可加载**：在通用分析沙箱（luau CLI 等，
+`Vector3`/`task` 为 nil）里**加载期即 `index nil` 崩溃**，任何解码都还没
+开始。与 ⑱ 不同：**不需要用户传任何参数**，目标运行时自带这些 API，
+天然「混淆后直接可运行」；只有非目标沙箱跑不了。
+
+```bash
+./target/release/luraph-rs --preset v15 --dialect luau --bind-env roblox in.lua out.lua
+```
+
+绑定态产物不进通用运行等价矩阵（CLI 跑不动是设计目的），只做语法校验 +
+加载失败验证（`tests/env_bind_test.sh`，已内嵌 run_tests.sh）。
+**诚实边界**：挡的是非目标运行时；若攻击方用 Roblox 环境（或桩了这些
+API 的模拟器）运行则不拦，退化为 ⑲⑳ 结构防护 + 反调试。它是「抬门槛」，
+与叠层其余层叠加。
+
 同 `--seed` → 输出逐字节一致；不同 seed → 编码完全不同。  
 分层开关：`--no-mangle` / `--no-minify` / `--no-strings` / `--no-flatten` /
 `--no-junk` / `--no-numbers` / `--no-body` / `--no-antidbg` / `--vm`。
@@ -94,16 +113,18 @@ Luau 输入支持 `//`、`continue`、复合赋值、反引号插值、类型注
 ```bash
 cd luraph-rs
 bash tests/run_tests.sh      # 官方矩阵：全语料 × 双方言 ×（high + vm + v15）
-                             #   + 增量⑱ 绑定门控 10 项 = 246 项
+                             #   + ⑱ 绑定门控 10 项 + ㉑ 环境绑定 4 项 = 250 项
 bash tests/run_presets.sh    # 预设 × 全语料（465 项）
 bash tests/multiseed.sh      # VM/编码改动必跑（含绑定 5 种子扫描）
 bash tests/bind_gate_test.sh # 增量⑱ 激活门独立跑法（已内嵌 run_tests.sh）
+bash tests/env_bind_test.sh  # 增量㉑ 环境绑定独立跑法（已内嵌 run_tests.sh）
 bash tests/bench_presets.sh  # 性能快照（见 docs/performance.md）
 bash tests/gen_examples.sh   # 重生成 luraph-rs/examples/
 ```
 
-当前（2026-09-07）：官方矩阵 **246/246**，预设矩阵 **465/465**，多种子回归
-0 失败（含绑定扫描），绑定门控 10/10。
+当前（2026-09-08）：官方矩阵 **250/250**（含 ⑱ 绑定门控 10 项 + ㉑ 环境
+绑定 4 项），预设矩阵 **465/465**，多种子回归 0 失败（含绑定扫描），
+轮廓指纹 32/32，安全指纹 5/5。
 
 ## 性能（摘要）
 
