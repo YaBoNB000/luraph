@@ -1176,6 +1176,13 @@ pub fn generate(
 			));
 		}
 		sm.push_str("    DP = DP + 1\n  end\n");
+		// 存量缺陷清理（R007 回合）：boot 完成后钥匙表与解析钥匙已无
+		// 引用（DF 诱饵在本行之前求值完毕），全部抹除——内存转储拿不
+		// 到任何钥匙装配材料。（注意：这些都是 VM 体局部，mangle 后
+		// 名字随机；nil 赋值经管线无损。）
+		sm.push_str("  KA = nil; KB = nil; KC = nil; KM = nil\n");
+		sm.push_str("  CKM = nil; CKC = nil; BKM = nil; BKC = nil; BSEED = nil; BSTEP = nil\n");
+		sm.push_str("  OCt = nil\n");
 		sm
 	} else {
 		String::new()
@@ -2055,13 +2062,16 @@ pub fn generate(
     {ak_gate}local hqi = {{{}}}
     {}    {}
     HW, BSS = LS(table.concat(MH))()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM)
+    HQ = nil; hqi = nil
     {ct_fill}{cx_fill}do
       local avt = {{}}
       local ats = TSTR(avt)
       for i = 1, #ats do AV = (AV * 31 + BYTE(ats, i)) % 268435456 end
     end
     for w, f in pairs(HW) do if w < 256 then HW2[(w + AV) % 256] = f end end
+    HW = nil
     PF = LS(BSS)()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP)(FN)
+    BSS = nil
   end"#,
 			hq_lines, mb_lines, boot, hqi.join(", "), mb_gather, metavm,
 			ak_gate = ak_gate,
