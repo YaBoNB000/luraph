@@ -86,6 +86,28 @@ Roblox API，也钩不了任何全局函数。动态分析在 CLI 里被环境�
 
 ---
 
+## 3.5 原语表全貌（环境绑定的量化实证）
+
+从模块表抽出 **51 个原语槽**，把 Luau/Roblox 运行时几乎整套嵌入解释器：
+
+| 族 | 数量 | 成员 |
+|---|---|---|
+| `buffer.*` | 16 | fill/len/create/copy/tostring/fromstring + read u8/u16/u32/i16/i32/f32/f64/readstring + write u8/u32/i8 |
+| `string.*` | 12 | sub/byte/char/rep/find/match/gmatch/gsub/format/pack/unpack/insert |
+| `coroutine.*` | 8 | create/resume/yield/wrap/status/running/close/isyieldable |
+| `bit32.*` | 7 | bxor/band/bor/bnot/lshift/rshift/countrz |
+| `table.*` | 6 | pack/create/concat/insert/move/… |
+| Roblox 值构造 | 3 | `Vector3.new`/`Vector2.new`/`vector.create` |
+
+要点：
+- **`buffer.*`（16 个）是 CPS 解码的载体**——解码器用 `buffer.readu8` 读、
+  `buffer.writeu8` 写，字节级解码跑在 Luau buffer 上（这也解释了墙 #3 为
+  何难静态复现：解码状态在 buffer 里流转）。
+- **无任何计时函数字面量**（`os.clock`/`tick`/`os.time` 全无）——真 v15
+  **不用时间陷阱**（我方 L7 反而比它多这一层）。
+- **`coroutine.*` 8 个全在**：既是被保护程序可用的原语，也进一步锁死
+  「这是 Roblox/Luau 解释器」的环境绑定。
+
 ## 3. 与我方产品的对照（再确认）
 
 - **墙 #3（CPS 分散解码）我方已有**：⑲⑳ 的去中心化尾链 + 加密碎片 +
