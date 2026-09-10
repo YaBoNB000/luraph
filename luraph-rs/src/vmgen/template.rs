@@ -1132,30 +1132,13 @@ pub fn generate(
 	//   stream. Both writes and semantics are neutral (Nop -> Nop).
 	//   dead segment: a site1-shaped fetch tree (sample's never-hit
 	//   decode path) guarded by an always-false flag.
-	// ㉒ (B-2 碎片即用即毁): the Nop-alias self-modification writes
-	// move INSIDE the boot `do` block (emitted into the `build` string
-	// below) — they must land while PF is still decoded, right before
-	// the ENC fragment encodes every prototype into ciphertext. The
-	// visible F14/F27 shape is preserved; only its home shifts a few
-	// lines earlier.
-	let mut v15_zw = String::new();
+	// ㉓ (R008 回合): the Nop-alias self-modification writes move INTO
+	// the BSS encrypted fragment (applied right after parse, before the
+	// in-fragment re-encode) — the decoded streams never surface in
+	// visible code. The visible F14/F27 ZW shape is given up (security
+	// first, P3c precedent).
 	let v15_selfmod = if v15 {
 		let mut sm = String::new();
-		for (fi, sites) in nop_sites.iter().enumerate() {
-			if sites.is_empty() {
-				continue;
-			}
-			// bind the opcode array to a local and write through it
-			// (sample shape: direct array constant writes, F14)
-			v15_zw.push_str(&format!("  local ZW{} = PF[{}].W\n", fi + 1, fi + 1));
-			for &p in sites {
-				v15_zw.push_str(&format!(
-					"  ZW{}[{}] = NOPA\n",
-					fi + 1,
-					p as usize + 1,
-				));
-			}
-		}
 		// 增量⑫ (防静态, 报告突破口 #14): the dead-dispatch decoy used a
 		// literal `DF = 0`, so static dead-code elimination proved the
 		// loop unreachable and discarded it (zero-reference decoy spotted).
@@ -1796,29 +1779,14 @@ pub fn generate(
 		// varint ladders, constant decode, and the OS checksum oracle)
 		// now exists only inside the same encryption as the handlers —
 		// the visible interpreter shrinks to the boot stub.
-		let os_list = operand_sums
-			.iter()
-			.map(|s| obf_num(*s, rng))
-			.collect::<Vec<_>>()
-			.join(", ");
-		let bs_src = format!(
-			"return function(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP) local OS = {{{}}} {} return function(FN_) local PF_ = {{}} local di = 1 while di <= #FN_ do PF_[di] = parse(FN_[di], di); if PF_[di].ck ~= OS[di] then while true do end end; di = di + 1 end return PF_ end end",
-			os_list, parse_fn
-		);
-		frags.push((200u16, bs_src.into_bytes()));
-		// ㉒ (选项B — B-2 碎片即用即毁, R006 壁垒①): prototypes live
-		// ENCODED at rest. Boot parses PF exactly as before, then the
-		// ENC fragment (wire 207) masks every prototype's five streams
-		// + constant pool with a per-prototype LCG keystream, links the
-		// parent→child prototype tree through encrypted handles, and
-		// returns only the tree root — the flat decoded PF is destroyed
-		// in the same breath. Each call decodes ONE frame's worth of
-		// bytecode through the DDEC fragment (wire 206) into fresh
-		// tables owned by the frame; when the frame unwinds, decoded
-		// bytecode becomes garbage. No moment in the process lifetime
-		// holds the complete decoded program: resident state shrinks to
-		// ciphertext + live frames (HW2/CT/CX executable handlers stay
-		// resident — dispatch hot path).
+		// ㉓ (R008 回合 — 解码窗口入密): R008 实测破解路径 = 对可见
+		// boot 做文本手术，在「解码态原型表落地可见局部」的一点插入转储
+		// （或干脆抹掉 ENC 调用），㉒ 的内存侧防护对静态手术无效。根治：
+		// 解码态原型**从不出现在可见代码里**——BSS 碎片(解析器)直接内联
+		// 自改写 + ENC 重编码，只把**编码态树根**递回可见层。可见 boot
+		// 从此只见密文；攻击者要拿解码态必须先破 HQ 加密（碎片钥匙→
+		// HBOOT→HQ 循环→BSS 碎片→碎片内移植解析器+编码器，每构建重建）。
+		// 原型编码钥匙（每原型独立 LCG 流，种子 = pseed + i*pstep）。
 		let pseed = rng.int(1_048_576, 268_435_455) as i64;
 		let pstep = rng.int(1_048_576, 268_435_455) as i64;
 		let pkm = (rng.int(1_048_577, 33_000_001) | 1) as i64;
@@ -1832,20 +1800,14 @@ pub fn generate(
 		manifest_key("PF_KM", pkm as u64);
 		manifest_key("PF_KC", pkc as u64);
 		// operand-b stream (carries the Closure child index) + the
-		// Closure wire byte — both baked into the ENC scan
+		// Closure wire byte — both baked into the in-BSS encode scan
 		let closure_wire = map.to_wire
 			[OP_NAMES.iter().position(|n| *n == "Closure").unwrap()];
-		// ENC: P = decoded prototype list, NOPA = self-mod alias (ZW
-		// writes already applied visibly in the boot block), FLR/TYP/
-		// BYTE passed from boot locals. Stream entries are u16; the
-		// keystream advances once per masked unit. Constants: type
-		// folded into the masked type slot (0=nil 1=num 2=str 3=true
-		// 4=false); numbers masked additively (exact when consts_safe);
-		// string bytes masked per-byte.
+		// 常量编码块（类型折叠进掩码类型槽：0=nil 1=整数加性 2=字符串
+		// 3=true 4=false 5=tostring 往返；字节逐个掩码）
 		let c_block_enc = if consts_safe {
-			format!(
-				"local Ct = pf.C local m = 0 for j in pairs(Ct) do if j > m then m = j end end local ct, cn, csb, csl = {{}}, {{}}, {{}}, {{}} local si = 1 for j = 1, m do st = ({pkm} * st + {pkc}) % 268435456 local v = Ct[j] local tv = TYP(v) if tv == \"number\" then if v % 1 == 0 and v > -1125899906842624 and v < 1125899906842624 then ct[j] = (1 + st) % 65536 cn[j] = v + st else local ns = TOSTR(v) ct[j] = (5 + st) % 65536 csl[j] = #ns for cb = 1, #ns do st = ({pkm} * st + {pkc}) % 268435456 csb[si] = (BYTE(ns, cb) + st % 256) % 256 si = si + 1 end end elseif tv == \"string\" then ct[j] = (2 + st) % 65536 csl[j] = #v for cb = 1, #v do st = ({pkm} * st + {pkc}) % 268435456 csb[si] = (BYTE(v, cb) + st % 256) % 256 si = si + 1 end elseif tv == \"boolean\" then if v then ct[j] = (3 + st) % 65536 else ct[j] = (4 + st) % 65536 end else ct[j] = st % 65536 end end",
-				pkm = pkm_e, pkc = pkc_e,
+			String::from(
+				"local Ct = pf.C local m = 0 for j in pairs(Ct) do if j > m then m = j end end local ct, cn, csb, csl = {}, {}, {}, {} local si = 1 for j = 1, m do st = (KM * st + KC) % 268435456 local v = Ct[j] local tv = TYP(v) if tv == \"number\" then if v % 1 == 0 and v > -1125899906842624 and v < 1125899906842624 then ct[j] = (1 + st) % 65536 cn[j] = v + st else local ns = TOSTR(v) ct[j] = (5 + st) % 65536 csl[j] = #ns for cb = 1, #ns do st = (KM * st + KC) % 268435456 csb[si] = (BYTE(ns, cb) + st % 256) % 256 si = si + 1 end end elseif tv == \"string\" then ct[j] = (2 + st) % 65536 csl[j] = #v for cb = 1, #v do st = (KM * st + KC) % 268435456 csb[si] = (BYTE(v, cb) + st % 256) % 256 si = si + 1 end elseif tv == \"boolean\" then if v then ct[j] = (3 + st) % 65536 else ct[j] = (4 + st) % 65536 end else ct[j] = st % 65536 end end",
 			)
 		} else {
 			String::from(
@@ -1857,19 +1819,42 @@ pub fn generate(
 		} else {
 			"m = m, C = Ct"
 		};
-		let enc_src = format!(
-			"return function(P, FLR, TYP, BYTE, TOSTR, KA, KB, KC, KM) local EP = {{}} for i = 1, #P do local pf = P[i] local Wt, ks = pf.W, pf.{bs} local n = #Wt local km = {{}} local st = ({pseed} + i * {pstep}) % 268435456 local e = {{}} local ei = 1 for j = 1, n do local w = Wt[j] if w == {cw} then km[#km + 1] = ks[j] + 1 end st = ({pkm} * st + {pkc}) % 268435456 e[ei] = (w + st % 65536) % 65536 ei = ei + 1 st = ({pkm} * st + {pkc}) % 268435456 e[ei] = (pf.SA[j] + st % 65536) % 65536 ei = ei + 1 st = ({pkm} * st + {pkc}) % 268435456 e[ei] = (pf.SB[j] + st % 65536) % 65536 ei = ei + 1 st = ({pkm} * st + {pkc}) % 268435456 e[ei] = (pf.SC[j] + st % 65536) % 65536 ei = ei + 1 st = ({pkm} * st + {pkc}) % 268435456 e[ei] = (pf.SD[j] + st % 65536) % 65536 ei = ei + 1 end {cblock} EP[i] = {{ e = e, n = n, sd = i, S = pf.S, upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP] end",
+		let os_list = operand_sums
+			.iter()
+			.map(|s| obf_num(*s, rng))
+			.collect::<Vec<_>>()
+			.join(", ");
+		// ㉓: Nop 别名自改写从可见 boot 挪进 BSS 碎片（编码前执行）。
+		// 可见侧失去 F14/F27 的 ZW 直写形态（安全优先，口径按 P3c 先例
+		// 校准）；语义不变。
+		let mut zw_inner = String::new();
+		for (fi, sites) in nop_sites.iter().enumerate() {
+			for &p in sites {
+				zw_inner.push_str(&format!(
+					"PF_[{}].W[{}] = NOPA; ",
+					fi + 1,
+					p as usize + 1,
+				));
+			}
+		}
+		// ㉒ 编码体（㉓ 起内联于 BSS 碎片）：五流加性掩码 + 常量编码 +
+		// Closure 扫描链原型树，返回编码态树根。
+		let enc_body = format!(
+			"local P = PF_ local EP = {{}} for i = 1, #P do local pf = P[i] local Wt, ks = pf.W, pf.{bs} local n = #Wt local km = {{}} local st = (PS + i * PT) % 268435456 local e = {{}} local ei = 1 for j = 1, n do local w = Wt[j] if w == {cw} then km[#km + 1] = ks[j] + 1 end st = (KM * st + KC) % 268435456 e[ei] = (w + st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 e[ei] = (pf.SA[j] + st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 e[ei] = (pf.SB[j] + st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 e[ei] = (pf.SC[j] + st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 e[ei] = (pf.SD[j] + st % 65536) % 65536 ei = ei + 1 end {cblock} EP[i] = {{ e = e, n = n, sd = i, S = pf.S, upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP]",
 			bs = s_of[1],
-			pseed = pseed_e,
-			pstep = pstep_e,
-			pkm = pkm_e,
-			pkc = pkc_e,
 			cw = closure_wire,
 			cblock = c_block_enc,
 			cfields = c_fields_enc,
 		);
-		// DDEC: per-call frame decode (fresh tables; the frame owns
-		// them and they die with it). Mirrors the ENC keystream exactly.
+		// ㉓: BSS 碎片 = 解析 + 校验 + 自改写 + 重编码，一步到位——
+		// 解码态原型表只存在于这个 loadstring 出的加密碎片内部。
+		let bs_src = format!(
+			"return function(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TOSTR) local OS = {{{}}} {} return function(FN_, NOPA, PS, PT, KM, KC) local PF_ = {{}} local di = 1 while di <= #FN_ do PF_[di] = parse(FN_[di], di); if PF_[di].ck ~= OS[di] then while true do end end; di = di + 1 end {} {} end end",
+			os_list, parse_fn, zw_inner, enc_body
+		);
+		frags.push((200u16, bs_src.into_bytes()));
+		// DDEC（wire 206）：每帧解码，工厂形态把钥匙以 boot 期上游值
+		// 注入（钥匙表事后置 nil 不影响）。与编码钥匙流严格镜像。
 		let c_block_dec = if consts_safe {
 			String::from(
 				"local C = {} local ct, cn, csb, csl = q.ct, q.cn, q.csb, q.csl local si = 1 for j = 1, q.m do st = (KM * st + KC) % 268435456 local t = (ct[j] - st) % 65536 if t == 1 then C[j] = cn[j] - st elseif t == 2 or t == 5 then local l = csl[j] local b = {} for x = 1, l do st = (KM * st + KC) % 268435456 b[x] = (csb[si] - st % 256) % 256 si = si + 1 end if t == 2 then C[j] = CHAR(UNP(b, 1, l)) else C[j] = TONUM(CHAR(UNP(b, 1, l))) end elseif t == 3 then C[j] = true elseif t == 4 then C[j] = false end end",
@@ -1877,17 +1862,11 @@ pub fn generate(
 		} else {
 			String::from("local C = q.C")
 		};
-		// NOTE: DDEC runs on EVERY call — long after the boot cleanup
-		// nils the KA/KB/KC key tables. The keystream constants are
-		// therefore injected as BOOT-TIME closure upvalues (factory
-		// form): the key-fragment expressions evaluate once while KA is
-		// alive, the compiled decoder captures four plain numbers.
 		let dec_src = format!(
 			"return function(PS, PT, KM, KC) return function(q, FLR, CHAR, UNP, TONUM) local st = (PS + q.sd * PT) % 268435456 local n = q.n local W, SA, SB, SC, SD = {{}}, {{}}, {{}}, {{}}, {{}} local e = q.e local ei = 1 for i = 1, n do st = (KM * st + KC) % 268435456 W[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SA[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SB[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SC[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SD[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 end {cblock} return W, SA, SB, SC, SD, C end end",
 			cblock = c_block_dec,
 		);
 		frags.push((206u16, dec_src.into_bytes()));
-		frags.push((207u16, enc_src.into_bytes()));
 		// mask + base-94 pack. Per-fragment keystream seed is derived
 		// from the wire code ((hseed + wire*hstep) % 2^28) so the
 		// decode order (shuffled HQI) is irrelevant.
@@ -2157,7 +2136,6 @@ pub fn generate(
     HW, BSS = LS(table.concat(MH))()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM)
     HQ = nil; hqi = nil
     {ct_fill}{cx_fill}DDEC = HW[206]({pseed}, {pstep}, {pkm}, {pkc})
-    local ENCF = HW[207]
     do
       local avt = {{}}
       local ats = TSTR(avt)
@@ -2165,17 +2143,14 @@ pub fn generate(
     end
     for w, f in pairs(HW) do if w < 256 then HW2[(w + AV) % 256] = f end end
     HW = nil
-    PF = LS(BSS)()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP)(FN)
+    MPF = LS(BSS)()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TSTR)(FN, NOPA, {pseed}, {pstep}, {pkm}, {pkc})
     BSS = nil
-    {zw_lines}MPF = ENCF(PF, FLR, TYP, BYTE, TSTR, KA, KB, KC, KM)
-    PF = nil
   end"#,
 			hq_lines, mb_lines, boot, hqi.join(", "), mb_gather, metavm,
 			ak_gate = ak_gate,
 			strlit = strlit,
 			v_ls = v_ls, v_ts = v_ts, v_dbg = v_dbg, v_inf = v_inf,
 			v_s = v_s, v_c = v_c,
-			zw_lines = v15_zw,
 			pseed = pseed_e, pstep = pstep_e, pkm = pkm_e, pkc = pkc_e,
 		);
 		hfrag = build;
