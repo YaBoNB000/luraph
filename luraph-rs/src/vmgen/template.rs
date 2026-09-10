@@ -721,6 +721,11 @@ pub fn generate(
 	// ㉒ (选项B — B-2 碎片即用即毁): numeric constants are exact-
 	// additive-mask safe (see VmProgram::consts_mask_safe). v15 only.
 	consts_safe: bool,
+	// ㉔ (R008 回合 — 环境值绑定): Some("roblox") folds TARGET-RUNTIME
+	// VALUES (Vector3/Vector2 component math, per-build random args)
+	// into the boot keystream — a mock stub that ignores constructor
+	// args contaminates the key. v15 only.
+	bind_env: Option<&str>,
 	// 增量⑱ (选项B路线一 — 输入绑定/激活门): activation string known
 	// at obfuscation time. v15 only (asserted below).
 	bind_key: Option<&str>,
@@ -2001,15 +2006,13 @@ pub fn generate(
 		let v_dbg = "hdbg";
 		let v_inf = "hinf";
 		let v_s = "hsarg";
-		let v_c = "hcb";
-		let v_ts = "hts";
+			let v_ts = "hts";
 		boot.push_str(&coded_name_tpl(rng, v_ts, "tostring"));
 		boot.push_str(&coded_name_tpl(rng, v_ls, "loadstring"));
 		boot.push_str(&coded_name_tpl(rng, v_dbg, "debug"));
 		boot.push_str(&coded_name_tpl(rng, v_inf, "info"));
 		boot.push_str(&coded_name_tpl(rng, v_s, "s"));
-		boot.push_str(&coded_name_tpl(rng, v_c, "[C]"));
-		// 增量⑯-1 (探针钥匙化): base-31 fold of the clean-environment
+			// 增量⑯-1 (探针钥匙化): base-31 fold of the clean-environment
 		// loadstring source ("[C]"). In a clean run pb == C_FOLD and the
 		// extra term vanishes; a hooked loader shifts pb, silently
 		// corrupting the meta keystream (HBOOT decodes to garbage ->
@@ -2023,6 +2026,15 @@ pub fn generate(
 		};
 		let probe_mix = rng.int(1_048_576, KEY_MOD - 1);
 		let probe_mix_e = ke.key_expr(probe_mix, None, rng);
+		// ㉔-1 (R008 回合 — 守卫结果钥匙化): R008 实测攻击第 2 步 = 把
+		// 可见布尔标志补成通过（"重置 tY = true"）。废除标志与死循环
+		// oracle：loadstring 原生性探测的结果折进 pb 钥匙流——干净环境
+		// pb == c_fold（探针项恒零）；pcall 失败/被钩换源 → pb 偏移 →
+		// 元钥匙流污染 → HBOOT 解出垃圾 → 错钥静默死亡。补标志不再
+		// 有目标可打（标志已不存在）。
+		let nlok_delta = rng.int(1_048_576, KEY_MOD - 1);
+		let nlok_delta_e = ke.key_expr(nlok_delta, None, rng);
+		manifest_key("NLOK_DELTA", nlok_delta as u64);
 		let strlit = pool.lit("string");
 		// 增量⑰-A: the keystream generation + HBOOT unmask loop become
 		// a mini-VM bytecode program (visible dispatcher only). The
@@ -2048,6 +2060,50 @@ pub fn generate(
 				% 268_435_456) as i64;
 			assert!(ak_fold != 0, "activation fold collapsed to 0 (== no-input fold)");
 		}
+		// ㉔-2 (R008 回合 — 环境值绑定): R008 实测攻击第 1 步 = 给
+		// `task.defer`/`Vector3.new`/`Vector2.new` 塞**哑桩**（任意返回
+		// 值），模块表构造过了就完事。㉑ 只绑「存在性」；本轮把目标运行时
+		// 的**值**揉进元钥匙流：boot 用每构建随机参数调 `Vector3.new`/
+		// `Vector2.new`，对返回对象的 `.X/.Y/.Z` 分量做每构建随机系数
+		// 线性折叠——哑桩（不读构造参数）折出垃圾值 → 元钥匙流污染 →
+		// HBOOT 解出垃圾 → 错钥静默死亡。桩必须**忠实实现构造语义**
+		// （正确回传分量）才能过关。分量算术全整数精确（float32 分量
+		// 存小整数无损，Lua 侧 double 运算精确），目标运行时/沙箱一致。
+		// 诚实边界：受控沙箱若完整仿真这些 API 仍能过（R004 定律）——
+		// 抬的是「任意桩」到「忠实仿真」的成本。
+		let (env_gate, env_term) = if bind_env.is_some() {
+			let ea: Vec<i64> = (0..5).map(|_| rng.int(1, 999)).collect();
+			let ec: Vec<i64> = (0..6).map(|_| rng.int(1, 999)).collect();
+			let esum = (ea[0] * ec[0]
+				+ ea[1] * ec[1]
+				+ ea[2] * ec[2]
+				+ ea[3] * ec[3]
+				+ ea[4] * ec[4])
+				% KEY_MOD;
+			let env_exp = (esum * ec[5]) % KEY_MOD;
+			let env_exp_e = ke.key_expr(env_exp, None, rng);
+			let env_mix = rng.int(1_048_576, KEY_MOD - 1);
+			let env_mix_e = ke.key_expr(env_mix, None, rng);
+			manifest_key("ENV_EXP", env_exp as u64);
+			manifest_key("ENV_MIX", env_mix as u64);
+			let gate = format!(
+				"local ef1 = 0\n    do\n      local v3 = Vector3.new({}, {}, {})\n      local v2 = Vector2.new({}, {})\n      ef1 = ((v3.X * {} + v3.Y * {} + v3.Z * {} + v2.X * {} + v2.Y * {}) * {}) % 268435456\n    end\n    ",
+				obf_num(ea[0] as u64, rng),
+				obf_num(ea[1] as u64, rng),
+				obf_num(ea[2] as u64, rng),
+				obf_num(ea[3] as u64, rng),
+				obf_num(ea[4] as u64, rng),
+				obf_num(ec[0] as u64, rng),
+				obf_num(ec[1] as u64, rng),
+				obf_num(ec[2] as u64, rng),
+				obf_num(ec[3] as u64, rng),
+				obf_num(ec[4] as u64, rng),
+				obf_num(ec[5] as u64, rng),
+			);
+			(gate, format!(" + (ef1 - {}) * {}", env_exp_e, env_mix_e))
+		} else {
+			(String::new(), String::new())
+		};
 		let (ak_gate, meta_seed_full) = if bind_key.is_some() {
 			let ak_e = ke.key_expr(ak_fold, Some(("#hqi", n_hqi)), rng);
 			let ak2_e = ke.key_expr(ak2_fold, Some(("#hqi", n_hqi)), rng);
@@ -2078,16 +2134,16 @@ pub fn generate(
 				dbg = dbg,
 			);
 			let seed = format!(
-				"({} + (pb - {}) * {} + (ak1 - {}) * {} + (ak2 - {}) * {}) % 268435456",
-				meta_seed_e, c_fold, probe_mix_e, ak_e, bind_mix_e, ak2_e, bind_mix2_e
+				"({} + (pb - {}) * {}{} + (ak1 - {}) * {} + (ak2 - {}) * {}) % 268435456",
+				meta_seed_e, c_fold, probe_mix_e, env_term, ak_e, bind_mix_e, ak2_e, bind_mix2_e
 			);
 			(gate, seed)
 		} else {
 			(
 				String::new(),
 				format!(
-					"({} + (pb - {}) * {}) % 268435456",
-					meta_seed_e, c_fold, probe_mix_e
+					"({} + (pb - {}) * {}{}) % 268435456",
+					meta_seed_e, c_fold, probe_mix_e, env_term
 				),
 			)
 		};
@@ -2121,17 +2177,15 @@ pub fn generate(
     local TSTR = GFE(0)[{v_ts}]
     local DBG = GFE(0)[{v_dbg}]
     local INF = DBG and DBG[{v_inf}]
-    local nlok = false
     local pb = 0
     do
       local ok, sr = PCAL(function() return INF(LS, {v_s}) end)
-      if ok and sr == {v_c} then nlok = true end
       if ok and TYP(sr) == {strlit} then
         for i = 1, #sr do pb = (pb * 31 + BYTE(sr, i)) % 268435456 end
       end
+      pb = (pb + (ok and 0 or {nlok_delta})) % 268435456
     end
-    if not nlok then while true do end end
-    {ak_gate}local hqi = {{{}}}
+    {env_gate}{ak_gate}local hqi = {{{}}}
     {}    {}
     HW, BSS = LS(table.concat(MH))()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM)
     HQ = nil; hqi = nil
@@ -2148,9 +2202,11 @@ pub fn generate(
   end"#,
 			hq_lines, mb_lines, boot, hqi.join(", "), mb_gather, metavm,
 			ak_gate = ak_gate,
+			env_gate = env_gate,
 			strlit = strlit,
 			v_ls = v_ls, v_ts = v_ts, v_dbg = v_dbg, v_inf = v_inf,
-			v_s = v_s, v_c = v_c,
+			v_s = v_s,
+			nlok_delta = nlok_delta_e,
 			pseed = pseed_e, pstep = pstep_e, pkm = pkm_e, pkc = pkc_e,
 		);
 		hfrag = build;

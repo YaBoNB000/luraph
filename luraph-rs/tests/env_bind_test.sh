@@ -55,6 +55,23 @@ else
 	fi
 fi
 
+# (d) ㉔-2 环境值绑定形态：绑定态模板含目标运行时值折叠（ef1），
+# 未绑定产物不含
+rm -f /tmp/vm_tsrc.lua
+LURAPH_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --bind-env roblox --seed 42 "$SRC" "$BG_TMP/bound2.lua" >/dev/null 2>&1
+if grep -q "ef1" /tmp/vm_tsrc.lua 2>/dev/null && grep -q "Vector3.new" /tmp/vm_tsrc.lua; then
+	pass=$((pass+1))
+else
+	gf "envval" "绑定态模板缺少环境值折叠（ef1/Vector3.new 消费）"
+fi
+rm -f /tmp/vm_tsrc.lua
+LURAPH_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --seed 42 "$SRC" "$BG_TMP/unbound2.lua" >/dev/null 2>&1
+if grep -q "ef1" /tmp/vm_tsrc.lua 2>/dev/null; then
+	gf "envval-leak" "未绑定产物混入环境值折叠"
+else
+	pass=$((pass+1))
+fi
+
 # 未绑定对照：零参数直接可运行（无回归）
 "$TOOL" --preset v15 --dialect luau --seed 42 "$SRC" "$BG_TMP/unbound.lua" 2>/dev/null
 o1="$(timeout 30 "$LUAU" "$SRC" 2>&1)"; r1=$?
