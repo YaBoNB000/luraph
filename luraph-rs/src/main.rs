@@ -182,19 +182,21 @@ fn print_help() {
 Usage: luraph-rs [options] <input.lua> [output.lua]
 
 Options:
-  --dialect <5.1|luau>   target dialect (default: 5.1)
+  --dialect <5.1|luau>   target dialect (default: luau)
   -o, --output <file>    output file (default: stdout)
   --seed <n>             PRNG seed (default: time-based; use a fixed seed
                          for reproducible output)
-  --preset <name>        named strength (flags after this override it):
-                           low     L1+L2  name+minify+strings
-                           medium  low+L3 flatten+junk
-                           high    medium+L4+L5+L7  (default)
-                           vm      high+L6 private bytecode VM
-                           max     strongest shipping (= vm; v2 reserved)
+  --preset <name>        named strength (flags after this override it).
+                         DEFAULT (no --preset/--vm): v15 — 产品默认形态。
+                         Luau 目标默认即 v15 管线；--dialect 5.1 目标回落
+                         旧版 VM 管线（v15 仅 Luau 可运行）。
                            v15     Luraph-v15 structural clone (Luau/Roblox
-                                   only; Route A -- see docs/v15-
-                                   structural-parity-plan.md)
+                                   only) — 默认
+                           low     L1+L2  name+minify+strings (legacy)
+                           medium  low+L3 flatten+junk (legacy)
+                           high    medium+L4+L5+L7 (legacy)
+                           vm      high+L6 private bytecode VM (legacy)
+                           max     strongest legacy shipping (= vm)
   --minify               L1 minify output to a single compact line (default: enabled)
   --no-minify            keep the normalized (indented) printer output
   --no-numbers           disable L4 numeric literal rewriting (default: enabled)
@@ -226,7 +228,10 @@ Options:
 fn main() -> ExitCode {
 	let args: Vec<String> = std::env::args().skip(1).collect();
 	let mut opts = Options {
-		dialect: "5.1",
+		// ㉕ (产品定位): v15 架构是产品默认形态（不是特殊模式）——
+		// 默认方言随之为 luau；显式 --dialect 5.1 且无 --preset 时回落
+		// 到旧版 VM 管线（v15 仅 Luau，见 parse_args 末尾的默认装配）。
+		dialect: "luau",
 		input: String::new(),
 		output: None,
 		seed: 0,
@@ -247,6 +252,8 @@ fn main() -> ExitCode {
 	};
 	let mut i = 0;
 	let mut positional: Vec<String> = Vec::new();
+	let mut preset_given = false;
+	let mut vm_given = false;
 	while i < args.len() {
 		match args[i].as_str() {
 			"-h" | "--help" => {
@@ -295,6 +302,7 @@ fn main() -> ExitCode {
 				}
 			}
 			"--preset" => {
+				preset_given = true;
 				i += 1;
 				if i >= args.len() {
 					eprintln!("error: --preset requires a value (low|medium|high|vm|max|v15)");
@@ -312,7 +320,10 @@ fn main() -> ExitCode {
 		"--no-body" => opts.do_body = false,
 		"--no-antidbg" => opts.do_antidbg = false,
 		"--no-guard" => opts.do_guard = false,
-		"--vm" => opts.do_vm = true,
+		"--vm" => {
+			vm_given = true;
+			opts.do_vm = true;
+		}
 			"--no-strings" => opts.do_strings = false,
 			"--no-flatten" => opts.do_flatten = false,
 			"--no-junk" => opts.do_junk = false,
@@ -349,6 +360,26 @@ fn main() -> ExitCode {
 	opts.input = positional[0].clone();
 	if positional.len() > 1 {
 		opts.output = Some(positional[1].clone());
+	}
+
+	// ㉕ (产品定位修正): v15 不是特殊版本——**默认即 v15**。未显式给
+	// --preset/--vm 时：Luau 目标装配 v15 管线；Lua 5.1 目标（v15 仅
+	// Luau 可运行）回落到旧版 VM 管线（5.1 侧最强既有形态）。显式
+	// --preset/--vm 保持历史语义不变。默认在参数循环之后装配，保证
+	// 用户后续单独旗标（--no-junk 等）仍可覆盖。
+	if !preset_given && !vm_given {
+		if opts.dialect == "luau" {
+			if let Err(e) = apply_preset(&mut opts, "v15") {
+				eprintln!("error: {e}");
+				return ExitCode::FAILURE;
+			}
+		} else {
+			if let Err(e) = apply_preset(&mut opts, "vm") {
+				eprintln!("error: {e}");
+				return ExitCode::FAILURE;
+			}
+			eprintln!("note: v15 架构仅支持 Luau 目标；Lua 5.1 目标默认使用旧版 VM 管线（--preset low|medium|high 可选轻量形态）。");
+		}
 	}
 
 	if opts.do_v15 && opts.dialect != "luau" {

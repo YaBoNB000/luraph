@@ -26,43 +26,41 @@ CARGO_NET_OFFLINE=true cargo build --release
 ## 用法
 
 ```bash
-# 默认 = --preset high（L1–L5 + L7，无 VM）
-./target/release/luraph-rs --dialect 5.1  --seed 42 in.lua out.lua
-./target/release/luraph-rs --dialect luau --seed 42 in.lua out.lua
+# 默认 = v15 管线（产品形态，Luau/Roblox）——零参数、直接可运行
+./target/release/luraph-rs --seed 42 in.lua out.lua
+# 显式写法等价：
+./target/release/luraph-rs --preset v15 --dialect luau --seed 42 in.lua out.lua
 
-# 命名预设（后面的 --no-* / --vm 会覆盖）
-./target/release/luraph-rs --preset low    --seed 42 in.lua out.lua
-./target/release/luraph-rs --preset medium --seed 42 in.lua out.lua
-./target/release/luraph-rs --preset high   --seed 42 in.lua out.lua
-./target/release/luraph-rs --preset vm     --seed 42 in.lua out.vm.lua
-./target/release/luraph-rs --preset max    --seed 42 in.lua out.vm.lua
+# Lua 5.1 目标（v15 仅 Luau 可运行）→ 默认回落旧版 VM 管线
+./target/release/luraph-rs --dialect 5.1 --seed 42 in.lua out.lua
 
-# v15 结构同族档（Luau/Roblox-only，克隆 Luraph v15 形态）——推荐
-# 产物零参数、直接可运行（丢进 Luau CLI / Roblox 执行器即可）
-./target/release/luraph-rs --preset v15 --dialect luau --seed 42 in.lua out.v15.luau.lua
+# 旧版轻量/VM 预设（显式选择，后面的 --no-* / --vm 会覆盖）
+./target/release/luraph-rs --preset low    --dialect 5.1 --seed 42 in.lua out.lua
+./target/release/luraph-rs --preset medium --dialect 5.1 --seed 42 in.lua out.lua
+./target/release/luraph-rs --preset high   --dialect 5.1 --seed 42 in.lua out.lua
+./target/release/luraph-rs --preset vm     --dialect 5.1 --seed 42 in.lua out.vm.lua
+./target/release/luraph-rs --preset max    --dialect 5.1 --seed 42 in.lua out.vm.lua
 
 # [已弃用] 增量⑱ 输入绑定/激活门：需变长参递送激活值、产物无法直接运行，
 # 与「混淆后直接可运行」的产品需求冲突，仅加载器授权场景保留
-# ./target/release/luraph-rs --preset v15 --dialect luau --bind-key "KEY" in.lua out.lua
-
-# 等价写法
-./target/release/luraph-rs --vm --dialect 5.1 --seed 42 in.lua out.vm.lua
+# ./target/release/luraph-rs --bind-key "KEY" in.lua out.lua
 ```
 
 | 预设 | 打开的层 | 典型体积 | 适用 |
 |---|---|---|---|
-| `low` | L1 + L2 | ~源码量级 | 名称/字符串不可读即可 |
-| `medium` | low + L3 | 数 KB–数十 KB | 还要打散控制流 |
-| `high`（默认） | medium + L4 + L5 + L7 | 数十 KB | 商业级非 VM：整段密文 + 反篡改 |
-| `vm` | high + L6 | ~130–160 KB | 反编译器失效；Lua-on-Lua |
-| `max` | 当前 = `vm` | 同 `vm` | 最强在售档；v2（CPS 帧/超级指令）预留 |
-| `v15` | Luraph-v15 结构同族（Luau/Roblox） | ~140 KB | **推荐**：纯结构防护、零参数直接可运行 |
+| **默认（= `v15`）** | v15 架构全防护（Luau/Roblox） | ~150 KB | **产品形态**：零参数直接可运行 |
+| `low` | L1 + L2（legacy） | ~源码量级 | 名称/字符串不可读即可 |
+| `medium` | low + L3（legacy） | 数 KB–数十 KB | 还要打散控制流 |
+| `high` | medium + L4 + L5 + L7（legacy） | 数十 KB | 商业级非 VM：整段密文 + 反篡改 |
+| `vm` | high + L6（legacy） | ~130–160 KB | 旧版 VM（Lua 5.1 目标的默认） |
+| `max` | 当前 = `vm`（legacy） | 同 `vm` | 旧版最强档 |
+| `v15` | Luraph-v15 结构同族（Luau/Roblox） | ~150 KB | 显式写法，等同默认 |
 
-### 产品形态：混淆后零参数直接可运行（`--preset v15`）
+### 产品形态：混淆后零参数直接可运行（默认即 v15）
 
-**核心承诺**：`--preset v15` 产物**不需要任何参数**，丢进 Luau CLI 或
-Roblox 执行器即可直接运行，输出与源码逐字节一致。防护全部来自**结构层**
-（⑲⑳）：
+**核心承诺**：默认产物（v15 管线）**不需要任何参数**，丢进 Luau CLI 或
+Roblox 执行器即可直接运行，输出与源码逐字节一致。防护来自**结构层 +
+运行时防御叠层**（⑲⑳㉑㉒㉓㉔）：
 
 - **加密解释器**：43 个指令 handler + 字节码解析器全部加密成碎片，运行时
   经 `loadstring` 装配，可见代码里没有指令语义；
