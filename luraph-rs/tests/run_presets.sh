@@ -27,11 +27,8 @@ for preset in $PRESETS; do
 	esac
 	for case in "$ROOT"/tests/cases/*.lua; do
 		base="$(basename "$case" .lua)"
-		if [[ "$base" == luau_* ]]; then
-			dialects="luau"
-		else
-			dialects="5.1 luau"
-		fi
+		# ㉖: 产品线 Luau-only（5.1 相位移除）
+		dialects="luau"
 		for d in $dialects; do
 			out="$TMP/${preset}__${base}__${d}.lua"
 			if ! timeout 90 "$TOOL" --preset "$preset" --dialect "$d" --seed 42 "$case" "$out" 2>"$TMP/err.txt"; then

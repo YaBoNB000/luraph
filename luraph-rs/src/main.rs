@@ -182,14 +182,13 @@ fn print_help() {
 Usage: luraph-rs [options] <input.lua> [output.lua]
 
 Options:
-  --dialect <5.1|luau>   target dialect (default: luau)
+  --dialect <luau>       target dialect (仅 luau；5.1 自 2026-09-10 起停止支持)
   -o, --output <file>    output file (default: stdout)
   --seed <n>             PRNG seed (default: time-based; use a fixed seed
                          for reproducible output)
   --preset <name>        named strength (flags after this override it).
-                         DEFAULT (no --preset/--vm): v15 — 产品默认形态。
-                         Luau 目标默认即 v15 管线；--dialect 5.1 目标回落
-                         旧版 VM 管线（v15 仅 Luau 可运行）。
+                         DEFAULT (no --preset/--vm): v15 — 产品默认形态
+                         （产品线为 Luau-only）。
                            v15     Luraph-v15 structural clone (Luau/Roblox
                                    only) — 默认
                            low     L1+L2  name+minify+strings (legacy)
@@ -362,26 +361,25 @@ fn main() -> ExitCode {
 		opts.output = Some(positional[1].clone());
 	}
 
-	// ㉕ (产品定位修正): v15 不是特殊版本——**默认即 v15**。未显式给
-	// --preset/--vm 时：Luau 目标装配 v15 管线；Lua 5.1 目标（v15 仅
-	// Luau 可运行）回落到旧版 VM 管线（5.1 侧最强既有形态）。显式
-	// --preset/--vm 保持历史语义不变。默认在参数循环之后装配，保证
-	// 用户后续单独旗标（--no-junk 等）仍可覆盖。
+	// ㉕ (产品定位): 默认即 v15。㉖ 起产品线收敛为 Luau-only——
+	// 未显式给 --preset/--vm 时一律装配 v15 管线（--dialect 5.1
+	// 已在下方校验处拒绝，不再存在回落路径）。
 	if !preset_given && !vm_given {
-		if opts.dialect == "luau" {
-			if let Err(e) = apply_preset(&mut opts, "v15") {
-				eprintln!("error: {e}");
-				return ExitCode::FAILURE;
-			}
-		} else {
-			if let Err(e) = apply_preset(&mut opts, "vm") {
-				eprintln!("error: {e}");
-				return ExitCode::FAILURE;
-			}
-			eprintln!("note: v15 架构仅支持 Luau 目标；Lua 5.1 目标默认使用旧版 VM 管线（--preset low|medium|high 可选轻量形态）。");
+		if let Err(e) = apply_preset(&mut opts, "v15") {
+			eprintln!("error: {e}");
+			return ExitCode::FAILURE;
 		}
 	}
 
+	// ㉖ (产品线收敛): 用户拍板——5.1 不用管，每次混淆都按 Luau。
+	// Lua 5.1 目标自 2026-09-10 起不再支持（历史产物不受影响）。
+	if opts.dialect != "luau" {
+		eprintln!(
+			"error: 产品形态已统一为 Luau（v15 架构），不再支持 Lua 5.1 目标\n  \
+			 (product is Luau-only since 2026-09-10; drop --dialect 5.1)"
+		);
+		return ExitCode::FAILURE;
+	}
 	if opts.do_v15 && opts.dialect != "luau" {
 		eprintln!(
 			"error: --preset v15 requires --dialect luau\n  \

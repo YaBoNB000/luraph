@@ -33,11 +33,8 @@ run() { # run <interp> <file>  -> stdout+stderr; returns exit code
 
 for case in "$ROOT"/tests/cases/*.lua; do
 	base="$(basename "$case" .lua)"
-	if [[ "$base" == luau_* ]]; then
-		dialects="luau"
-	else
-		dialects="5.1 luau"
-	fi
+	# ㉖: 产品线 Luau-only（5.1 相位移除）
+	dialects="luau"
 	for d in $dialects; do
 		out="$TMP/${base}__${d}.lua"
 		if ! "$TOOL" --dialect "$d" --seed 42 "$case" "$out" 2>"$TMP/tool_err.txt"; then
@@ -94,11 +91,8 @@ runvm() { # runvm <interp> <file>
 
 for case in "$ROOT"/tests/cases/*.lua; do
 	base="$(basename "$case" .lua)"
-	if [[ "$base" == luau_* ]]; then
-		dialects="luau"
-	else
-		dialects="5.1 luau"
-	fi
+	# ㉖: 产品线 Luau-only（5.1 相位移除）
+	dialects="luau"
 	for d in $dialects; do
 		out="$TMP/${base}__${d}.vm.lua"
 		if ! "$TOOL" --vm --dialect "$d" --seed 42 "$case" "$out" 2>"$TMP/tool_err.txt"; then

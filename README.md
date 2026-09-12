@@ -27,19 +27,17 @@ CARGO_NET_OFFLINE=true cargo build --release
 
 ```bash
 # 默认 = v15 管线（产品形态，Luau/Roblox）——零参数、直接可运行
+# ㉖ 起产品线 Luau-only：Lua 5.1 目标不再支持
 ./target/release/luraph-rs --seed 42 in.lua out.lua
 # 显式写法等价：
-./target/release/luraph-rs --preset v15 --dialect luau --seed 42 in.lua out.lua
+./target/release/luraph-rs --preset v15 --seed 42 in.lua out.lua
 
-# Lua 5.1 目标（v15 仅 Luau 可运行）→ 默认回落旧版 VM 管线
-./target/release/luraph-rs --dialect 5.1 --seed 42 in.lua out.lua
-
-# 旧版轻量/VM 预设（显式选择，后面的 --no-* / --vm 会覆盖）
-./target/release/luraph-rs --preset low    --dialect 5.1 --seed 42 in.lua out.lua
-./target/release/luraph-rs --preset medium --dialect 5.1 --seed 42 in.lua out.lua
-./target/release/luraph-rs --preset high   --dialect 5.1 --seed 42 in.lua out.lua
-./target/release/luraph-rs --preset vm     --dialect 5.1 --seed 42 in.lua out.vm.lua
-./target/release/luraph-rs --preset max    --dialect 5.1 --seed 42 in.lua out.vm.lua
+# 旧版轻量/VM 预设（Luau 目标显式选择，后面的 --no-* / --vm 会覆盖）
+./target/release/luraph-rs --preset low    --seed 42 in.lua out.lua
+./target/release/luraph-rs --preset medium --seed 42 in.lua out.lua
+./target/release/luraph-rs --preset high   --seed 42 in.lua out.lua
+./target/release/luraph-rs --preset vm     --seed 42 in.lua out.vm.lua
+./target/release/luraph-rs --preset max    --seed 42 in.lua out.vm.lua
 
 # [已弃用] 增量⑱ 输入绑定/激活门：需变长参递送激活值、产物无法直接运行，
 # 与「混淆后直接可运行」的产品需求冲突，仅加载器授权场景保留
@@ -52,7 +50,7 @@ CARGO_NET_OFFLINE=true cargo build --release
 | `low` | L1 + L2（legacy） | ~源码量级 | 名称/字符串不可读即可 |
 | `medium` | low + L3（legacy） | 数 KB–数十 KB | 还要打散控制流 |
 | `high` | medium + L4 + L5 + L7（legacy） | 数十 KB | 商业级非 VM：整段密文 + 反篡改 |
-| `vm` | high + L6（legacy） | ~130–160 KB | 旧版 VM（Lua 5.1 目标的默认） |
+| `vm` | high + L6（legacy） | ~130–160 KB | 旧版 VM（Lua 5.1 时代产物） |
 | `max` | 当前 = `vm`（legacy） | 同 `vm` | 旧版最强档 |
 | `v15` | Luraph-v15 结构同族（Luau/Roblox） | ~150 KB | 显式写法，等同默认 |
 

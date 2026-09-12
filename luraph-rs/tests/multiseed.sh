@@ -21,11 +21,8 @@ fail=0
 for seed in $SEEDS; do
 	for case in "$ROOT"/tests/cases/*.lua; do
 		base="$(basename "$case" .lua)"
-		if [[ "$base" == luau_* ]]; then
-			dialects="luau"
-		else
-			dialects="5.1 luau"
-		fi
+		# ㉖: 产品线 Luau-only（5.1 相位移除）
+		dialects="luau"
 		for d in $dialects; do
 			if [[ "$d" == "5.1" ]]; then interp=$LUA51; else interp=$LUAU; fi
 			o1="$(timeout 60 "$interp" "$case" 2>&1)"; c1=$?
