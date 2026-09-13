@@ -84,15 +84,18 @@ if LURAPH_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --seed 42 \
 	ok=1
 	# 注：E.k[b + 1]（Closure 取子原型）与编码体（㉓ 起）都在加密碎片内，
 	# TSRC 不可见，其存在性由 (3)/(5) 的嵌套闭包运行等价间接验证。
-	# ㉓：解码态原型不再落地可见层——BSS 直接返回编码态树根，可见侧
-	# 不得残留解码态赋值/置空形态。
-	for pat in "MPF = LS(BSS)()(" ")(FN, NOPA," "DDEC = HW\[206\](" \
-		"newE = function(pf" "makefn(pf, V, upsf, S)" "return run(MPF"; do
+	# ㉓：解码态原型不再落地可见层——BSS 直接返回编码态树根。
+	# ㉗：运行时（newE/makefn/run+蹦床+DDEC）整体入密为碎片 208，可见
+	# 层只剩 RTFRAG 提取 + 不透明函数值装配（RUN）。
+	for pat in "MPF = LS(BSS)()(" ")(FN, NOPA," "RTFRAG = HW\[208\]" \
+		"local RUN = RTFRAG(" "return RUN(MPF"; do
 		if ! grep -q "$pat" "$ts"; then ok=0; gf "enc" "模板缺少形态: $pat"; fi
 	done
-	# 平表/解码态残留引用必须消失
-	for pat in "PF\[#FN\]" "PF\[idx\]" "= ENCF(" "PF = nil"; do
-		if grep -q "$pat" "$ts"; then ok=0; gf "enc" "模板残留解码态形态: $pat"; fi
+	# 平表/解码态/可见运行时残留必须消失（㉗：探针目标清零）
+	for pat in "PF\[#FN\]" "PF\[idx\]" "= ENCF(" "PF = nil" \
+		"newE = function" "makefn(pf, V, upsf, S)" "run = function(pf" \
+		"DDEC = HW" "CT\[" "CX\["; do
+		if grep -q "$pat" "$ts"; then ok=0; gf "enc" "模板残留可见运行时/解码态形态: $pat"; fi
 	done
 	[[ "$ok" == "1" ]] && pass=$((pass+1))
 else

@@ -1380,8 +1380,10 @@ pub fn generate(
 	let trampoline_src = if v15 {
 		const CHAIN_BUDGET: i64 = 16;
 		let budget_e = obf_num(CHAIN_BUDGET as u64, rng);
+		// ㉗: 续行/执行器不再经可见表索引（CT[i]/CX[i] 是文本手术包装
+		// 点）——蹦床从离散上游值选取，入密后它们是运行时碎片的参数。
 		Some(format!(
-			"local ti = 0\n    while true do\n      E.b = {}\n      if E.callx > 0 then\n        local cx = CX[E.callx]\n        E.callx = 0\n        cx(E)\n      else\n        CT[(ti % 4) + 1](E)\n        ti = ti + 1\n      end\n      if E.done then return U(E.out, 1, E.total) end\n    end",
+			"local ti = 0\n    while true do\n      E.b = {}\n      if E.callx > 0 then\n        local cx = E.callx == 1 and XE1 or E.callx == 2 and XE2 or E.callx == 3 and XE3 or XE4\n        E.callx = 0\n        cx(E)\n      else\n        local cs = ti % 4\n        local cf = cs == 0 and XC1 or cs == 1 and XC2 or cs == 2 and XC3 or XC4\n        cf(E)\n        ti = ti + 1\n      end\n      if E.done then return U(E.out, 1, E.total) end\n    end",
 			budget_e
 		))
 	} else {
@@ -1867,11 +1869,31 @@ pub fn generate(
 		} else {
 			String::from("local C = q.C")
 		};
-		let dec_src = format!(
-			"return function(PS, PT, KM, KC) return function(q, FLR, CHAR, UNP, TONUM) local st = (PS + q.sd * PT) % 268435456 local n = q.n local W, SA, SB, SC, SD = {{}}, {{}}, {{}}, {{}}, {{}} local e = q.e local ei = 1 for i = 1, n do st = (KM * st + KC) % 268435456 W[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SA[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SB[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SC[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SD[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 end {cblock} return W, SA, SB, SC, SD, C end end",
+		// ㉗ (R009/Suda 回合 — 运行时入密): DDEC 不再是独立可见碎片
+		// （其可见调用点曾是文本手术探针位）——解码器函数体内联进运行
+		// 时碎片（wire 208），PS/PT/KM/KC 作为碎片工厂参数（可见层只见
+		// 钥匙装配数值，不见解码器函数值）。
+		let dec_inner = format!(
+			"function(q, FLR, CHAR, UNP, TONUM) local st = (PS + q.sd * PT) % 268435456 local n = q.n local W, SA, SB, SC, SD = {{}}, {{}}, {{}}, {{}}, {{}} local e = q.e local ei = 1 for i = 1, n do st = (KM * st + KC) % 268435456 W[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SA[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SB[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SC[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SD[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 end {cblock} return W, SA, SB, SC, SD, C end",
 			cblock = c_block_dec,
 		);
-		frags.push((206u16, dec_src.into_bytes()));
+		// ㉗ (R009/Suda 回合 — 运行时入密): newE/makefn/run+蹦床+DDEC
+		// 整体打包为加密运行时碎片（wire 208）。工厂参数 = 钥匙数值×4
+		// + 不透明依赖值（原语表/环境函数/续行与执行器×8 个离散函数
+		// 值）。可见层从此没有任何一行代码触碰解码数据：文本手术探针
+		// （R008/Suda 实测的三处插入点）全部失去目标。
+		let rt_newe = format!(
+			"newE = function(pf, V, ups, vargs, vargc)\n    {}\n    local W, SA, SB, SC, SD, C = DDEC(pf, FLR, CHAR, UNP, TONUM)\n    local S = pf.S\n    local O = {{}}\n    return {}\n  end\n  ",
+			run_unpack, e_table
+		);
+		let rt_src = format!(
+			"return function(PS, PT, KM, KC, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, XC1, XC2, XC3, XC4, XE1, XE2, XE3, XE4)\n  local DDEC = {dec}\n  local newE\n  {mk}  {ne}local run = function(pf, V, ups, vargs, vargc)\n    local E = newE(pf, V, ups, vargs, vargc)\n    {loop}\n  end\n  return run\nend",
+			dec = dec_inner,
+			mk = makefn_decl,
+			ne = rt_newe,
+			loop = trampoline_src.clone().unwrap(),
+		);
+		frags.push((208u16, rt_src.into_bytes()));
 		// mask + base-94 pack. Per-fragment keystream seed is derived
 		// from the wire code ((hseed + wire*hstep) % 2^28) so the
 		// decode order (shuffled HQI) is irrelevant.
@@ -2152,8 +2174,9 @@ pub fn generate(
 		// holds which encrypted re-entry fragment is per-build random).
 		let mut cont_wires: Vec<u16> = (301..305).collect();
 		rng.shuffle(&mut cont_wires);
+		// ㉗: 续行碎片装进离散可见局部（不再经表索引——表是包装手术点）
 		let ct_fill: String = (0..4)
-			.map(|i| format!("CT[{}] = HW[{}]\n    ", i + 1, cont_wires[i]))
+			.map(|i| format!("CT{} = HW[{}]\n    ", i + 1, cont_wires[i]))
 			.collect();
 		// call executors: fixed callx->wire mapping (the chain phases
 		// stash E.callx = 1..4), emit order shuffled (cosmetic)
@@ -2161,16 +2184,17 @@ pub fn generate(
 		rng.shuffle(&mut cx_order);
 		let cx_fill: String = cx_order
 			.iter()
-			.map(|&i| format!("CX[{}] = HW[{}]\n    ", i + 1, 305 + i))
+			.map(|&i| format!("CX{} = HW[{}]\n    ", i + 1, 305 + i))
 			.collect();
 		let build = format!(
 			r#"{}  {}local HW = {{}}
   local BSS
   local AV = 0
   local HW2 = {{}}
-  local CT = {{}}
-  local CX = {{}}
-  local DDEC
+  local CT1, CT2, CT3, CT4
+  local CX1, CX2, CX3, CX4
+  local RTFRAG
+  local RPK1, RPK2, RPK3, RPK4
   local MPF
   do
     {}local LS = GFE(0)[{v_ls}]
@@ -2189,7 +2213,11 @@ pub fn generate(
     {}    {}
     HW, BSS = LS(table.concat(MH))()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM)
     HQ = nil; hqi = nil
-    {ct_fill}{cx_fill}DDEC = HW[206]({pseed}, {pstep}, {pkm}, {pkc})
+    {ct_fill}{cx_fill}RTFRAG = HW[208]
+    RPK1 = {pseed}
+    RPK2 = {pstep}
+    RPK3 = {pkm}
+    RPK4 = {pkc}
     do
       local avt = {{}}
       local ats = TSTR(avt)
@@ -2296,13 +2324,15 @@ pub fn generate(
 	// ㉒: v15 entry runs the encoded ROOT prototype (MPF) — PF itself
 	// was destroyed at boot. Legacy keeps the historical PF[#FN] form.
 	let entry_pf = if v15 { "MPF" } else { "PF[#FN]" };
+	// ㉗: v15 运行入口 = 运行时碎片装配出的不透明函数值 RUN
+	let entry_run = if v15 { "RUN" } else { "run" };
 	let entry_tail = if bind_key.is_some() {
 		format!(
-			"local _bt = {{ ... }}\n  local vargs = {{}}\n  for _bi = 2, #_bt do\n    vargs[_bi - 1] = _bt[_bi]\n  end\n  local V2 = {{}}\n  return run({}, V2, {{}}, vargs, #vargs)",
-			entry_pf
+			"local _bt = {{ ... }}\n  local vargs = {{}}\n  for _bi = 2, #_bt do\n    vargs[_bi - 1] = _bt[_bi]\n  end\n  local V2 = {{}}\n  return {}({}, V2, {{}}, vargs, #vargs)",
+			entry_run, entry_pf
 		)
 	} else {
-		format!("local vargs = {{}}\n  local V2 = {{}}\n  return run({}, V2, {{}}, vargs, 0)", entry_pf)
+		format!("local vargs = {{}}\n  local V2 = {{}}\n  return {}({}, V2, {{}}, vargs, 0)", entry_run, entry_pf)
 	};
 	// 增量⑲: v15 run() = chain entry (E.pc lives in the E constructor;
 	// the body is ONE chain epilogue tail-calling the first handler).
@@ -2316,32 +2346,37 @@ pub fn generate(
 	// 全在 43 个加密 handler + 4 个重入碎片 + 4 个执行器碎片里，可见
 	// 蹦床无操作码语义（R006 壁垒②）。run() 本体瘦成蹦床（帧开销留给
 	// 用户递归：E 构造移入 newE，其帧随返即销）。
-	let (run_head, newe_fwd, newe_decl, pc_decl, run_loop) = if v15 {
-		// newE's body builds E (references makefn/mget/... — declared
-		// above it), while the makefn closures call newE: forward-declare
-		// the local, define it after makefn.
-		let newe = format!(
-			"newE = function(pf, V, ups, vargs, vargc)\n    {}\n    local W, SA, SB, SC, SD, C = DDEC(pf, FLR, CHAR, UNP, TONUM)\n    local S = pf.S\n    local O = {{}}\n    return {}\n  end\n  ",
-			run_unpack, e_table
-		);
-		// the unpack/SoA lines now live inside newE — keep them out of
-		// run's frame (recursion frame budget)
+	// ㉗ (R009/Suda 回合 — 运行时入密): R008/Suda 实测破解 = 三个文本探针
+	// 全部插在**可见**运行时表面（entry 的 run(MPF,...)、可见 newE 内的
+	// DDEC 调用点、可见蹦床的 CT 索引）。根治：把 newE/makefn/run+蹦床
+	// +DDEC 整体装进加密运行时碎片（wire 208），可见层只剩不透明函数值
+	// 交接——可见文本从此没有任何一行触碰解码数据。要提取必须回到的路径
+	// = 破 HQ 碎片加密（五层引导链，每构建重建）。
+	let run_block: String = if v15 {
+		// ㉗: 运行时碎片（wire 208）已在 hfrag 段装入（newE/makefn/
+		// run+蹦床+DDEC 全入密）；可见层只剩这一次不透明函数值装配。
 		run_unpack = String::new();
 		run_soa = String::new();
-		(
-			String::from("local E = newE(pf, V, ups, vargs, vargc)\n    "),
-			String::from("local newE\n  "),
-			newe,
-			String::new(),
-			trampoline_src.clone().unwrap(),
+		String::from(
+			"local RUN = RTFRAG(RPK1, RPK2, RPK3, RPK4, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, CT1, CT2, CT3, CT4, CX1, CX2, CX3, CX4)",
 		)
 	} else {
-		(
-			String::new(),
-			String::new(),
-			String::new(),
-			String::from("local pc = 1\n    "),
-			format!("while true do\n      {}\n      {}\n    end", fetch, branches),
+		let run_head = String::new();
+		let pc_decl = String::from("local pc = 1\n    ");
+		let ln_decl = "local lastn = 0\n    local lastbase = 0\n    ";
+		let run_loop = format!("while true do\n      {}\n      {}\n    end", fetch, branches);
+		// legacy: makefn 仍是可见声明（历史形态，未入密）
+		format!(
+			"local run\n  {mk}\n  run = function(pf, V, ups, vargs, vargc)\n    {run_head}{run_unpack}\n    {run_soa}\n    {pc_decl}{o_decl}{ln_decl}{handler_defs}{run_loop}\n  end",
+			mk = makefn_decl,
+			run_head = run_head,
+			run_unpack = run_unpack,
+			run_soa = run_soa,
+			pc_decl = pc_decl,
+			o_decl = String::new(),
+			ln_decl = ln_decl,
+			handler_defs = handler_defs,
+			run_loop = run_loop,
 		)
 	};
 	format!(
@@ -2365,21 +2400,13 @@ pub fn generate(
   end
   {rt_helpers}
   {hub_decl}
-  {newe_fwd}local run
-  {makefn_decl}
-  {newe_decl}run = function(pf, V, ups, vargs, vargc)
-    {run_head}{run_unpack}
-    {run_soa}
-    {pc_decl}{o_decl}{ln_decl}{handler_defs}{run_loop}
-  end
+  {run_block}
   {entry_tail}
 end
 "#,
 	vm_params = vm_params,
 	entry_tail = entry_tail,
-	newe_fwd = newe_fwd,
-	pc_decl = pc_decl,
-	run_loop = run_loop,
+	run_block = run_block,
 	params = params,
 		kf_block = kf_block,
 		oc_table = oc_table,
@@ -2387,24 +2414,12 @@ end
 		prim_unpack = prim_unpack,
 		helpers = helpers,
 		hub_decl = hub_decl,
-		run_unpack = run_unpack,
-		run_soa = run_soa,
-		handler_defs = handler_defs,
 		hfrag = hfrag,
-		newe_decl = newe_decl,
-		run_head = run_head,
-		ln_decl = if v15 {
-			String::new()
-		} else {
-			"local lastn = 0\n    local lastbase = 0\n    ".to_string()
-		},
 		v15_selfmod = v15_selfmod,
 		decode_seg = decode_seg,
 		ck_consts = ck_consts,
 		parse_fn = parse_fn_vis,
-		makefn_decl = makefn_decl,
 		rt_helpers = rt_helpers,
 		ms_block = ms_block,
-		o_decl = String::new(),
 	)
 }
