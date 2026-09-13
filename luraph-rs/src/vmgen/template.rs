@@ -1541,8 +1541,13 @@ pub fn generate(
 		let budget_e = obf_num(CHAIN_BUDGET as u64, rng);
 		// ㉗: 续行/执行器不再经可见表索引（CT[i]/CX[i] 是文本手术包装
 		// 点）——蹦床从离散上游值选取，入密后它们是运行时碎片的参数。
+		// ㉙-2 (反 trace 计时守卫): 自适应基线——前 4 个 128 循环窗取
+		// 最小耗时为基线（最不受 GC 污染），其后任一窗耗时 > 基线 100
+		// 倍且连续 2 窗 → 判定逐指令插桩（攻击方自述拖慢几个数量级），
+		// 污染 SLT → 后续块解码错钥静默死亡。自适应 → 设备无关，不误伤
+		// 慢机；100 倍 + 连续 2 窗 → 不误伤偶发 GC 停顿。
 		Some(format!(
-			"local ti = 0\n    while true do\n      E.b = {}\n      if E.callx > 0 then\n        local cx = E.callx == 1 and XE1 or E.callx == 2 and XE2 or E.callx == 3 and XE3 or XE4\n        E.callx = 0\n        cx(E)\n      else\n        local cs = ti % 4\n        local cf = cs == 0 and XC1 or cs == 1 and XC2 or cs == 2 and XC3 or XC4\n        cf(E)\n        ti = ti + 1\n      end\n      if E.done then return U(E.out, 1, E.total) end\n    end",
+			"local ti = 0\n    local _tw = CLK and CLK() or 0\n    local _wcount = 0\n    local _minbase = nil\n    local _tslow = 0\n    while true do\n      E.b = {}\n      if E.callx > 0 then\n        local cx = E.callx == 1 and XE1 or E.callx == 2 and XE2 or E.callx == 3 and XE3 or XE4\n        E.callx = 0\n        cx(E)\n      else\n        local cs = ti % 4\n        local cf = cs == 0 and XC1 or cs == 1 and XC2 or cs == 2 and XC3 or XC4\n        cf(E)\n        ti = ti + 1\n      end\n      if CLK and ti % 128 == 0 then local _tn = CLK() local _dt = _tn - _tw _tw = _tn _wcount = _wcount + 1 if _wcount <= 4 then if not _minbase or _dt < _minbase then _minbase = _dt end else if _minbase and _minbase > 0 and _dt > _minbase * 100 then _tslow = _tslow + 1 else _tslow = 0 end if _tslow >= 2 then SLT = SLT + 7777777 end end end\n      if E.done then return U(E.out, 1, E.total) end\n    end",
 			budget_e
 		))
 	} else {
@@ -2089,7 +2094,7 @@ pub fn generate(
 			run_unpack, e_table
 		);
 		let rt_src = format!(
-			"return function(PS, PT, KM, KC, PB, SLT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, XC1, XC2, XC3, XC4, XE1, XE2, XE3, XE4)\n  local CDEC = {dec}\n  {bdec}\n  local newE\n  {mk}  {ne}local run = function(pf, V, ups, vargs, vargc)\n    local E = newE(pf, V, ups, vargs, vargc)\n    {loop}\n  end\n  return run\nend",
+			"return function(PS, PT, KM, KC, PB, SLT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, XC1, XC2, XC3, XC4, XE1, XE2, XE3, XE4, CLK)\n  local CDEC = {dec}\n  {bdec}\n  local newE\n  {mk}  {ne}local run = function(pf, V, ups, vargs, vargc)\n    local E = newE(pf, V, ups, vargs, vargc)\n    {loop}\n  end\n  return run\nend",
 			dec = cdec_inner,
 			bdec = bdec_src,
 			mk = makefn_decl,
@@ -2265,6 +2270,8 @@ pub fn generate(
 		let v_ls = "hls";
 		let v_dbg = "hdbg";
 		let v_inf = "hinf";
+		let v_os = "hos";
+		let v_clock = "hclk";
 		let v_s = "hsarg";
 			let v_ts = "hts";
 		boot.push_str(&coded_name_tpl(rng, v_ts, "tostring"));
@@ -2272,6 +2279,8 @@ pub fn generate(
 		boot.push_str(&coded_name_tpl(rng, v_dbg, "debug"));
 		boot.push_str(&coded_name_tpl(rng, v_inf, "info"));
 		boot.push_str(&coded_name_tpl(rng, v_s, "s"));
+		boot.push_str(&coded_name_tpl(rng, v_os, "os"));
+		boot.push_str(&coded_name_tpl(rng, v_clock, "clock"));
 			// 增量⑯-1 (探针钥匙化): base-31 fold of the clean-environment
 		// loadstring source ("[C]"). In a clean run pb == C_FOLD and the
 		// extra term vanishes; a hooked loader shifts pb, silently
@@ -2440,6 +2449,8 @@ pub fn generate(
     local TSTR = GFE(0)[{v_ts}]
     local DBG = GFE(0)[{v_dbg}]
     local INF = DBG and DBG[{v_inf}]
+    local OS_ = GFE(0)[{v_os}]
+    local CLK = OS_ and OS_[{v_clock}]
     local pb = 0
     do
       local ok, sr = PCAL(function() return INF(LS, {v_s}) end)
@@ -2473,6 +2484,7 @@ pub fn generate(
 			env_gate = env_gate,
 			strlit = strlit,
 			v_ls = v_ls, v_ts = v_ts, v_dbg = v_dbg, v_inf = v_inf,
+			v_os = v_os, v_clock = v_clock,
 			v_s = v_s,
 			nlok_delta = nlok_delta_e,
 			pseed = pseed_e, pstep = pstep_e, pkm = pkm_e, pkc = pkc_e,
@@ -2599,7 +2611,7 @@ pub fn generate(
 		run_unpack = String::new();
 		run_soa = String::new();
 		String::from(
-			"local RUN = RTFRAG(RPK1, RPK2, RPK3, RPK4, RPK5, SALT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, CT1, CT2, CT3, CT4, CX1, CX2, CX3, CX4)",
+			"local RUN = RTFRAG(RPK1, RPK2, RPK3, RPK4, RPK5, SALT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, CT1, CT2, CT3, CT4, CX1, CX2, CX3, CX4, CLK)",
 		)
 	} else {
 		let run_head = String::new();
