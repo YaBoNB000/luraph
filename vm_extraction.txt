@@ -1,0 +1,34 @@
+Target: D:\QQSave\target.luau.lua.txt
+Dynamic probe: inserted before `return bL(qQ,jC,{},vU,0)` and immediately after `BH(yP,...)`.
+
+Decoded root prototype (selected fields)
+  nparams = 0
+  n = 6
+  m = 6
+  sd = 1
+  S = [4, 6, 8]
+  csb = [141, 119, 102, 19, 81, 56, 18, 233, 222]
+  a = [46920, 39129, 57888, 47021, 19970, 62119, 40018, 425, 5326,
+       37100, 34759, 28696, 17444, 22972, 6009, 26844, 59966, 61798,
+       15645, 64774, 37127, 5841, 7652, 37143, 23488, 33281, 669,
+       43397, 2685, 7205]
+  ct = [43869, 16837, 23870, 16999, 13893, 61119]
+  cn[3] = 251264120
+  csl[4] = 5; csl[6] = 4
+  k = {}; upsrc = {}
+
+BH-normalized instruction columns (six instruction slots)
+  opcode-tag : [11, 2, 42, 23, 10, 28]
+  operand-A  : [14452, 26997, 28563, 1, 58156, 0]
+  operand-B  : [3, 32100, 40103, 1, 7, 0]
+  operand-C  : [936, 3089, 56983, 0, 37842, 0]
+  operand-D  : [5, 7, 30492, 1, 3, 0]
+
+Decoded constant pool (non-empty slots)
+  [3] number 302907
+  [4] string "print"
+  [6] string "Suda"
+
+Execution trace
+  Initial dispatch: phase=1, pc=1, opcode-tag=11, A=14452, B=3, C=936
+  Observed VM output: Suda
