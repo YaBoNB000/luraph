@@ -659,48 +659,58 @@ fn coded_name_tpl(rng: &mut Rng, var: &str, name: &str) -> String {
 /// per-epilogue temp names; every handler fragment carries its own
 /// copy, so the dispatch logic is scattered across all 43 encrypted
 /// bodies (no single hookable choke point, R006 barrier ②).
-fn chain_epilogue(rng: &mut Rng, s0: &str, s1: &str, s2: &str, s3: &str) -> String {
-	// temp names that never collide with handler-body locals
-	// (_/b0/c0/cf/d0/eqv/f/fn/i/j/k/m0/ms/msk/mt/n/nargs/.../x/y) nor
-	// with the env prelude (V/C/S/O/G/U/MS/W/SA../AV/HW2/CHAR/...)
+fn chain_epilogue(rng: &mut Rng, wk: &[String; 4]) -> String {
+	// B-3: fetch reads the decoded BLOCK WINDOW (E.ww/E.w0..w3) instead
+	// of whole-stream tables. Crossing the window bounds (jump target /
+	// fall-through merge) triggers the per-block decoder E.bdec — block
+	// keys carry the session salt, so decoding only ever happens along a
+	// live execution path. Same five polymorphic shapes as ⑲.
 	const NP_POOL: [&str; 6] = ["np", "gz", "hz", "kz", "pz", "wz"];
 	const OC_POOL: [&str; 6] = ["oc", "jz", "qz", "xz", "yz", "nz"];
 	const H_POOL: [&str; 6] = ["hx", "fx", "zx", "vx", "mx", "jx"];
+	const B_POOL: [&str; 6] = ["bi", "bz", "dz", "ez", "fz", "iz"];
 	let np = NP_POOL[rng.int(0, 5) as usize];
 	let oc = OC_POOL[rng.int(0, 5) as usize];
 	let h = H_POOL[rng.int(0, 5) as usize];
-	// 平台事实（实测+官方）：Luau 已删除正确尾调用（devforum 3307934:
-	// "Tail calls were removed from Luau... no plans to revive"），调用
-	// 链每步积 1 帧、~16k 帧溢栈。纯尾链跑不了任意循环——故每个分派
-	// 点先消费预算 `E.b`：预算耗尽时空返回，整条链解开回落到蹦床循环
-	// （深度恒 ≤ K，嵌套调用安全）；蹦床重置预算后从 E.pc 重入。K 步
-	// 一次解链，额外开销 ~3%；重入点本体也是加密碎片（同形状），可见
-	// 区只剩无操作码语义的蹦床（R006 壁垒② 的 Luau-可行形态）。
+	let bi = B_POOL[rng.int(0, 5) as usize];
 	let budget = if rng.int(0, 1) == 0 {
 		"E.b = E.b - 1; if E.b == 0 then return end; "
 	} else {
 		"E.b = E.b - 1; if E.b <= 0 then return end; "
 	};
+	let trans = format!(
+		"if {np} < E.bp or {np} > E.be then E.bdec(E, E.bm[{np}]) end; local {bi} = {np} - E.bp + 1",
+		np = np,
+		bi = bi
+	);
+	let args = format!(
+		"{wa}[{bi}], {wb}[{bi}], {wc}[{bi}], {wd}[{bi}]",
+		wa = wk[0],
+		wb = wk[1],
+		wc = wk[2],
+		wd = wk[3],
+		bi = bi
+	);
 	match rng.int(0, 4) {
 		0 => format!(
-			"{budget}local {np} = E.pc; local {oc} = W[{np}]; E.pc = {np} + 1; return HW2[({oc} + AV) % 256](E, {s0}[{np}], {s1}[{np}], {s2}[{np}], {s3}[{np}])",
-			budget = budget, np = np, oc = oc, s0 = s0, s1 = s1, s2 = s2, s3 = s3
+			"{budget}local {np} = E.pc; {trans}; local {oc} = E.ww[{bi}]; E.pc = {np} + 1; return HW2[({oc} + AV) % 256](E, {args})",
+			budget = budget, np = np, trans = trans, oc = oc, bi = bi, args = args
 		),
 		1 => format!(
-			"{budget}local {np} = E.pc; E.pc = {np} + 1; local {oc} = W[{np}]; local {h} = HW2[({oc} + AV) % 256]; return {h}(E, {s0}[{np}], {s1}[{np}], {s2}[{np}], {s3}[{np}])",
-			budget = budget, np = np, oc = oc, h = h, s0 = s0, s1 = s1, s2 = s2, s3 = s3
+			"{budget}local {np} = E.pc; E.pc = {np} + 1; {trans}; local {oc} = E.ww[{bi}]; local {h} = HW2[({oc} + AV) % 256]; return {h}(E, {args})",
+			budget = budget, np = np, trans = trans, oc = oc, h = h, bi = bi, args = args
 		),
 		2 => format!(
-			"{budget}local {np}, {oc} = E.pc, W[E.pc]; E.pc = {np} + 1; return HW2[({oc} + AV) % 256](E, {s0}[{np}], {s1}[{np}], {s2}[{np}], {s3}[{np}])",
-			budget = budget, np = np, oc = oc, s0 = s0, s1 = s1, s2 = s2, s3 = s3
+			"{budget}local {np} = E.pc; {trans}; E.pc = {np} + 1; return HW2[(E.ww[{bi}] + AV) % 256](E, {args})",
+			budget = budget, np = np, trans = trans, bi = bi, args = args
 		),
 		3 => format!(
-			"{budget}local {np} = E.pc; local {h} = HW2[(W[{np}] + AV) % 256]; E.pc = {np} + 1; return {h}(E, {s0}[{np}], {s1}[{np}], {s2}[{np}], {s3}[{np}])",
-			budget = budget, np = np, h = h, s0 = s0, s1 = s1, s2 = s2, s3 = s3
+			"{budget}local {np} = E.pc; {trans}; local {h} = HW2[(E.ww[{bi}] + AV) % 256]; E.pc = {np} + 1; return {h}(E, {args})",
+			budget = budget, np = np, trans = trans, h = h, bi = bi, args = args
 		),
 		_ => format!(
-			"{budget}local {np} = E.pc; local {oc} = W[{np}]; local oa, ob, od2, oe = {s0}[{np}], {s1}[{np}], {s2}[{np}], {s3}[{np}]; E.pc = {np} + 1; return HW2[({oc} + AV) % 256](E, oa, ob, od2, oe)",
-			budget = budget, np = np, oc = oc, s0 = s0, s1 = s1, s2 = s2, s3 = s3
+			"{budget}local {np} = E.pc; {trans}; local {oc} = E.ww[{bi}]; local oa, ob, od2, oe = {args}; E.pc = {np} + 1; return HW2[({oc} + AV) % 256](E, oa, ob, od2, oe)",
+			budget = budget, np = np, trans = trans, oc = oc, bi = bi, args = args
 		),
 	}
 }
@@ -721,6 +731,9 @@ pub fn generate(
 	// ㉒ (选项B — B-2 碎片即用即毁): numeric constants are exact-
 	// additive-mask safe (see VmProgram::consts_mask_safe). v15 only.
 	consts_safe: bool,
+	// B-3: per-prototype basic-block leader PCs (1-based), parallel to
+	// the FN carrier order (children 0..n-2, main last). v15 only.
+	block_starts: &[Vec<u16>],
 	// ㉔ (R008 回合 — 环境值绑定): Some("roblox") folds TARGET-RUNTIME
 	// VALUES (Vector3/Vector2 component math, per-build random args)
 	// into the boot keystream — a mock stub that ignores constructor
@@ -1554,11 +1567,19 @@ pub fn generate(
 		stream_names[operand_stream[2] as usize],
 		stream_names[operand_stream[3] as usize],
 	];
+	// B-3: operand k rides in window E.w{operand_stream[k]} (stream-slot
+	// order); the opcode wire rides in E.ww.
+	let wk = [
+		format!("E.w{}", operand_stream[0]),
+		format!("E.w{}", operand_stream[1]),
+		format!("E.w{}", operand_stream[2]),
+		format!("E.w{}", operand_stream[3]),
+	];
 	let env_names = [
 		"V", "C", "S", "O", "G", "vargs", "vargc", "ups", "makefn", "mget",
 		"resolve_call", "callcap", "HAS_LEN_META", "CHAR", "FLOOR", "ERR",
 		"TYP", "GMT", "RGET", "RSET", "U", "MS",
-		"W", "SA", "SB", "SC", "SD", "AV", "HW2",
+		"AV", "HW2",
 	];
 	let prelude_lhs = env_names.join(", ");
 	let prelude_rhs: Vec<String> =
@@ -1738,11 +1759,11 @@ pub fn generate(
 				// executor fragment: shallow call + result placement +
 				// chain continuation
 				let exec_src = format!(
-					"return function(E) local a, b, c, d = E.oa, E.ob, E.oc2, E.od; local fn, {}, nargs = E.cf, E.ca, E.cn; local V, S, O, U, W, SA, SB, SC, SD, AV, HW2 = E[1], E[3], E[4], E[21], E[23], E[24], E[25], E[26], E[27], E[28], E[29]; {}{} {} end",
+					"return function(E) local a, b, c, d = E.oa, E.ob, E.oc2, E.od; local fn, {}, nargs = E.cf, E.ca, E.cn; local V, S, O, U, AV, HW2 = E[1], E[3], E[4], E[21], E[23], E[24]; {}{} {} end",
 					aname,
 					exec_pre,
 					post_s,
-					chain_epilogue(rng, s_of[0], s_of[1], s_of[2], s_of[3]),
+					chain_epilogue(rng, &wk),
 				);
 				frags.push(((305 + ci) as u16, exec_src.into_bytes()));
 				// chain phase: pack args, stash, unwind to the trampoline
@@ -1753,7 +1774,7 @@ pub fn generate(
 				);
 			} else {
 				body.push(' ');
-				body.push_str(&chain_epilogue(rng, s_of[0], s_of[1], s_of[2], s_of[3]));
+				body.push_str(&chain_epilogue(rng, &wk));
 			}
 			let src = format!(
 				"return function(E,a,b,c,d) {}{} end",
@@ -1771,9 +1792,9 @@ pub fn generate(
 		let n_cont = 4usize;
 		for i in 0..n_cont {
 			let body =
-				chain_epilogue(rng, s_of[0], s_of[1], s_of[2], s_of[3]);
+				chain_epilogue(rng, &wk);
 			let src = format!(
-				"return function(E) local W, SA, SB, SC, SD, AV, HW2 = E[23], E[24], E[25], E[26], E[27], E[28], E[29] {} end",
+				"return function(E) local AV, HW2 = E[23], E[24] {} end",
 				body
 			);
 			// 301+ clears every opcode wire (0..=255) and the BSS marker 200
@@ -1806,6 +1827,15 @@ pub fn generate(
 		manifest_key("PF_STEP", pstep as u64);
 		manifest_key("PF_KM", pkm as u64);
 		manifest_key("PF_KC", pkc as u64);
+		// B-3: per-block keystream stride + session salt wiring. Block
+		// seed = (pseed + proto*pstep + block_start*pblock + SALT);
+		// SALT is a BOOT-RANDOM fold (fresh table address) — the
+		// at-rest file can never predict it, so no offline decoder
+		// exists (the decoder needs a value that only a live run
+		// materializes).
+		let pblock = rng.int(1_048_576, 268_435_455) as i64;
+		let pblock_e = ke.key_expr(pblock, None, rng);
+		manifest_key("PF_BLOCK", pblock as u64);
 		// operand-b stream (carries the Closure child index) + the
 		// Closure wire byte — both baked into the in-BSS encode scan
 		let closure_wire = map.to_wire
@@ -1846,9 +1876,28 @@ pub fn generate(
 		}
 		// ㉒ 编码体（㉓ 起内联于 BSS 碎片）：五流加性掩码 + 常量编码 +
 		// Closure 扫描链原型树，返回编码态树根。
+		// B-3 (状态链式按块解码 — 阶段一: 按块加密集散 + 会话钥匙):
+		// 每原型的指令流按基本块分割（编译器给的 leader 表），每块用
+		// (PS + i*PT + block_start*PB + SALT) 种子独立加密。SALT 是 boot
+		// 期随机折叠（新表地址）——**静态文件里不存在任何能推出块钥匙的
+		// 材料**，批量解码器随之消亡；跨运行钥匙全变，收集品一次性。
+		let bl_lists: Vec<String> = block_starts
+			.iter()
+			.map(|starts| {
+				format!(
+					"{{{}}}",
+					starts
+						.iter()
+						.map(|v| v.to_string())
+						.collect::<Vec<_>>()
+						.join(", ")
+				)
+			})
+			.collect();
 		let enc_body = format!(
-			"local P = PF_ local EP = {{}} for i = 1, #P do local pf = P[i] local Wt, ks = pf.W, pf.{bs} local n = #Wt local km = {{}} local st = (PS + i * PT) % 268435456 local e = {{}} local ei = 1 for j = 1, n do local w = Wt[j] if w == {cw} then km[#km + 1] = ks[j] + 1 end st = (KM * st + KC) % 268435456 e[ei] = (w + st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 e[ei] = (pf.SA[j] + st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 e[ei] = (pf.SB[j] + st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 e[ei] = (pf.SC[j] + st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 e[ei] = (pf.SD[j] + st % 65536) % 65536 ei = ei + 1 end {cblock} EP[i] = {{ e = e, n = n, sd = i, S = pf.S, upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP]",
-			bs = s_of[1],
+			"local P = PF_ local EP = {{}} local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} for i = 1, #P do local pf = P[i] local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local Wt, ks = pf.W, pf.{bs_stream} local km = {{}} for j = 1, #Wt do if Wt[j] == {cw} then km[#km + 1] = ks[j] + 1 end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * PB + SALT) % 268435456 for p = s0, s0 + bl[bi] - 1 do st = (KM * st + KC) % 268435456 bx[xo] = (pf.W[p] + st % 65536) % 65536 xo = xo + 1 st = (KM * st + KC) % 268435456 bx[xo] = (pf.SA[p] + st % 65536) % 65536 xo = xo + 1 st = (KM * st + KC) % 268435456 bx[xo] = (pf.SB[p] + st % 65536) % 65536 xo = xo + 1 st = (KM * st + KC) % 268435456 bx[xo] = (pf.SC[p] + st % 65536) % 65536 xo = xo + 1 st = (KM * st + KC) % 268435456 bx[xo] = (pf.SD[p] + st % 65536) % 65536 xo = xo + 1 end end local st = (PS + i * PT + SALT) % 268435456 {cblock} EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sd = i, S = pf.S, upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP], SALT",
+			blists = bl_lists.join(", "),
+			bs_stream = s_of[1],
 			cw = closure_wire,
 			cblock = c_block_enc,
 			cfields = c_fields_enc,
@@ -1856,7 +1905,7 @@ pub fn generate(
 		// ㉓: BSS 碎片 = 解析 + 校验 + 自改写 + 重编码，一步到位——
 		// 解码态原型表只存在于这个 loadstring 出的加密碎片内部。
 		let bs_src = format!(
-			"return function(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TOSTR) local OS = {{{}}} {} return function(FN_, NOPA, PS, PT, KM, KC) local PF_ = {{}} local di = 1 while di <= #FN_ do PF_[di] = parse(FN_[di], di); if PF_[di].ck ~= OS[di] then while true do end end; di = di + 1 end {} {} end end",
+			"return function(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TOSTR) local OS = {{{}}} {} return function(FN_, NOPA, PS, PT, KM, KC, PB) local PF_ = {{}} local di = 1 while di <= #FN_ do PF_[di] = parse(FN_[di], di); if PF_[di].ck ~= OS[di] then while true do end end; di = di + 1 end {} {} end end",
 			os_list, parse_fn, zw_inner, enc_body
 		);
 		frags.push((200u16, bs_src.into_bytes()));
@@ -1873,22 +1922,30 @@ pub fn generate(
 		// （其可见调用点曾是文本手术探针位）——解码器函数体内联进运行
 		// 时碎片（wire 208），PS/PT/KM/KC 作为碎片工厂参数（可见层只见
 		// 钥匙装配数值，不见解码器函数值）。
-		let dec_inner = format!(
-			"function(q, FLR, CHAR, UNP, TONUM) local st = (PS + q.sd * PT) % 268435456 local n = q.n local W, SA, SB, SC, SD = {{}}, {{}}, {{}}, {{}}, {{}} local e = q.e local ei = 1 for i = 1, n do st = (KM * st + KC) % 268435456 W[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SA[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SB[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SC[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 st = (KM * st + KC) % 268435456 SD[i] = (e[ei] - st % 65536) % 65536 ei = ei + 1 end {cblock} return W, SA, SB, SC, SD, C end",
+		// B-3: 整流批量解码器废除。CDEC 只解常量池（种子含会话盐，
+		// 与任何块钥匙不同构：无 PB 项）；指令按块在 bdec 里即需即解。
+		let cdec_inner = format!(
+			"function(q, CHAR, UNP, TONUM) local st = (PS + q.sd * PT + SLT) % 268435456 {cblock} return C end",
 			cblock = c_block_dec,
+		);
+		let bdec_src = String::from(
+			"local function bdec(E, bi) local c = E.bch[bi] if c then E.ww, E.w0, E.w1, E.w2, E.w3 = c[1], c[2], c[3], c[4], c[5] E.bp, E.be = c[6], c[7] return end local pf = E.bt local s0 = pf.bs[bi] local l = pf.bl[bi] local st = (PS + pf.sd * PT + s0 * PB + SLT) % 268435456 local t0, t1, t2, t3, t4 = {}, {}, {}, {}, {} local x = pf.bx local off = pf.bo[bi] for i = 1, l do st = (KM * st + KC) % 268435456 t0[i] = (x[off] - st % 65536) % 65536 off = off + 1 st = (KM * st + KC) % 268435456 t1[i] = (x[off] - st % 65536) % 65536 off = off + 1 st = (KM * st + KC) % 268435456 t2[i] = (x[off] - st % 65536) % 65536 off = off + 1 st = (KM * st + KC) % 268435456 t3[i] = (x[off] - st % 65536) % 65536 off = off + 1 st = (KM * st + KC) % 268435456 t4[i] = (x[off] - st % 65536) % 65536 off = off + 1 end E.bch[bi] = { t0, t1, t2, t3, t4, s0, s0 + l - 1 } E.ww, E.w0, E.w1, E.w2, E.w3 = t0, t1, t2, t3, t4 E.bp, E.be = s0, s0 + l - 1 end",
 		);
 		// ㉗ (R009/Suda 回合 — 运行时入密): newE/makefn/run+蹦床+DDEC
 		// 整体打包为加密运行时碎片（wire 208）。工厂参数 = 钥匙数值×4
 		// + 不透明依赖值（原语表/环境函数/续行与执行器×8 个离散函数
 		// 值）。可见层从此没有任何一行代码触碰解码数据：文本手术探针
 		// （R008/Suda 实测的三处插入点）全部失去目标。
+		// B-3: newE 不再整流解码——常量即解，指令只解入口块；块缓存
+		// 挂帧（E.bch），帧退即毁。
 		let rt_newe = format!(
-			"newE = function(pf, V, ups, vargs, vargc)\n    {}\n    local W, SA, SB, SC, SD, C = DDEC(pf, FLR, CHAR, UNP, TONUM)\n    local S = pf.S\n    local O = {{}}\n    return {}\n  end\n  ",
+			"newE = function(pf, V, ups, vargs, vargc)\n    {}\n    local C = CDEC(pf, CHAR, UNP, TONUM)\n    local S = pf.S\n    local O = {{}}\n    local E = {}\n    E.bt = pf\n    E.bm = pf.bm\n    E.bch = {{}}\n    E.bdec = bdec\n    bdec(E, 1)\n    return E\n  end\n  ",
 			run_unpack, e_table
 		);
 		let rt_src = format!(
-			"return function(PS, PT, KM, KC, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, XC1, XC2, XC3, XC4, XE1, XE2, XE3, XE4)\n  local DDEC = {dec}\n  local newE\n  {mk}  {ne}local run = function(pf, V, ups, vargs, vargc)\n    local E = newE(pf, V, ups, vargs, vargc)\n    {loop}\n  end\n  return run\nend",
-			dec = dec_inner,
+			"return function(PS, PT, KM, KC, PB, SLT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, XC1, XC2, XC3, XC4, XE1, XE2, XE3, XE4)\n  local CDEC = {dec}\n  {bdec}\n  local newE\n  {mk}  {ne}local run = function(pf, V, ups, vargs, vargc)\n    local E = newE(pf, V, ups, vargs, vargc)\n    {loop}\n  end\n  return run\nend",
+			dec = cdec_inner,
+			bdec = bdec_src,
 			mk = makefn_decl,
 			ne = rt_newe,
 			loop = trampoline_src.clone().unwrap(),
@@ -2194,7 +2251,8 @@ pub fn generate(
   local CT1, CT2, CT3, CT4
   local CX1, CX2, CX3, CX4
   local RTFRAG
-  local RPK1, RPK2, RPK3, RPK4
+  local RPK1, RPK2, RPK3, RPK4, RPK5
+  local SALT
   local MPF
   do
     {}local LS = GFE(0)[{v_ls}]
@@ -2218,6 +2276,7 @@ pub fn generate(
     RPK2 = {pstep}
     RPK3 = {pkm}
     RPK4 = {pkc}
+    RPK5 = {pblock}
     do
       local avt = {{}}
       local ats = TSTR(avt)
@@ -2225,7 +2284,7 @@ pub fn generate(
     end
     for w, f in pairs(HW) do if w < 256 then HW2[(w + AV) % 256] = f end end
     HW = nil
-    MPF = LS(BSS)()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TSTR)(FN, NOPA, {pseed}, {pstep}, {pkm}, {pkc})
+    MPF, SALT = LS(BSS)()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TSTR)(FN, NOPA, {pseed}, {pstep}, {pkm}, {pkc}, {pblock})
     BSS = nil
   end"#,
 			hq_lines, mb_lines, boot, hqi.join(", "), mb_gather, metavm,
@@ -2236,6 +2295,7 @@ pub fn generate(
 			v_s = v_s,
 			nlok_delta = nlok_delta_e,
 			pseed = pseed_e, pstep = pstep_e, pkm = pkm_e, pkc = pkc_e,
+			pblock = pblock_e,
 		);
 		hfrag = build;
 		String::new()
@@ -2358,7 +2418,7 @@ pub fn generate(
 		run_unpack = String::new();
 		run_soa = String::new();
 		String::from(
-			"local RUN = RTFRAG(RPK1, RPK2, RPK3, RPK4, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, CT1, CT2, CT3, CT4, CX1, CX2, CX3, CX4)",
+			"local RUN = RTFRAG(RPK1, RPK2, RPK3, RPK4, RPK5, SALT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, CT1, CT2, CT3, CT4, CX1, CX2, CX3, CX4)",
 		)
 	} else {
 		let run_head = String::new();

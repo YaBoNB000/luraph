@@ -477,6 +477,7 @@ fn main() -> ExitCode {
 				),
 				program.section_tags,
 				program.consts_mask_safe,
+				&program.block_starts,
 				opts.bind_env.as_deref(),
 				opts.bind_key.as_deref(),
 			);

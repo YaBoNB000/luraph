@@ -111,6 +111,12 @@ pub struct VmProgram {
 	/// stream with inline 7-bit ladders and folds the same checksum
 	/// (F13 shape); a mismatch traps the decode loop.
 	pub operand_sums: Vec<u64>,
+	/// B-3 (状态链式按块解码): per-prototype basic-block leader PCs
+	/// (1-based). Leaders = pc 1 ∪ jump targets ∪ post-jump positions;
+	/// the v15 template encodes each block under a session-keyed
+	/// keystream and the runtime decodes block-by-block (no bulk
+	/// decoder, no whole-stream decoded surface).
+	pub block_starts: Vec<Vec<u16>>,
 	/// ㉒ (选项B — B-2 碎片即用即毁): every numeric constant is
 	/// maskable (integers mask additively; other finite doubles ride
 	/// the Luau shortest-roundtrip tostring/tonumber path). False only
@@ -418,7 +424,7 @@ impl<'a> Ctx<'a> {
 		sigma
 	}
 
-	fn finish(mut self, nregs: u16, fn_index: usize) -> (Vec<u8>, Vec<u16>, u64) {
+	fn finish(mut self, nregs: u16, fn_index: usize) -> (Vec<u8>, Vec<u16>, u64, Vec<u16>) {
 		// implicit trailing return (a chunk/function without an explicit
 		// return returns nothing — the code must terminate)
 		let needs_return = self
@@ -646,7 +652,26 @@ impl<'a> Ctx<'a> {
 			state = (km * state + kc) % 268_435_456;
 			*byte = byte.wrapping_add(isa::fold_key(state));
 		}
-		(blob, nops, osum)
+		// B-3: basic-block partition — leaders are pc 1, every jump
+		// target, and the position after every jump (fall-through
+		// merge). Positions are 1-based instruction indexes (pc steps
+		// by 1). Computed after scatter/noise: instruction positions
+		// are final here.
+		let ncode = self.code.len();
+		let mut leaders: Vec<u16> = vec![1];
+		for (idx, ins) in self.code.iter().enumerate() {
+			if matches!(ins.op, Op::Jmp | Op::Jf | Op::Jt) {
+				if ins.b >= 1 && ins.b as usize <= ncode {
+					leaders.push(ins.b);
+				}
+				if idx + 2 <= ncode {
+					leaders.push(idx as u16 + 2);
+				}
+			}
+		}
+		leaders.sort_unstable();
+		leaders.dedup();
+		(blob, nops, osum, leaders)
 	}
 }
 
@@ -1118,6 +1143,7 @@ fn compile_chunk(
 		blob_step,
 		section_tags,
 		consts_mask_safe: true,
+		block_starts: vec![Vec::new(); total + 1],
 	};
 	{
 		// main chunk index = slot count (children fill 0..total-1)
@@ -1125,7 +1151,8 @@ fn compile_chunk(
 		let mut ctx = Ctx::new_main(&mut program, rng, table, lua51, scatter);
 		ctx.compile_block(block);
 		let nregs = ctx.next_reg;
-		let (bytes, nops, osum) = ctx.finish(nregs, main_index);
+		let (bytes, nops, osum, blocks) = ctx.finish(nregs, main_index);
+		program.block_starts[main_index] = blocks;
 		program.fns.push(bytes);
 		program.nop_sites.push(nops);
 		program.operand_sums.push(osum);
@@ -2353,7 +2380,8 @@ impl<'a> Ctx<'a> {
 		child.pop_scope();
 		let slot_end = child.next_fn_slot;
 		let nregs = child.next_reg;
-		let (bytes, nops, osum) = child.finish(nregs, child_index);
+		let (bytes, nops, osum, blocks) = child.finish(nregs, child_index);
+			self.program.block_starts[child_index] = blocks;
 		self.next_fn_slot = slot_end;
 		if child_index >= self.program.fns.len() { panic!("slot overflow: child_index={} len={} next={}", child_index, self.program.fns.len(), self.next_fn_slot); }
 		self.program.fns[child_index] = bytes;
