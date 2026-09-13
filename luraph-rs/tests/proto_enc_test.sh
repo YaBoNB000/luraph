@@ -147,6 +147,30 @@ else
 	gf "rec" "递归/闭包失真 (rc $r1 vs $r2): '$o1' vs '$o2'"
 fi
 
+# ---------- (6) ㉘ 碎片源码净化质量 ----------
+# 攻击方 (R011) 从解出的碎片里直接读到 parse/decarrier/makefn/bdec/CDEC
+# 等可读名和「自研混淆器+迭代版本+设计意图」注释。净化后必须全部消失。
+rm -rf "$PE_TMP/frags"
+mkdir -p "$PE_TMP/frags"
+LURAPH_FRAG_SAN="$PE_TMP/frags" "$TOOL" --preset v15 --dialect luau \
+	--seed 42 "$PE_TMP/nested.lua" "$PE_TMP/nested.san.lua" >/dev/null 2>&1
+if compgen -G "$PE_TMP/frags/san_*.src" >/dev/null; then
+	cat "$PE_TMP"/frags/san_*.src > "$PE_TMP/all_frags.txt"
+	_bad=""
+	for w in parse decarrier nregs upsrc makefn bdec CDEC newE trampoline; do
+		grep -qw "$w" "$PE_TMP/all_frags.txt" && _bad="$_bad $w"
+	done
+	grep -q -- "--" "$PE_TMP/all_frags.txt" && _bad="$_bad comment"
+	grep -q "function(E,a,b,c,d)" "$PE_TMP/all_frags.txt" && _bad="$_bad rawsig"
+	if [[ -z "$_bad" ]]; then
+		pass=$((pass+1))
+	else
+		gf "sanitize" "碎片残留可读名/注释:$_bad"
+	fi
+else
+	gf "sanitize" "LURAPH_FRAG_SAN 未产出碎片"
+fi
+
 if [[ "$_STANDALONE" == "1" ]]; then
 	echo "PROTO ENC PASS: $pass   FAIL: $fail"
 	[[ "$fail" != "0" ]] && { echo "failed: ${failed[*]}"; exit 1; }

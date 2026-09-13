@@ -659,6 +659,152 @@ fn coded_name_tpl(rng: &mut Rng, var: &str, name: &str) -> String {
 /// per-epilogue temp names; every handler fragment carries its own
 /// copy, so the dispatch logic is scattered across all 43 encrypted
 /// bodies (no single hookable choke point, R006 barrier ②).
+/// ㉘-A (R011 回合 — 碎片源码净化): 攻击方解出碎片后拿到满手可读名
+/// (parse/decarrier/nregs/upsrc/makefn/bdec/CDEC) 和**设计意图注释**
+/// (「自研混淆器 + 迭代版本 + trampoline 原理」直接送情报)。净化三步:
+/// ① 剥全部 `--` 注释（字符串感知）；② 全部非保留标识符（局部/参数/
+/// **字段名**）按构建随机改名（跨碎片一致映射）；③ 空白折叠成单行。
+/// 保留集 = Lua 关键字 + 运行时固定全局名（pairs/table/string/...）。
+/// ㉘-A: 碎片净化专用短名生成器。碎片内标识符集有限（百级），2–4 字符
+/// 名空间足够且碰撞可控；相比通用 gen_name（30% 概率出 9–15 字符长名）
+/// 显著压缩碎片体积（净化名会进加密 blob，长度直接计入产物）。
+fn sanitize_name(
+	rng: &mut Rng,
+	reserved: &std::collections::HashSet<String>,
+	used: &std::collections::HashSet<String>,
+) -> String {
+	const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_";
+	loop {
+		let len = match rng.int(0, 99) {
+			0..=59 => 2,
+			60..=89 => 3,
+			_ => 4,
+		};
+		let mut name = String::with_capacity(len);
+		// 首字符不能是数字; 直接用字母/下划线开头
+		for k in 0..len {
+			let pool = if k == 0 { &CHARS[..] } else { CHARS };
+			name.push(pool[rng.int(0, pool.len() as i64 - 1) as usize] as char);
+		}
+		if !reserved.contains(&name) && !used.contains(&name) {
+			return name;
+		}
+	}
+}
+
+fn sanitize_frag(
+	src: &str,
+	rng: &mut Rng,
+	map: &mut std::collections::HashMap<String, String>,
+	reserved: &std::collections::HashSet<String>,
+	used: &mut std::collections::HashSet<String>,
+) -> String {
+	// 保留字全局名集合（其后的 `.字段` 是标准库方法，禁止改名）
+	static GLOBALS: &[&str] = &[
+		"table", "string", "math", "bit32", "os", "debug", "buffer",
+		"task", "coroutine", "utf8", "_G", "game", "workspace", "Instance",
+		"Vector3", "Vector2", "Enum",
+	];
+	let is_global = |w: &str| GLOBALS.contains(&w);
+	// ㉘-A 关键: 运行时 C 函数创建的字段名禁改（table.pack 的 .n）
+	static RUNTIME_FIELDS: &[&str] = &["n"];
+	let b = src.as_bytes();
+	let mut out = String::with_capacity(src.len());
+	let mut i = 0usize;
+	let mut quote: Option<u8> = None;
+	let mut escaped = false;
+	let mut pending_space = false;
+	let mut prev_word: Option<String> = None; // 最近标识符(原文)
+	let mut after_dot = false; // 上个有效字符是 `.` 或 `:`
+	while i < b.len() {
+		let c = b[i];
+		if let Some(q) = quote {
+			out.push(c as char);
+			if escaped {
+				escaped = false;
+			} else if c == b'\\' {
+				escaped = true;
+			} else if c == q {
+				quote = None;
+			}
+			i += 1;
+			continue;
+		}
+		match c {
+			b'\'' | b'"' => {
+				if pending_space {
+					out.push(' ');
+					pending_space = false;
+				}
+				quote = Some(c);
+				out.push(c as char);
+				prev_word = None;
+				after_dot = false;
+				i += 1;
+			}
+			b'-' if i + 1 < b.len() && b[i + 1] == b'-' => {
+				while i < b.len() && b[i] != b'\n' {
+					i += 1;
+				}
+				pending_space = true;
+			}
+			b'\n' | b'\r' | b' ' | b'\t' => {
+				// 空白在 Lua 里非语句分隔符，折叠即可（误插 `;` 会在
+				// function(...)/then/do 后产生非法语法）
+				pending_space = true;
+				i += 1;
+			}
+			b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
+				let start = i;
+				while i < b.len()
+					&& (b[i].is_ascii_alphanumeric() || b[i] == b'_')
+				{
+					i += 1;
+				}
+				let word = &src[start..i];
+				if pending_space {
+					out.push(' ');
+					pending_space = false;
+				}
+				// ㉘-A 关键: 保留字全局名后的字段 = 标准库方法
+				// (table.concat 等)，绝不改名；其余标识符（局部/参数/
+				// 自有字段名）按构建映射改名，跨碎片一致。
+				let keep_field = RUNTIME_FIELDS.contains(&word)
+					|| (after_dot
+						&& prev_word.as_deref().map(is_global).unwrap_or(false));
+				if reserved.contains(word) || keep_field {
+					out.push_str(word);
+				} else {
+					if !map.contains_key(word) {
+						// ㉘-A 关键: 新名字必须与保留字和所有已生成名字
+						// 都不碰撞，否则两个不同标识符会合并成同一名字。
+						let name = sanitize_name(rng, reserved, used);
+						used.insert(name.clone());
+						map.insert(word.to_string(), name);
+					}
+					out.push_str(&map[word]);
+				}
+				prev_word = Some(word.to_string());
+				after_dot = false;
+			}
+			_ => {
+				if pending_space {
+					out.push(' ');
+					pending_space = false;
+				}
+				out.push(c as char);
+				after_dot = c == b'.' || c == b':';
+				if !after_dot {
+					prev_word = None;
+				}
+				i += 1;
+			}
+		}
+	}
+	out
+}
+
+
 fn chain_epilogue(rng: &mut Rng, wk: &[String; 4]) -> String {
 	// B-3: fetch reads the decoded BLOCK WINDOW (E.ww/E.w0..w3) instead
 	// of whole-stream tables. Crossing the window bounds (jump target /
@@ -1951,6 +2097,38 @@ pub fn generate(
 			loop = trampoline_src.clone().unwrap(),
 		);
 		frags.push((208u16, rt_src.into_bytes()));
+		// ㉘-A: 碎片源码净化（注释剥离 + 全标识符改名 + 单行化）。
+		// 保留集 = Lua 关键字 + 运行时固定全局名；改名映射跨全部碎片
+		// 一致（字段名跨碎片共享，必须同名）。
+		let mut frag_reserved: std::collections::HashSet<String> =
+			crate::mangle::RESERVED.iter().map(|x| x.to_string()).collect();
+		for g in [
+			"pairs", "ipairs", "next", "select", "unpack", "type", "tostring",
+			"tonumber", "print", "error", "assert", "pcall", "xpcall",
+			"setmetatable", "getmetatable", "rawget", "rawset", "rawequal",
+			"string", "table", "math", "bit32", "os", "debug", "buffer",
+			"task", "coroutine", "loadstring", "load", "getfenv", "setfenv",
+			"newproxy", "collectgarbage", "warn", "utf8", "typeof", "_G",
+			"_VERSION", "Vector3", "Vector2", "Instance", "Enum", "game",
+			"workspace", "tick", "wait",
+		] {
+			frag_reserved.insert(g.to_string());
+		}
+		let mut frag_map: std::collections::HashMap<String, String> =
+			std::collections::HashMap::new();
+		let mut frag_used: std::collections::HashSet<String> =
+			std::collections::HashSet::new();
+		for (_wire, src) in frags.iter_mut() {
+			let text = String::from_utf8(std::mem::take(src)).unwrap();
+			*src = sanitize_frag(&text, rng, &mut frag_map, &frag_reserved, &mut frag_used)
+				.into_bytes();
+		}
+		// ㉘ 研究/测试钩子: 转储净化后的碎片源码（环境门控，默认关）
+		if let Ok(dir) = std::env::var("LURAPH_FRAG_SAN") {
+			for (wire, src) in frags.iter() {
+				std::fs::write(format!("{}/san_{:03}.src", dir, wire), src).unwrap();
+			}
+		}
 		// mask + base-94 pack. Per-fragment keystream seed is derived
 		// from the wire code ((hseed + wire*hstep) % 2^28) so the
 		// decode order (shuffled HQI) is irrelevant.
@@ -2053,7 +2231,10 @@ pub fn generate(
 		let meta_c_e = ke.key_expr(meta_c, None, rng);
 		// mask HBOOT bytes with the meta keystream (Rust mirror of the
 		// visible meta-decoder).
-		let hb_bytes = hboot_src.into_bytes();
+		// ㉘-A: HBOOT 元碎片同样净化（名字/注释不泄漏）
+		let hb_bytes =
+			sanitize_frag(&hboot_src, rng, &mut frag_map, &frag_reserved, &mut frag_used)
+				.into_bytes();
 		let mut hb_masked: Vec<u8> = Vec::with_capacity(hb_bytes.len());
 		let mut mst = meta_seed as u64;
 		for &b in hb_bytes.iter() {
