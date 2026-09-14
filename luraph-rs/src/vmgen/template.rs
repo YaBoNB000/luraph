@@ -692,6 +692,42 @@ fn sanitize_name(
 	}
 }
 
+// ㉚ (B-2 源码自校验哈希链): 双车道非线性字节哈希，Lua 5.1 / Luau
+// 逐位一致（纯 + * % 算术，全程 < 2^52 无精度损失）。HBOOT 在运行时
+// 对「自身源码 + 全部 HQ 碎片解码态源码」走同一条链；构建期 Rust 用
+// 本镜像算出期望终值，把偏差归零常量揉进运行时钥匙派生——哈希不再
+// 是可比对的明文常量，而是**钥匙本身**：改动任何一层源码 ⇒ 终值偏移
+// ⇒ 块钥匙流静默错位（程序照跑、解密内容全错），攻击者除预映像攻击
+// 无路可走。模数取 2^26 附近两个素数（乘法积 < 2^51 精确）。
+pub const SH_M1: u64 = 67_108_859; // 2^26 - 5 (prime)
+pub const SH_M2: u64 = 67_108_819; // 2^26 - 45 (prime)
+
+fn sh_step(h1: u64, h2: u64, b: u8, k1: u64, k2: u64) -> (u64, u64) {
+	let n1 = (h1.wrapping_mul(k1) + b as u64 * (h2 % 97 + 1)) % SH_M1;
+	let n2 = (h2.wrapping_mul(k2) + b as u64 * (n1 % 89 + 1)) % SH_M2;
+	(n1, n2)
+}
+
+fn sh_bytes(bytes: &[u8], mut h1: u64, mut h2: u64, k1: u64, k2: u64) -> (u64, u64) {
+	for &b in bytes {
+		let (a, c) = sh_step(h1, h2, b, k1, k2);
+		h1 = a;
+		h2 = c;
+	}
+	(h1, h2)
+}
+
+/// ㉚: 碎片自由填充尾注（>= 8B，实际 14–22B 随机）——回填搜索空间
+/// + 每构建长度熵。尾注释对 loadstring 无副作用，且进哈希链。
+fn frag_pad(src: &mut Vec<u8>, rng: &mut Rng) {
+	const PADCHARS: &[u8] = b"abcdefghjkmnpqrstuvwxyzABDEFGHJKLMNPQRSTUVWXYZ23456789";
+	src.extend_from_slice(b"--");
+	let pn = rng.int(12, 20);
+	for _ in 0..pn {
+		src.push(PADCHARS[rng.int(0, PADCHARS.len() as i64 - 1) as usize]);
+	}
+}
+
 fn sanitize_frag(
 	src: &str,
 	rng: &mut Rng,
@@ -1547,7 +1583,7 @@ pub fn generate(
 		// 污染 SLT → 后续块解码错钥静默死亡。自适应 → 设备无关，不误伤
 		// 慢机；100 倍 + 连续 2 窗 → 不误伤偶发 GC 停顿。
 		Some(format!(
-			"local ti = 0\n    local _tw = CLK and CLK() or 0\n    local _wcount = 0\n    local _minbase = nil\n    local _tslow = 0\n    while true do\n      E.b = {}\n      if E.callx > 0 then\n        local cx = E.callx == 1 and XE1 or E.callx == 2 and XE2 or E.callx == 3 and XE3 or XE4\n        E.callx = 0\n        cx(E)\n      else\n        local cs = ti % 4\n        local cf = cs == 0 and XC1 or cs == 1 and XC2 or cs == 2 and XC3 or XC4\n        cf(E)\n        ti = ti + 1\n      end\n      if CLK and ti % 128 == 0 then local _tn = CLK() local _dt = _tn - _tw _tw = _tn _wcount = _wcount + 1 if _wcount <= 4 then if not _minbase or _dt < _minbase then _minbase = _dt end else if _minbase and _minbase > 0 and _dt > _minbase * 100 then _tslow = _tslow + 1 else _tslow = 0 end if _tslow >= 2 then SLT = SLT + 7777777 end end end\n      if E.done then return U(E.out, 1, E.total) end\n    end",
+			"local ti = 0\n    local _tw = CLK and CLK() or 0\n    local _wcount = 0\n    local _minbase = nil\n    local _tslow = 0\n    while true do\n      E.b = {}\n      if E.callx > 0 then\n        local cx = E.callx == 1 and XE1 or E.callx == 2 and XE2 or E.callx == 3 and XE3 or XE4\n        E.callx = 0\n        cx(E)\n      else\n        local cs = ti % 4\n        local cf = cs == 0 and XC1 or cs == 1 and XC2 or cs == 2 and XC3 or XC4\n        cf(E)\n        ti = ti + 1\n      end\n      if CLK and ti % 128 == 0 then local _tn = CLK() local _dt = _tn - _tw _tw = _tn _wcount = _wcount + 1 if _wcount <= 4 then if not _minbase or _dt < _minbase then _minbase = _dt end else if _minbase and _minbase > 0 and _dt > _minbase * 100 then _tslow = _tslow + 1 else _tslow = 0 end if _tslow >= 2 then SLT = SLT + 7777777 SLTC = SLTC + 7777777 end end end\n      if E.done then return U(E.out, 1, E.total) end\n    end",
 			budget_e
 		))
 	} else {
@@ -2055,9 +2091,15 @@ pub fn generate(
 		);
 		// ㉓: BSS 碎片 = 解析 + 校验 + 自改写 + 重编码，一步到位——
 		// 解码态原型表只存在于这个 loadstring 出的加密碎片内部。
+		// ㉚ B-2 (惩罚形态升级，攻击方约束之 4): 字节码校验和失配不再
+		// `while true do end`（grep 即得的死循环 oracle）——改为毒化块
+		// 步长 PB：加密侧（本碎片）与解密侧（RT 碎片的 RPK5）从此错位，
+		// 程序照跑、每个块的指令全错，且无任何可见比较/循环可补。
+		let ck_poison = rng.int(1, 268_435_455);
+		manifest_key("BSS_CKPOISON", ck_poison as u64);
 		let bs_src = format!(
-			"return function(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TOSTR) local OS = {{{}}} {} return function(FN_, NOPA, PS, PT, KM, KC, PB) local PF_ = {{}} local di = 1 while di <= #FN_ do PF_[di] = parse(FN_[di], di); if PF_[di].ck ~= OS[di] then while true do end end; di = di + 1 end {} {} end end",
-			os_list, parse_fn, zw_inner, enc_body
+			"return function(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TOSTR) local OS = {{{}}} {} return function(FN_, NOPA, PS, PT, KM, KC, PB) local PF_ = {{}} local di = 1 while di <= #FN_ do PF_[di] = parse(FN_[di], di); if PF_[di].ck ~= OS[di] then PB = (PB + {ckpo}) % 268435456 end; di = di + 1 end {} {} end end",
+			os_list, parse_fn, zw_inner, enc_body, ckpo = ck_poison
 		);
 		frags.push((200u16, bs_src.into_bytes()));
 		// DDEC（wire 206）：每帧解码，工厂形态把钥匙以 boot 期上游值
@@ -2075,8 +2117,9 @@ pub fn generate(
 		// 钥匙装配数值，不见解码器函数值）。
 		// B-3: 整流批量解码器废除。CDEC 只解常量池（种子含会话盐，
 		// 与任何块钥匙不同构：无 PB 项）；指令按块在 bdec 里即需即解。
+		// ㉚ B-2: 常量池走 SLTC（链终值第二约束），与指令块的 SLT 分离。
 		let cdec_inner = format!(
-			"function(q, CHAR, UNP, TONUM) local st = (PS + q.sd * PT + SLT) % 268435456 {cblock} return C end",
+			"function(q, CHAR, UNP, TONUM) local st = (PS + q.sd * PT + SLTC) % 268435456 {cblock} return C end",
 			cblock = c_block_dec,
 		);
 		let bdec_src = String::from(
@@ -2093,8 +2136,14 @@ pub fn generate(
 			"newE = function(pf, V, ups, vargs, vargc)\n    {}\n    local C = CDEC(pf, CHAR, UNP, TONUM)\n    local S = pf.S\n    local O = {{}}\n    local E = {}\n    E.bt = pf\n    E.bm = pf.bm\n    E.bch = {{}}\n    E.bdec = bdec\n    bdec(E, 1)\n    return E\n  end\n  ",
 			run_unpack, e_table
 		);
+		// ㉚ B-2: 链终值 (H1, H2) + 归零常量 (CB*/CC*) 以工厂参数入密。
+		// 前两行 = 哈希链落点：源码完整 ⇒ 两个偏移都是 0，钥匙流原样；
+		// 任何源码被改 ⇒ D_b/D_c 非零 ⇒ bdec（指令块）与 CDEC（常量池）
+		// 各持一条独立约束——单约束 28bit，双约束合计 ~52bit 二预映像。
+		// SLTC 与 SLT 分离：常量池钥匙流单独偏移，攻击者无法用一个
+		// 全局常数补偿两条流。
 		let rt_src = format!(
-			"return function(PS, PT, KM, KC, PB, SLT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, XC1, XC2, XC3, XC4, XE1, XE2, XE3, XE4, CLK)\n  local CDEC = {dec}\n  {bdec}\n  local newE\n  {mk}  {ne}local run = function(pf, V, ups, vargs, vargc)\n    local E = newE(pf, V, ups, vargs, vargc)\n    {loop}\n  end\n  return run\nend",
+			"return function(PS, PT, KM, KC, PB, SLT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, XC1, XC2, XC3, XC4, XE1, XE2, XE3, XE4, CLK, H1, H2, CB1, CB2, CBC, CC1, CC2, CCC)\n  SLT = (SLT + (H1 * CB1 + H2 * CB2 + CBC) % 268435456) % 268435456\n  local SLTC = (SLT + (H1 * CC1 + H2 * CC2 + CCC) % 268435456) % 268435456\n  local CDEC = {dec}\n  {bdec}\n  local newE\n  {mk}  {ne}local run = function(pf, V, ups, vargs, vargc)\n    local E = newE(pf, V, ups, vargs, vargc)\n    {loop}\n  end\n  return run\nend",
 			dec = cdec_inner,
 			bdec = bdec_src,
 			mk = makefn_decl,
@@ -2128,23 +2177,104 @@ pub fn generate(
 			*src = sanitize_frag(&text, rng, &mut frag_map, &frag_reserved, &mut frag_used)
 				.into_bytes();
 		}
-		// ㉘ 研究/测试钩子: 转储净化后的碎片源码（环境门控，默认关）
+		// ㉚ B-2: 每碎片自由填充尾注（14–22B 随机）——回填搜索空间
+		// + 每构建长度熵；尾注随源码一起进哈希链。
+		for (_wire, src) in frags.iter_mut() {
+			frag_pad(src, rng);
+		}
+		// ㉘ 研究/测试钩子: 转储净化后的碎片源码（环境门控，默认关）。
+		// ㉚: 每片一行（尾注填充在行尾，检查侧可按 $ 锚定剥离）。
 		if let Ok(dir) = std::env::var("LURAPH_FRAG_SAN") {
 			for (wire, src) in frags.iter() {
-				std::fs::write(format!("{}/san_{:03}.src", dir, wire), src).unwrap();
+				let mut out = src.clone();
+				out.push(b'\n');
+				std::fs::write(format!("{}/san_{:03}.src", dir, wire), &out).unwrap();
 			}
 		}
-		// mask + base-94 pack. Per-fragment keystream seed is derived
-		// from the wire code ((hseed + wire*hstep) % 2^28) so the
-		// decode order (shuffled HQI) is irrelevant.
+		// mask + base-94 pack. B-2 (㉚): per-fragment keystream seed =
+		// (hseed + wire*hstep + rv_prev*sh_mul) % 2^28，rv_prev = 此前
+		// 全部已解出源码的链式哈希（HBOOT 自身源码为链头）。篡改任何
+		// 一片 ⇒ 其后全部碎片钥匙错位；链上无任何比较语句——哈希就是
+		// 钥匙本身（攻击方四约束之 1/3）。
 		let hstep = rng.int(1_048_576, 268_435_455) as u32;
 		let alpha = carrier.alphabet;
-		let mut hq_lines = String::from("local HQ = {}\n");
-		let mut hqi: Vec<String> = Vec::new();
 		let mut slots: Vec<i64> = (1..=2000).collect();
 		rng.shuffle(&mut slots);
-		for (i, (_wire, src)) in frags.iter().enumerate() {
-			let mut state = ((hseed as u64 + *_wire as u64 * hstep as u64)
+		// 增量⑩: handler-fragment keystream keys KF-assembled, anchored
+		// on #hqi (the fragment-index table declared in the same block).
+		// NOTE: hqi is a Vec of "w, s, l" TRIPLET strings that join into
+		// a flat table — runtime #hqi = 3 * hqi.len().
+		// （㉚ 前移：HBOOT 模板必须在碎片加密之前定型——它是链头）
+		let n_hqi = 3 * frags.len() as i64;
+		let hseed_e = ke.key_expr(hseed as i64, Some(("#hqi", n_hqi)), rng);
+		let hstep_e = ke.key_expr(hstep as i64, Some(("#hqi", n_hqi)), rng);
+		let hm_e = ke.key_expr(hm as i64, Some(("#hqi", n_hqi)), rng);
+		let hc_e = ke.key_expr(hc as i64, Some(("#hqi", n_hqi)), rng);
+		manifest_key("HQ_SEED", hseed as u64);
+		manifest_key("HQ_STEP", hstep as u64);
+		manifest_key("HQ_KM", hm as u64);
+		manifest_key("HQ_KC", hc as u64);
+		// ㉚ B-2: 哈希链常量——每构建随机乘数/初值/链系数，全部经
+		// #hqi 锚点装配（HBOOT 内零字面量）。k/mul < 2^24 → Lua 侧
+		// 所有乘积 < 2^52 精确（double 无损）。
+		let sh_k1 = (rng.int(1_048_576, 16_777_215) | 1) as u64;
+		let sh_k2 = (rng.int(1_048_576, 16_777_215) | 1) as u64;
+		let sh_iv1 = rng.int(0, SH_M1 as i64 - 1) as u64;
+		let sh_iv2 = rng.int(0, SH_M2 as i64 - 1) as u64;
+		let sh_mul = (rng.int(1_048_576, 16_777_215) | 1) as u64;
+		let sh_k1_e = ke.key_expr(sh_k1 as i64, Some(("#hqi", n_hqi)), rng);
+		let sh_k2_e = ke.key_expr(sh_k2 as i64, Some(("#hqi", n_hqi)), rng);
+		let sh_iv1_e = ke.key_expr(sh_iv1 as i64, Some(("#hqi", n_hqi)), rng);
+		let sh_iv2_e = ke.key_expr(sh_iv2 as i64, Some(("#hqi", n_hqi)), rng);
+		let sh_mul_e = ke.key_expr(sh_mul as i64, Some(("#hqi", n_hqi)), rng);
+		manifest_key("CHAIN_K1", sh_k1);
+		manifest_key("CHAIN_K2", sh_k2);
+		manifest_key("CHAIN_MUL", sh_mul);
+		// P4 (防御代码隐藏): the loader/integrity names never appear
+		// in the output — each is runtime-built from shuffled char
+		// codes (user style), then the nativeness check runs exactly
+		// as before (hooked loader -> silent trap, never an oracle).
+		// 增量⑮ (引导桩分层): the HQ decode loop itself becomes an
+		// encrypted META fragment (HBOOT). The visible boot shrinks to
+		// a small meta-decoder with a DIFFERENT codec (additive LCG
+		// over a masked byte array, keystream assembled from the KT
+		// lookup tables). Static analysts must now: port the
+		// meta-decoder -> recover HBOOT -> port the HQ loop -> decode
+		// the 44 fragments -> port the parser (⑭). Every layer is a
+		// fresh per-build reimplementation.
+		// ㉚ B-2 (源码自校验哈希链): HBOOT 新增职责——
+		//   * 收 HB 参数（自身源码，可见引导经 table.concat(MH) 传入）
+		//     并先对它走链 → 换掉 HBOOT 即链头偏移；
+		//   * 每片解码钥匙揉入「此前全部源码」的链值（rv * sh_mul）
+		//     → 篡改前片 ⇒ 后片全部解出垃圾；
+		//   * 每片解码后、loadstring 前对解码态源码走链；
+		//   * 返回链终值 (h1, h2) → 可见引导转交 RT 碎片，在块钥匙流
+		//     里做**双独立归零约束**（指令块一条、常量池一条，合计
+		//     ~52bit 二预映像难度）——期望哈希不落任何明文常量。
+		//   SH 助手 = 双车道非线性步（Rust 镜像 sh_step，逐位一致）。
+		let hboot_src = format!(
+			"return function(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB) local HW = {{}} local BSS local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep} + ((h1 + h2 * 257) % 268435456) * {hmul}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) for i = 1, flen do h1, h2 = SH(h1, h2, BYTE(s, i)) end if w == 200 then BSS = s else HW[w] = LS(s)() end end return HW, BSS, h1, h2 end",
+			hseed = hseed_e, hstep = hstep_e, hm = hm_e, hc = hc_e,
+			k1 = sh_k1_e, k2 = sh_k2_e, m1 = SH_M1, m2 = SH_M2,
+			iv1 = sh_iv1_e, iv2 = sh_iv2_e, hmul = sh_mul_e,
+		);
+		// ㉘-A: HBOOT 元碎片同样净化（名字/注释不泄漏）；㉚: 自由填充
+		// 尾注，随后其字节作为链头进哈希。
+		let mut hb_bytes =
+			sanitize_frag(&hboot_src, rng, &mut frag_map, &frag_reserved, &mut frag_used)
+				.into_bytes();
+		frag_pad(&mut hb_bytes, rng);
+		// ㉚: 链初值 = HBOOT 自身源码的哈希（boot 以 HB 参数回传同一串）
+		let (mut ch1, mut ch2) = sh_bytes(&hb_bytes, sh_iv1, sh_iv2, sh_k1, sh_k2);
+		// ㉚: 解码顺序 = hqi 洗牌序；Rust 侧按同一顺序走链并逐片加密。
+		let mut order: Vec<usize> = (0..frags.len()).collect();
+		rng.shuffle(&mut order);
+		let mut hq_lines = String::from("local HQ = {}\n");
+		let mut hqi: Vec<String> = Vec::new();
+		for (_pos, &fi) in order.iter().enumerate() {
+			let (_wire, src) = &frags[fi];
+			let rv = (ch1 + ch2 * 257) % 268_435_456;
+			let mut state = ((hseed as u64 + *_wire as u64 * hstep as u64 + rv * sh_mul)
 				% 268_435_456) as u64;
 			let mut xb: Vec<u8> = src
 				.iter()
@@ -2167,7 +2297,7 @@ pub fn generate(
 				}
 				digits.extend_from_slice(&d);
 			}
-			let slot = slots[i];
+			let slot = slots[fi];
 			// clash-free long-string level (printer parity): the FIRST
 			// closer `]=*]` in content+closer must land exactly at the
 			// content end (guards content ending in `]=*`, which would
@@ -2193,37 +2323,41 @@ pub fn generate(
 				d = digits_s
 			));
 			hqi.push(format!("{}, {}, {}", _wire, slot, blen));
+			// ㉚: 链推进——本片解码态源码（含填充尾注）入链；下一片
+			// 的钥匙种子里的 rv 即「此前全部源码」的链值。
+			let (a, c) = sh_bytes(src, ch1, ch2, sh_k1, sh_k2);
+			ch1 = a;
+			ch2 = c;
 		}
-		rng.shuffle(&mut hqi);
-		// 增量⑩: handler-fragment keystream keys KF-assembled, anchored
-		// on #hqi (the fragment-index table declared in the same block).
-		// NOTE: hqi is a Vec of "w, s, l" TRIPLET strings that join into
-		// a flat table — runtime #hqi = 3 * hqi.len().
-		let n_hqi = 3 * hqi.len() as i64;
-		let hseed_e = ke.key_expr(hseed as i64, Some(("#hqi", n_hqi)), rng);
-		let hstep_e = ke.key_expr(hstep as i64, Some(("#hqi", n_hqi)), rng);
-		let hm_e = ke.key_expr(hm as i64, Some(("#hqi", n_hqi)), rng);
-		let hc_e = ke.key_expr(hc as i64, Some(("#hqi", n_hqi)), rng);
-		manifest_key("HQ_SEED", hseed as u64);
-		manifest_key("HQ_STEP", hstep as u64);
-		manifest_key("HQ_KM", hm as u64);
-		manifest_key("HQ_KC", hc as u64);
-		// P4 (防御代码隐藏): the loader/integrity names never appear
-		// in the output — each is runtime-built from shuffled char
-		// codes (user style), then the nativeness check runs exactly
-		// as before (hooked loader -> silent trap, never an oracle).
-		// 增量⑮ (引导桩分层): the HQ decode loop itself becomes an
-		// encrypted META fragment (HBOOT). The visible boot shrinks to
-		// a small meta-decoder with a DIFFERENT codec (additive LCG
-		// over a masked byte array, keystream assembled from the KT
-		// lookup tables). Static analysts must now: port the
-		// meta-decoder -> recover HBOOT -> port the HQ loop -> decode
-		// the 44 fragments -> port the parser (⑭). Every layer is a
-		// fresh per-build reimplementation.
-		let hboot_src = format!(
-			"return function(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM) local HW = {{}} local BSS local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end if w == 200 then BSS = SUB(table.concat(t), 1, flen) else HW[w] = LS(SUB(table.concat(t), 1, flen))() end end return HW, BSS end",
-			hseed = hseed_e, hstep = hstep_e, hm = hm_e, hc = hc_e,
-		);
+		// ㉚ B-2: 链终值 (sh1, sh2) = 全部源码完整性的期望锚点。构建期
+		// 由此派生两组归零常量（ CBC/CCC = -(H·C) mod 2^28 ）；运行期
+		// HBOOT 走同一条链把终值交回，RT 碎片内做
+		//   D_b = (H1*CB1 + H2*CB2 + CBC) % 2^28 → 揉进指令块钥匙流
+		//   D_c = (H1*CC1 + H2*CC2 + CCC) % 2^28 → 揉进常量池钥匙流
+		// 源码未动 ⇒ D_b = D_c = 0（程序原样跑）；任何一层源码被改 ⇒
+		// 双约束同时非零 ⇒ 解密结构完好、内容全错（攻击方约束之 4）。
+		// 期望哈希不以明文常量落盘——回填重算无目标可打（约束之 1）。
+		// 系数 < 2^25 → H*C 乘积 < 2^51，Lua 侧精确。
+		let sh1 = ch1 as i64;
+		let sh2 = ch2 as i64;
+		let sh_cb1 = rng.int(1_048_576, 33_554_431) | 1;
+		let sh_cb2 = rng.int(1_048_576, 33_554_431) | 1;
+		let sh_cc1 = rng.int(1_048_576, 33_554_431) | 1;
+		let sh_cc2 = rng.int(1_048_576, 33_554_431) | 1;
+		let sh_cbc = (KEY_MOD - (sh1 * sh_cb1 + sh2 * sh_cb2) % KEY_MOD) % KEY_MOD;
+		let sh_ccc = (KEY_MOD - (sh1 * sh_cc1 + sh2 * sh_cc2) % KEY_MOD) % KEY_MOD;
+		let sh_cb1_e = ke.key_expr(sh_cb1, None, rng);
+		let sh_cb2_e = ke.key_expr(sh_cb2, None, rng);
+		let sh_cbc_e = ke.key_expr(sh_cbc, None, rng);
+		let sh_cc1_e = ke.key_expr(sh_cc1, None, rng);
+		let sh_cc2_e = ke.key_expr(sh_cc2, None, rng);
+		let sh_ccc_e = ke.key_expr(sh_ccc, None, rng);
+		manifest_key("SH_CB1", sh_cb1 as u64);
+		manifest_key("SH_CB2", sh_cb2 as u64);
+		manifest_key("SH_CBC", sh_cbc as u64);
+		manifest_key("SH_CC1", sh_cc1 as u64);
+		manifest_key("SH_CC2", sh_cc2 as u64);
+		manifest_key("SH_CCC", sh_ccc as u64);
 		// meta keystream: fresh random constants assembled through the
 		// same KT lookup machinery (no bare literals; a codec DISTINCT
 		// from the base-94 HQ machinery so the analyst gets no free
@@ -2236,10 +2370,6 @@ pub fn generate(
 		let meta_c_e = ke.key_expr(meta_c, None, rng);
 		// mask HBOOT bytes with the meta keystream (Rust mirror of the
 		// visible meta-decoder).
-		// ㉘-A: HBOOT 元碎片同样净化（名字/注释不泄漏）
-		let hb_bytes =
-			sanitize_frag(&hboot_src, rng, &mut frag_map, &frag_reserved, &mut frag_used)
-				.into_bytes();
 		let mut hb_masked: Vec<u8> = Vec::with_capacity(hb_bytes.len());
 		let mut mst = meta_seed as u64;
 		for &b in hb_bytes.iter() {
@@ -2441,8 +2571,9 @@ pub fn generate(
   local CT1, CT2, CT3, CT4
   local CX1, CX2, CX3, CX4
   local RTFRAG
-  local RPK1, RPK2, RPK3, RPK4, RPK5
+  local RPK1, RPK2, RPK3, RPK4, RPK5, RPK6, RPK7, RPK8, RPK9, RPK10, RPK11
   local SALT
+  local SH1, SH2
   local MPF
   do
     {}local LS = GFE(0)[{v_ls}]
@@ -2461,7 +2592,8 @@ pub fn generate(
     end
     {env_gate}{ak_gate}local hqi = {{{}}}
     {}    {}
-    HW, BSS = LS(table.concat(MH))()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM)
+    local HB = table.concat(MH)
+    HW, BSS, SH1, SH2 = LS(HB)()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB)
     HQ = nil; hqi = nil
     {ct_fill}{cx_fill}RTFRAG = HW[208]
     RPK1 = {pseed}
@@ -2469,6 +2601,12 @@ pub fn generate(
     RPK3 = {pkm}
     RPK4 = {pkc}
     RPK5 = {pblock}
+    RPK6 = {shcb1}
+    RPK7 = {shcb2}
+    RPK8 = {shcbc}
+    RPK9 = {shcc1}
+    RPK10 = {shcc2}
+    RPK11 = {shccc}
     do
       local avt = {{}}
       local ats = TSTR(avt)
@@ -2489,6 +2627,8 @@ pub fn generate(
 			nlok_delta = nlok_delta_e,
 			pseed = pseed_e, pstep = pstep_e, pkm = pkm_e, pkc = pkc_e,
 			pblock = pblock_e,
+			shcb1 = sh_cb1_e, shcb2 = sh_cb2_e, shcbc = sh_cbc_e,
+			shcc1 = sh_cc1_e, shcc2 = sh_cc2_e, shccc = sh_ccc_e,
 		);
 		hfrag = build;
 		String::new()
@@ -2610,8 +2750,9 @@ pub fn generate(
 		// run+蹦床+DDEC 全入密）；可见层只剩这一次不透明函数值装配。
 		run_unpack = String::new();
 		run_soa = String::new();
+		// ㉚ B-2: 链终值 SH1/SH2 + 归零常量 RPK6..11 入密交给 RT 工厂。
 		String::from(
-			"local RUN = RTFRAG(RPK1, RPK2, RPK3, RPK4, RPK5, SALT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, CT1, CT2, CT3, CT4, CX1, CX2, CX3, CX4, CLK)",
+			"local RUN = RTFRAG(RPK1, RPK2, RPK3, RPK4, RPK5, SALT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, CT1, CT2, CT3, CT4, CX1, CX2, CX3, CX4, CLK, SH1, SH2, RPK6, RPK7, RPK8, RPK9, RPK10, RPK11)",
 		)
 	} else {
 		let run_head = String::new();

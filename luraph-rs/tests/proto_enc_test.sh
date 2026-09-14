@@ -160,7 +160,11 @@ if compgen -G "$PE_TMP/frags/san_*.src" >/dev/null; then
 	for w in parse decarrier nregs upsrc makefn bdec CDEC newE trampoline; do
 		grep -qw "$w" "$PE_TMP/all_frags.txt" && _bad="$_bad $w"
 	done
-	grep -q -- "--" "$PE_TMP/all_frags.txt" && _bad="$_bad comment"
+	# ㉚: 每碎片有 14–22B 随机字母数字尾注（哈希链自由填充位，纯噪声
+	# 无设计意图可读，转储时每片一行）——按行尾精确剥掉，再查残留真注释。
+	sed 's/--[2-9A-HJ-NP-Za-km-z]\{12,20\}$//' "$PE_TMP/all_frags.txt" \
+		> "$PE_TMP/all_frags_stripped.txt"
+	grep -q -- "--" "$PE_TMP/all_frags_stripped.txt" && _bad="$_bad comment"
 	grep -q "function(E,a,b,c,d)" "$PE_TMP/all_frags.txt" && _bad="$_bad rawsig"
 	if [[ -z "$_bad" ]]; then
 		pass=$((pass+1))
