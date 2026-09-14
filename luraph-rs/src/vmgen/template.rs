@@ -395,7 +395,19 @@ impl KeyEmitter {
 /// out[i] = (in[i] - fold4(state)) % 256. The fold divisor 256 is
 /// computed at RUNTIME (repeated doubling) and SELF-MODIFIED into the
 /// program array (STP) before first use.
-fn emit_metavm(seed_e: &str, m_e: &str, c_e: &str, mb_count: usize, rng: &mut Rng) -> String {
+fn emit_metavm(
+	seed_e: &str,
+	m_e: &str,
+	c_e: &str,
+	mb_count: usize,
+	rng: &mut Rng,
+	mpm_seed: i64,
+	mpm_m: i64,
+	mpm_c: i64,
+	mpm_seed_e: &str,
+	mpm_m_e: &str,
+	mpm_c_e: &str,
+) -> String {
 	// randomized opcode numbering (1..=15 permuted)
 	let names = [
 		"LDI", "LDM", "STM", "LD", "ST", "MOV", "ADD", "SUB", "MUL", "DIV",
@@ -530,6 +542,16 @@ fn emit_metavm(seed_e: &str, m_e: &str, c_e: &str, mb_count: usize, rng: &mut Rn
 	}
 	p[jz_pos as usize + 2] = halt_pos - jz_pos; // JZ: land on HALT
 	p[jz_pos as usize + 4] = loop_pos - (jz_pos + 3); // JMP: back to loop
+	// ㉛ (R014 回合 — P1-3): R014 破解的起点 = 明文程序字直接 Python
+	// 静态模拟（173,778 步、0.04s）。程序字改为加性 LCG 掩码落盘、引导
+	// 期即解——静态侦察看到的是一串无结构大整数，模拟前必须先移植解
+	// 掩码环（且钥匙每构建重抽）。掩码 = 每字 +(4096 + ks % 2.64e8)：
+	// 下界 4096 保证负偏移字（回跳 ~-300）掩后仍为正，解掩是纯减法。
+	let mut mks = mpm_seed;
+	for w in p.iter_mut() {
+		mks = (mpm_m * mks + mpm_c) % KEY_MOD;
+		*w += 4096 + mks % 264_000_000;
+	}
 	// ---- emit -------------------------------------------------------
 	let mut mp = String::from("local MP = {");
 	mp.push_str(
@@ -539,6 +561,10 @@ fn emit_metavm(seed_e: &str, m_e: &str, c_e: &str, mb_count: usize, rng: &mut Rn
 			.join(", "),
 	);
 	mp.push_str("}\n");
+	mp.push_str(&format!(
+		"    do\n      local mps, mpk, mpq = {}, {}, {}\n      for mpi = 1, #MP do mps = (mpk * mps + mpq) % 268435456 MP[mpi] = MP[mpi] - (4096 + mps % 264000000) end\n    end\n",
+		mpm_seed_e, mpm_m_e, mpm_c_e
+	));
 	let gather = format!(
 		"local MM = {{}}\n    MM[1] = {}\n    MM[2] = {}\n    MM[3] = {}\n    MM[4] = #MB\n    for i = 1, #MB do MM[{} + i] = MB[i] end\n",
 		seed_e, m_e, c_e, in_base - 1
@@ -2270,7 +2296,7 @@ pub fn generate(
 		let mut order: Vec<usize> = (0..frags.len()).collect();
 		rng.shuffle(&mut order);
 		let mut hq_lines = String::from("local HQ = {}\n");
-		let mut hqi: Vec<String> = Vec::new();
+		let mut hqi_vals: Vec<i64> = Vec::new();
 		for (_pos, &fi) in order.iter().enumerate() {
 			let (_wire, src) = &frags[fi];
 			let rv = (ch1 + ch2 * 257) % 268_435_456;
@@ -2322,7 +2348,9 @@ pub fn generate(
 				o = o,
 				d = digits_s
 			));
-			hqi.push(format!("{}, {}, {}", _wire, slot, blen));
+			hqi_vals.push(*_wire as i64);
+			hqi_vals.push(slot);
+			hqi_vals.push(blen as i64);
 			// ㉚: 链推进——本片解码态源码（含填充尾注）入链；下一片
 			// 的钥匙种子里的 rv 即「此前全部源码」的链值。
 			let (a, c) = sh_bytes(src, ch1, ch2, sh_k1, sh_k2);
@@ -2358,6 +2386,30 @@ pub fn generate(
 		manifest_key("SH_CC1", sh_cc1 as u64);
 		manifest_key("SH_CC2", sh_cc2 as u64);
 		manifest_key("SH_CCC", sh_ccc as u64);
+		// ㉛ (R014 回合 — P2-6): hqi 段表（wire/槽位/长度三元组——攻击方
+		// 原话「最贵的一份结构信息，白送」）改为加性 LCG 掩码落盘，引导
+		// 期即解。静态侦察拿不到段数/长度/槽位；攻击方固化的段表正则失效。
+		let hqi_km = rng.int(1_048_577, 33_000_001) | 1;
+		let hqi_ks0 = rng.int(1_048_576, KEY_MOD - 1);
+		let hqi_kc = rng.int(1_048_576, KEY_MOD - 1);
+		let hqi_km_e = ke.key_expr(hqi_km, None, rng);
+		let hqi_ks0_e = ke.key_expr(hqi_ks0, None, rng);
+		let hqi_kc_e = ke.key_expr(hqi_kc, None, rng);
+		manifest_key("HQI_KM", hqi_km as u64);
+		manifest_key("HQI_KS", hqi_ks0 as u64);
+		manifest_key("HQI_KC", hqi_kc as u64);
+		let mut hks = hqi_ks0;
+		let hqi_masked: Vec<String> = hqi_vals
+			.iter()
+			.map(|v| {
+				hks = (hqi_km * hks + hqi_kc) % KEY_MOD;
+				(v + hks).to_string()
+			})
+			.collect();
+		let hqi_unmask = format!(
+			"do\n      local hqs, hqm, hqc = {}, {}, {}\n      for hqi_ = 1, #hqi do hqs = (hqm * hqs + hqc) % 268435456 hqi[hqi_] = hqi[hqi_] - hqs end\n    end\n    ",
+			hqi_ks0_e, hqi_km_e, hqi_kc_e
+		);
 		// meta keystream: fresh random constants assembled through the
 		// same KT lookup machinery (no bare literals; a codec DISTINCT
 		// from the base-94 HQ machinery so the analyst gets no free
@@ -2470,7 +2522,13 @@ pub fn generate(
 		// 存小整数无损，Lua 侧 double 运算精确），目标运行时/沙箱一致。
 		// 诚实边界：受控沙箱若完整仿真这些 API 仍能过（R004 定律）——
 		// 抬的是「任意桩」到「忠实仿真」的成本。
-		let (env_gate, env_term) = if bind_env.is_some() {
+		// ㉛ (R014 回合 — P0-1): 「(x - K) * mix」减法零化形被攻击方一眼
+		// 识破（正常态恒零 → 整项可忽略，反钩防线形同虚设）。改为分裂
+		// 乘积直参形：x = x_lo + x_hi·2^16，两项各自乘预混常量——哈希
+		// **直接**参与种子（攻击方建议 B 的形态），零化量折进总补偿常数
+		// （SEED_COMP，KT 装配）。数值边界：单积 < 2^16·2^28 = 2^44，
+		// 七项和 < 2^47，double 全程精确。
+		let (env_gate, env_term, env_comp) = if bind_env.is_some() {
 			let ea: Vec<i64> = (0..5).map(|_| rng.int(1, 999)).collect();
 			let ec: Vec<i64> = (0..6).map(|_| rng.int(1, 999)).collect();
 			let esum = (ea[0] * ec[0]
@@ -2480,11 +2538,13 @@ pub fn generate(
 				+ ea[4] * ec[4])
 				% KEY_MOD;
 			let env_exp = (esum * ec[5]) % KEY_MOD;
-			let env_exp_e = ke.key_expr(env_exp, None, rng);
 			let env_mix = rng.int(1_048_576, KEY_MOD - 1);
 			let env_mix_e = ke.key_expr(env_mix, None, rng);
+			let env_mix_hi = (env_mix * 65536) % KEY_MOD;
+			let env_mix_hi_e = ke.key_expr(env_mix_hi, None, rng);
 			manifest_key("ENV_EXP", env_exp as u64);
 			manifest_key("ENV_MIX", env_mix as u64);
+			manifest_key("ENV_MIX_HI", env_mix_hi as u64);
 			let gate = format!(
 				"local ef1 = 0\n    do\n      local v3 = Vector3.new({}, {}, {})\n      local v2 = Vector2.new({}, {})\n      ef1 = ((v3.X * {} + v3.Y * {} + v3.Z * {} + v2.X * {} + v2.Y * {}) * {}) % 268435456\n    end\n    ",
 				obf_num(ea[0] as u64, rng),
@@ -2499,21 +2559,45 @@ pub fn generate(
 				obf_num(ec[4] as u64, rng),
 				obf_num(ec[5] as u64, rng),
 			);
-			(gate, format!(" + (ef1 - {}) * {}", env_exp_e, env_mix_e))
+			(
+				gate,
+				format!(
+					" + (ef1 % 65536) * {} + FLR(ef1 / 65536) * {}",
+					env_mix_e, env_mix_hi_e
+				),
+				(env_exp * env_mix) % KEY_MOD,
+			)
 		} else {
-			(String::new(), String::new())
+			(String::new(), String::new(), 0)
 		};
+		// ㉛: pb 项分裂乘积的高半常量（pmx·2^16 mod M）
+		let probe_mix_hi = (probe_mix * 65536) % KEY_MOD;
+		let probe_mix_hi_e = ke.key_expr(probe_mix_hi, None, rng);
+		manifest_key("PROBE_MIX_HI", probe_mix_hi as u64);
 		let (ak_gate, meta_seed_full) = if bind_key.is_some() {
-			let ak_e = ke.key_expr(ak_fold, Some(("#hqi", n_hqi)), rng);
-			let ak2_e = ke.key_expr(ak2_fold, Some(("#hqi", n_hqi)), rng);
 			let bind_mix = rng.int(1_048_576, KEY_MOD - 1);
 			let bind_mix_e = ke.key_expr(bind_mix, Some(("#hqi", n_hqi)), rng);
 			let bind_mix2 = rng.int(1_048_576, KEY_MOD - 1);
 			let bind_mix2_e = ke.key_expr(bind_mix2, Some(("#hqi", n_hqi)), rng);
+			let bind_mix_hi = (bind_mix * 65536) % KEY_MOD;
+			let bind_mix_hi_e = ke.key_expr(bind_mix_hi, Some(("#hqi", n_hqi)), rng);
+			let bind_mix2_hi = (bind_mix2 * 65536) % KEY_MOD;
+			let bind_mix2_hi_e = ke.key_expr(bind_mix2_hi, Some(("#hqi", n_hqi)), rng);
 			manifest_key("BIND_AK", ak_fold as u64);
 			manifest_key("BIND_AK2", ak2_fold as u64);
 			manifest_key("BIND_MIX", bind_mix as u64);
 			manifest_key("BIND_MIX2", bind_mix2 as u64);
+			manifest_key("BIND_MIX_HI", bind_mix_hi as u64);
+			manifest_key("BIND_MIX2_HI", bind_mix2_hi as u64);
+			// ㉛: 总补偿常数 = meta_seed − Σ(目标值·混元)（mod 2^28）。
+			// 干净环境各探针折出目标值 ⇒ 种子恰还原 meta_seed；任何
+			// 探针被钩/环境失真 ⇒ 对应直参项偏移 ⇒ 元钥匙流污染。
+			let comp = (meta_seed - c_fold * probe_mix - env_comp
+				- (ak_fold * bind_mix) % KEY_MOD
+				- (ak2_fold * bind_mix2) % KEY_MOD)
+				.rem_euclid(KEY_MOD);
+			let comp_e = ke.key_expr(comp, None, rng);
+			manifest_key("SEED_COMP", comp as u64);
 			let dbg = if std::env::var("LURAPH_BIND_DBG").is_ok() {
 				"print('DBGAK', TYP(akv), TSTR(akv), ak1, ak2)\n    "
 			} else {
@@ -2533,20 +2617,38 @@ pub fn generate(
 				dbg = dbg,
 			);
 			let seed = format!(
-				"({} + (pb - {}) * {}{} + (ak1 - {}) * {} + (ak2 - {}) * {}) % 268435456",
-				meta_seed_e, c_fold, probe_mix_e, env_term, ak_e, bind_mix_e, ak2_e, bind_mix2_e
+				"({} + (pb % 65536) * {} + FLR(pb / 65536) * {}{} + (ak1 % 65536) * {} + FLR(ak1 / 65536) * {} + (ak2 % 65536) * {} + FLR(ak2 / 65536) * {}) % 268435456",
+				comp_e, probe_mix_e, probe_mix_hi_e, env_term,
+				bind_mix_e, bind_mix_hi_e, bind_mix2_e, bind_mix2_hi_e
 			);
 			(gate, seed)
 		} else {
+			// ㉛: 无绑定形态——补偿 = meta_seed − c_fold·pmx − env 补偿
+			let comp = (meta_seed - c_fold * probe_mix - env_comp).rem_euclid(KEY_MOD);
+			let comp_e = ke.key_expr(comp, None, rng);
+			manifest_key("SEED_COMP", comp as u64);
 			(
 				String::new(),
 				format!(
-					"({} + (pb - {}) * {}{}) % 268435456",
-					meta_seed_e, c_fold, probe_mix_e, env_term
+					"({} + (pb % 65536) * {} + FLR(pb / 65536) * {}{}) % 268435456",
+					comp_e, probe_mix_e, probe_mix_hi_e, env_term
 				),
 			)
 		};
-		let metavm = emit_metavm(&meta_seed_full, &meta_m_e, &meta_c_e, hb_masked.len(), rng);
+		// ㉛: MP 程序字掩码钥匙（每构建随机，KT 装配）
+		let mpm_seed = rng.int(1_048_576, KEY_MOD - 1);
+		let mpm_m = rng.int(1_048_577, 33_000_001) | 1;
+		let mpm_c = rng.int(1_048_576, KEY_MOD - 1);
+		let mpm_seed_e = ke.key_expr(mpm_seed, None, rng);
+		let mpm_m_e = ke.key_expr(mpm_m, None, rng);
+		let mpm_c_e = ke.key_expr(mpm_c, None, rng);
+		manifest_key("MPM_SEED", mpm_seed as u64);
+		manifest_key("MPM_M", mpm_m as u64);
+		manifest_key("MPM_C", mpm_c as u64);
+		let metavm = emit_metavm(
+			&meta_seed_full, &meta_m_e, &meta_c_e, hb_masked.len(), rng,
+			mpm_seed, mpm_m, mpm_c, &mpm_seed_e, &mpm_m_e, &mpm_c_e,
+		);
 		// 增量⑲: build-time-shuffled continuation wiring (which CT slot
 		// holds which encrypted re-entry fragment is per-build random).
 		let mut cont_wires: Vec<u16> = (301..305).collect();
@@ -2591,7 +2693,7 @@ pub fn generate(
       pb = (pb + (ok and 0 or {nlok_delta})) % 268435456
     end
     {env_gate}{ak_gate}local hqi = {{{}}}
-    {}    {}
+    {hqi_unmask}{}    {}
     local HB = table.concat(MH)
     HW, BSS, SH1, SH2 = LS(HB)()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB)
     HQ = nil; hqi = nil
@@ -2617,7 +2719,8 @@ pub fn generate(
     MPF, SALT = LS(BSS)()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TSTR)(FN, NOPA, {pseed}, {pstep}, {pkm}, {pkc}, {pblock})
     BSS = nil
   end"#,
-			hq_lines, mb_lines, boot, hqi.join(", "), mb_gather, metavm,
+			hq_lines, mb_lines, boot, hqi_masked.join(", "), mb_gather, metavm,
+			hqi_unmask = hqi_unmask,
 			ak_gate = ak_gate,
 			env_gate = env_gate,
 			strlit = strlit,
