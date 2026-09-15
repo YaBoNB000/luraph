@@ -1091,54 +1091,70 @@ pub fn scaffold(
 			let nws = nm.take_avoid(CH_AVOID);
 			let nwi = nm.take_avoid(CH_AVOID);
 			let nwd = nm.take_avoid(CH_AVOID);
-			let nseg = nm.take_avoid(CH_AVOID);
 			let nkv = nm.take_avoid(CH_AVOID);
-			let no = nm.take_avoid(CH_AVOID);
-			let ni = nm.take_avoid(CH_AVOID);
-			let nbx = nm.take_avoid(CH_AVOID);
+			let nti = nm.take_avoid(CH_AVOID);
 			let while_words = rng.int(0, 1) == 1;
 			let divmod_bytes = rng.int(0, 1) == 1;
 			let add_unmask = rng.int(0, 1) == 1;
-			let xor_style = rng.int(0, 2);
 			let trim_style = rng.int(0, 1) == 1;
-			// one byte-extraction step (band/rshift vs div/mod family)
-			let byte_step = |last: bool| -> String {
-				if divmod_bytes {
-					let s = format!(
-						"{nt}[#{nt}+1]=string.char({wd}%256);",
-						nt = nt, wd = nwd
-					);
-					if last { s } else { format!("{s}{wd}=({wd}-{wd}%256)/256; ", wd = nwd, s = s) }
-				} else {
-					let s = format!(
-						"{nt}[#{nt}+1]=string.char(bit32.band({wd},255));",
-						nt = nt, wd = nwd
-					);
-					if last { s } else { format!("{s}{wd}=bit32.rshift({wd},8); ", wd = nwd, s = s) }
+			// ㉞ (自研压缩 — 一趟流水融合): 旧形态两趟——先把词解进
+			// 字符表、concat 成段串，再开第二个循环对字节做 XOR。XOR
+			// 钥匙 = (fold4(kv) + i) mod 256 只随字节序号线性变化、无
+			// 状态推进，故两趟可融合成趟：词解码位直接出 XOR 后字节，
+			// 序号游标跨槽段连续。配合 string.byte 多返回值取 5 连字符
+			// 与 string.char 多参数 + 多赋值一次推 4 字节。每 handler
+			// 净砍 ~700 字符，且不削弱 ⑫ 多样性（形态变体仍正交组合）。
+			let nkn = nm.take_avoid(CH_AVOID);
+			let byte_emit = if divmod_bytes {
+				let mut s = String::new();
+				for step in 0..4u16 {
+					s.push_str(&format!(
+						"{t}[{ti}]=string.char(bit32.bxor({wd}%256,({kn}+{ti})%256));",
+						t = nt, ti = nti, wd = nwd, kn = nkn
+					));
+					if step < 3 {
+						s.push_str(&format!("{}=({}-{}%256)/256;", nwd, nwd, nwd));
+					}
+					s.push_str(&format!("{}={}+1;", nti, nti));
 				}
+				s
+			} else {
+				// string.char 多参数返回**一个** 4 字节串 → 整条追加；
+				// 表项粒度 = 词，索引 trim 须按词数（见 final_concat）
+				format!(
+					"{t}[#{t}+1]=string.char(bit32.bxor({wd}%256,({kn}+{ti})%256),bit32.bxor(bit32.extract({wd},8,8),({kn}+{ti}+1)%256),bit32.bxor(bit32.extract({wd},16,8),({kn}+{ti}+2)%256),bit32.bxor(bit32.extract({wd},24,8),({kn}+{ti}+3)%256));{ti}={ti}+4;",
+					t = nt, ti = nti, wd = nwd, kn = nkn
+				)
 			};
-			let four_bytes = format!(
-				"{}{}{}{}",
-				byte_step(false),
-				byte_step(false),
-				byte_step(false),
-				byte_step(true)
-			);
-			// slot segments covering [sw, ew] (global 1-based word idx)
-			let mut seg_code = String::new();
-			let mut g = sw;
-			while g <= ew {
-				let si = (g - 1) / BW_SLOT_WORDS; // 0-based slot index
-				let local_lo = (g - 1) % BW_SLOT_WORDS + 1; // 1-based
-				let slot_end_global = (si + 1) * BW_SLOT_WORDS;
-				let seg_hi = ew.min(slot_end_global);
-				let local_hi = local_lo + (seg_hi - g);
-				// 增量⑩: km/kc assembled at handler entry (fragment
-				// slots), no mask-key literal at the decode site.
-				// 增量⑫: subtractive vs additive unmask + for/while
-				// word-loop variants.
-				// ㉝: 词源 = 槽内长字符串的 5 连字符组（数字=字节-33，
-				// Horner 折回掩码词）——无查表、无大数字面量。
+			// word-source variants: multi-return string.byte (㉞) vs
+			// nested per-char Horner (legacy shape) — both unmask on
+			// the fly, then the fused byte emit runs in the same pass.
+			let word_src = if rng.int(0, 1) == 0 {
+				let nco = nm.take_avoid(CH_AVOID);
+				let cs: Vec<String> = (0..5)
+					.map(|_| nm.take_avoid(CH_AVOID))
+					.collect();
+				let unpack = format!(
+					"local {co}=({wi}-1)*5+1;local {c}=string.byte({ws},{co},{co}+4);",
+					co = nco, wi = nwi, c = cs.join(","), ws = nws
+				);
+				let horn = format!(
+					"(((({c1}-33)*94+{c2}-33)*94+{c3}-33)*94+{c4}-33)*94+{c5}-33",
+					c1 = cs[0], c2 = cs[1], c3 = cs[2], c4 = cs[3], c5 = cs[4]
+				);
+				let unmask = if add_unmask {
+					format!(
+						"local {wd}=({h}+(4294967296-({km}+{gc}*{kc})%4294967296))%4294967296;{gc}={gc}+1;",
+						wd = nwd, h = horn, km = nkm, gc = ng, kc = nkc
+					)
+				} else {
+					format!(
+						"local {wd}=({h}-({km}+{gc}*{kc})%4294967296)%4294967296;{gc}={gc}+1;",
+						wd = nwd, h = horn, km = nkm, gc = ng, kc = nkc
+					)
+				};
+				format!("{}{}{}", unpack, unmask, byte_emit)
+			} else {
 				let byte_at = |k: i64| {
 					format!(
 						"(string.byte({ws},({wi}-1)*5+{k})-33)",
@@ -1155,29 +1171,38 @@ pub fn scaffold(
 				);
 				let unmask = if add_unmask {
 					format!(
-						"(({vhorn}+(4294967296-({km}+{gc}*{kc})%4294967296))%4294967296)",
-						vhorn = vhorn, km = nkm, gc = ng, kc = nkc
+						"local {wd}=(({vhorn}+(4294967296-({km}+{gc}*{kc})%4294967296))%4294967296);{gc}={gc}+1;",
+						wd = nwd, vhorn = vhorn, km = nkm, gc = ng, kc = nkc
 					)
 				} else {
 					format!(
-						"(({vhorn}-({km}+{gc}*{kc})%4294967296)%4294967296)",
-						vhorn = vhorn, km = nkm, gc = ng, kc = nkc
+						"local {wd}=(({vhorn}-({km}+{gc}*{kc})%4294967296)%4294967296);{gc}={gc}+1;",
+						wd = nwd, vhorn = vhorn, km = nkm, gc = ng, kc = nkc
 					)
 				};
-				let body = format!(
-					"local {wd}={unmask};{gc}={gc}+1; {four}",
-					wd = nwd, unmask = unmask, gc = ng, four = four_bytes
-				);
+				format!("{}{}", unmask, byte_emit)
+			};
+			// slot segments covering [sw, ew] (global 1-based word idx)
+			let mut seg_code = String::new();
+			let mut g = sw;
+			while g <= ew {
+				let si = (g - 1) / BW_SLOT_WORDS; // 0-based slot index
+				let local_lo = (g - 1) % BW_SLOT_WORDS + 1; // 1-based
+				let slot_end_global = (si + 1) * BW_SLOT_WORDS;
+				let seg_hi = ew.min(slot_end_global);
+				let local_hi = local_lo + (seg_hi - g);
+				// 增量⑩: km/kc assembled at handler entry (fragment
+				// slots), no mask-key literal at the decode site.
 				seg_code.push_str(&format!("local {ws}=b[{slot}]; ", ws = nws, slot = bw_slots[si]));
 				if while_words {
 					seg_code.push_str(&format!(
 						"local {wi}={lo};while {wi}<={hi} do {body}{wi}={wi}+1 end; ",
-						wi = nwi, lo = local_lo, hi = local_hi, body = body
+						wi = nwi, lo = local_lo, hi = local_hi, body = word_src
 					));
 				} else {
 					seg_code.push_str(&format!(
 						"for {wi}={lo},{hi} do {body}end; ",
-						wi = nwi, lo = local_lo, hi = local_hi, body = body
+						wi = nwi, lo = local_lo, hi = local_hi, body = word_src
 					));
 				}
 				g = seg_hi + 1;
@@ -1186,64 +1211,49 @@ pub fn scaffold(
 			let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
 			let qc = nm.take_avoid(CH_AVOID);
 			let qr = nm.take_avoid(CH_AVOID);
-			let trim = if trim_style {
+			// ㉞: trim 直接落在最终 concat 上（中间段串与第二趟循环废除）。
+			// 字节粒度随提取族而变：divmod 族一项一字节 → 索引截断按
+			// blen 直达字节精度；bit32 族一项一整词（4 字节串）→ 索引
+			// 截断只到词界，需再叠一层字节精截（保 nil 分隔符形态）。
+			let final_concat = if trim_style && divmod_bytes {
 				// nil separator == "" but emits no string literal (F10)
 				format!(
-					"local {seg}=table.concat({t},nil,1,{blen});",
-					seg = nseg, t = nt, blen = blen
+					"table.concat({t},nil,1,{blen})",
+					t = nt, blen = blen
+				)
+			} else if trim_style {
+				format!(
+					"string.sub(table.concat({t},nil,1,{nw}),1,{blen})",
+					t = nt, nw = nw, blen = blen
 				)
 			} else {
 				format!(
-					"local {seg}=string.sub(table.concat({t}),1,{blen});",
-					seg = nseg, t = nt, blen = blen
+					"string.sub(table.concat({t}),1,{blen})",
+					t = nt, blen = blen
 				)
-			};
-			// 增量⑰-B: fold all four bytes of the full LCG state `kv`
-			// into the key byte (low-byte-only would collapse the seed
-			// space to 256 classes — R003-Q2 定理). Chunk handlers are
-			// v15/Luau-only, so bit32.extract is available.
-			let fk = format!(
-				"(({kv} % 256) + bit32.extract({kv},8,8) + bit32.extract({kv},16,8) + bit32.extract({kv},24,4)) % 256",
-				kv = nkv
-			);
-			let xor_line = format!(
-				"{o}[{i}]=string.char(bit32.bxor(string.byte({seg},{i}),({fk}+{i})%256))",
-				o = no, i = ni, seg = nseg, fk = fk
-			);
-			let xor_loop = match xor_style {
-				0 => format!("for {i}=1,#{seg} do {line} end", i = ni, seg = nseg, line = xor_line),
-				1 => format!(
-					"local {i}=1;while {i}<=#{seg} do {line};{i}={i}+1 end",
-					i = ni, seg = nseg, line = xor_line
-				),
-				_ => format!(
-					"for {i}=1,#{seg} do local {bx}=string.byte({seg},{i});{o}[{i}]=string.char(bit32.bxor({bx},({fk}+{i})%256)) end",
-					i = ni, seg = nseg, bx = nbx, o = no, fk = fk
-				),
 			};
 			let src = format!(
 				"function(b,C,{ra},{rb},{rc},{rd},{re}) \
 				 local {km}=(b[{kfa}]+b[{kfb}])%4294967296;local {kc}=(b[{kfc}]-b[{kfd}])%4294967296; \
 				 local {t}={{}}; local {g}={sw}; \
+				 local {kv}=b[{kg}](b); local {kn}=(({kv}%256)+bit32.extract({kv},8,8)+bit32.extract({kv},16,8)+bit32.extract({kv},24,4))%256; \
+				 local {ti}=1; \
 				 {segs}\
-				 {trim} \
 				 local {qc}=C[{idx}]~=nil and {da} or {db}; \
 				 local {qr}=if {da}~={db} then {da} else {db}; \
-				 local {kv}=b[{kg}](b); local {o}={{}}; \
-				 {xor_loop}; \
-				 C[{idx}]=table.concat({o}); \
+				 C[{idx}]={final_concat}; \
 				 return {ret},C,{rc},{ra},{rd},{re},{rb} end",
 				idx = k * CHUNKS + j + 1,
 				segs = seg_code,
 				sw = sw,
-				trim = trim,
-				xor_loop = xor_loop,
+				final_concat = final_concat,
 				t = nt,
 				g = ng,
 				km = nkm,
 				kc = nkc,
 				kv = nkv,
-				o = no,
+				kn = nkn,
+				ti = nti,
 				kg = kg_slot,
 				kfa = kfrag[1],
 				kfb = kfrag[2],
