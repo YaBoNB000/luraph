@@ -1493,7 +1493,11 @@ impl<'a> Ctx<'a> {
 	fn compile_stmt_rest(&mut self, s: &Stmt) {
 		match s {
 			Stmt::Assign { targets, values } => {
-				// targets first (5.1 semantics), then values, then store
+				// targets first (5.1 semantics): 目标表达式（表对象+下
+				// 标）先物化；然后**全部**值求值完毕，才允许第一个存
+				// 储——㉜ (R016 回合): 旧实现「求值一个存一个」违反
+				// Lua 语义，`t[i], t[m] = t[m], t[i]` 这类同表交换会读
+				// 到已被覆写的槽（堆排序/交换算法全灭，语料从未覆盖）。
 				let mut tinfos: Vec<Target> = Vec::new();
 				for t in targets {
 					tinfos.push(self.eval_target(t));
@@ -1511,11 +1515,13 @@ impl<'a> Ctx<'a> {
 					nv
 				};
 				// leading values, source order (bounded by target count)
+				// —— 全部求值进寄存器，存储统一推后
 				let nlead = npre.min(n);
+				let mut lead_regs: Vec<u16> = Vec::new();
 				for i in 0..nlead {
 					let r = self.tmp();
 					self.compile_expr(&values[i], r);
-					self.store_target(&tinfos[i], r);
+					lead_regs.push(r);
 				}
 				// extra values before the final one: evaluate (side
 				// effects) and discard
@@ -1523,29 +1529,29 @@ impl<'a> Ctx<'a> {
 					let r = self.tmp();
 					self.compile_expr(&values[i], r);
 				}
+				let mut exp_base: Option<u16> = None;
+				let mut nres: usize = 0;
 				if nv > 0 && (last_is_call || last_is_vararg) && npre < n {
 					// final value expands into targets npre..n
-					let nres = (n - npre) as u16;
+					nres = (n - npre) as usize;
 					if last_is_call {
 						let call = values[nv - 1].clone();
 						let (nargs, has_vararg) = call_arg_info(&call);
 						let freg = self.reserve(1 + nargs.max(1));
-						self.compile_call_into(&call, freg, nres, has_vararg);
-						for i in 0..nres as usize {
-							self.store_target(&tinfos[npre + i], freg + 1 + i as u16);
-						}
+						self.compile_call_into(&call, freg, nres as u16, has_vararg);
+						exp_base = Some(freg + 1);
 					} else {
 						// varargs as a table, then fetch the needed prefix
 						let vt = self.tmp();
 						self.emit(Instr::ab(Op::VarArgTab, vt, 0));
-						for i in 0..nres as usize {
+						let base = self.reserve(nres as u16);
+						for i in 0..nres {
 							let kreg = self.tmp();
 							let k = self.kidx(Const::Num((i + 1) as f64));
 							self.emit(Instr::ab(Op::LoadK, kreg, k));
-							let r = self.tmp();
-							self.emit(Instr::abc(Op::GetTab, r, vt, kreg));
-							self.store_target(&tinfos[npre + i], r);
+							self.emit(Instr::abc(Op::GetTab, base + i as u16, vt, kreg));
 						}
+						exp_base = Some(base);
 					}
 				} else if nv > 0 && npre < nv {
 					// final value lies beyond the targets: evaluate for
@@ -1553,6 +1559,15 @@ impl<'a> Ctx<'a> {
 					let i = nv - 1;
 					let r = self.tmp();
 					self.compile_expr(&values[i], r);
+				}
+				// ㉜: 值全部就绪——按目标顺序统一存储
+				for i in 0..nlead {
+					self.store_target(&tinfos[i], lead_regs[i]);
+				}
+				if let Some(base) = exp_base {
+					for i in 0..nres {
+						self.store_target(&tinfos[npre + i], base + i as u16);
+					}
 				}
 				// fewer values than targets: remaining targets get nil
 				let knil = self.kidx(Const::Nil);

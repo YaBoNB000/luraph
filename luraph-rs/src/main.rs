@@ -578,8 +578,11 @@ fn main() -> ExitCode {
 				let total_bytes: usize = carrier_bytes.iter().map(|c| c.len()).sum();
 				let est_words = total_bytes / 4 + carrier_bytes.len() * vmgen::v15::CHUNKS + 4;
 				let n_bw_slots = est_words / vmgen::v15::BW_SLOT_WORDS + 1;
+				// ㉜ (R016 大载荷): 池地板从 +18 抬到 +96——除分片槽外
+				// 还要装得下 ~65 个原语槽 + 引导/钥匙装配槽，否则
+				// module_fields 抽取枯竭（样本尺度 1..=126 不再够用）。
 				let mut slot_pool: Vec<i64> =
-					(1..=std::cmp::max(126, n_bw_slots as i64 + 18)).collect();
+					(1..=std::cmp::max(126, n_bw_slots as i64 + 96)).collect();
 				rng.shuffle(&mut slot_pool);
 				let r1 = slot_pool[0];
 				let r2 = slot_pool[1];
@@ -637,6 +640,7 @@ fn main() -> ExitCode {
 				let mut fields = vmgen::v15::module_fields(
 					&mut rng,
 					&exclude,
+					slot_pool.len() as i64,
 					opts.bind_env.as_deref(),
 				);
 				fields.extend(scaffold_fields);

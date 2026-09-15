@@ -178,6 +178,9 @@ fn lcg_factory(rng: &mut Rng, states: usize) -> Expr {
 pub fn module_fields(
 	rng: &mut Rng,
 	exclude: &[i64],
+	// ㉜ (R016 大载荷): 原语槽抽取上界随载体规模扩池（1..=126 是
+	// 样本尺度常量，大程序的分片槽会占满它 → 原语槽枯竭 panic）。
+	slot_max: i64,
 	// 增量㉑ (选项B·环境绑定): Some("roblox") 时把目标运行时 API
 	// (Vector3.new/Vector2.new/task.defer) 嵌进原语槽——表构造会对每个
 	// RHS 求值，故**构造本身**在非目标环境即失败（真实 Luraph 同款机
@@ -185,7 +188,8 @@ pub fn module_fields(
 	// 任何解码都还没开始。
 	bind_env: Option<&str>,
 ) -> Vec<TableField> {
-	let mut slots: Vec<i64> = (1..=126)
+	let top = std::cmp::max(126, slot_max);
+	let mut slots: Vec<i64> = (1..=top)
 		.filter(|n| !exclude.contains(n))
 		.collect();
 	rng.shuffle(&mut slots);
