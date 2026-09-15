@@ -943,12 +943,14 @@ pub fn scaffold(
 			chunk_info.push((start_word, num_words, byte_len));
 		}
 	}
-	// P3b (自描述消除): the word table is SPLIT across numeric-slot
-	// arrays (≤ BW_SLOT_WORDS words each, blending into the numeric-slot
+	// P3b (自描述消除): the word table is SPLIT across module slots
+	// (≤ BW_SLOT_WORDS words each, blending into the numeric-slot
 	// family) and every word is additively masked with a per-position
-	// key ((bm0 + g*bc0) % 2^32, g = global word index 1-based). No
-	// giant numeric literal and no clean word values in the output; the
-	// chunk handlers unmask on the fly while unpacking.
+	// key ((bm0 + g*bc0) % 2^32, g = global word index 1-based).
+	// ㉝: 每槽词表以 5 字符/词压进长字符串（数字槽数组形态废除——
+	// 十进制词表 ~11.5B/词 → ~5B/词）。No giant numeric literal and no
+	// clean word values in the output; the chunk handlers unmask on
+	// the fly while unpacking.
 	let bm0 = rng.int(1, 4_294_967_295) as i64;
 	let bc0 = (rng.int(1, 4_294_967_295) | 1) as i64;
 	crate::vmgen::manifest_key("BW_M0", bm0 as u64);
@@ -972,26 +974,35 @@ pub fn scaffold(
 		n_slots_needed,
 		bw_slots.len()
 	);
-	let masked: Vec<i64> = all_words
+	let masked: Vec<u32> = all_words
 		.iter()
 		.enumerate()
 		.map(|(gi, &w)| {
 			let g = gi as i64 + 1;
 			let key = (bm0 + g * bc0) % 4_294_967_296;
-			((w as i64 + key) % 4_294_967_296) as i64
+			((w as i64 + key) % 4_294_967_296) as u32
 		})
 		.collect();
+	// ㉝ (R016 回合 — 体积): 数字槽十进制词表 ~11.5B/词太肥——词表挪进
+	// 长字符串：每掩码词压 5 个连续区 base-94 字符（33..126，数字=字节
+	// -33，解码纯 Horner 无查表），~5B/词（-57%）。掩码机制不变
+	// （(bm0 + g·bc0) % 2^32 逐全局位置），分片按 90 词/槽不变。
 	for (si, slot) in bw_slots.iter().take(n_slots_needed).enumerate() {
 		let lo = si * BW_SLOT_WORDS;
 		let hi = masked.len().min(lo + BW_SLOT_WORDS);
+		let mut chars: Vec<u8> = Vec::with_capacity((hi - lo) * 5);
+		for &w in &masked[lo..hi] {
+			let mut v = w;
+			let mut d = [0u8; 5];
+			for k in 0..5 {
+				d[4 - k] = 33 + (v % 94) as u8;
+				v /= 94;
+			}
+			chars.extend_from_slice(&d);
+		}
 		fields.push(TableField::Key {
 			key: Expr::Num { value: *slot as f64, isfloat: false },
-			value: Expr::Table {
-				fields: masked[lo..hi]
-					.iter()
-					.map(|&w| TableField::Array(Expr::Num { value: w as f64, isfloat: false }))
-					.collect(),
-			},
+			value: Expr::LongStr { bytes: chars },
 		});
 	}
 	// HB field: high-entropy long string (>= 10.5 KB) for F8 only --
@@ -1057,12 +1068,12 @@ pub fn scaffold(
 			let (ra, rb, rc, rd, re) = (fillers[0].as_str(), fillers[1].as_str(), fillers[2].as_str(), fillers[3].as_str(), fillers[4].as_str());
 			let (st, ret) = step(&mut state_i);
 			let name = nm.take();
-			// P3b: the words live SPLIT across numeric-slot arrays and
-			// additively masked per global position; the handler walks
-			// its slot segments, unmasks each word on the fly
-			// ((bm0 + g*bc0) % 2^32), unpacks bytes, trims to the chunk
-			// length, then de-XORs. Key material was consumed by the
-			// word precompute pass above.
+			// P3b: the words live SPLIT across module slots (㉝ 起为槽内
+			// 长字符串词组) and additively masked per global position;
+			// the handler walks its slot segments, unmasks each word on
+			// the fly ((bm0 + g*bc0) % 2^32), unpacks bytes, trims to the
+			// chunk length, then de-XORs. Key material was consumed by
+			// the word precompute pass above.
 			let _ = chunk;
 			let (sw, nw, blen) = chunk_info[k * CHUNKS + j];
 			let ew = sw + nw - 1;
@@ -1126,15 +1137,31 @@ pub fn scaffold(
 				// slots), no mask-key literal at the decode site.
 				// 增量⑫: subtractive vs additive unmask + for/while
 				// word-loop variants.
+				// ㉝: 词源 = 槽内长字符串的 5 连字符组（数字=字节-33，
+				// Horner 折回掩码词）——无查表、无大数字面量。
+				let byte_at = |k: i64| {
+					format!(
+						"(string.byte({ws},({wi}-1)*5+{k})-33)",
+						ws = nws, wi = nwi, k = k
+					)
+				};
+				let vhorn = format!(
+					"(((({b1})*94+{b2})*94+{b3})*94+{b4})*94+{b5}",
+					b1 = byte_at(1),
+					b2 = byte_at(2),
+					b3 = byte_at(3),
+					b4 = byte_at(4),
+					b5 = byte_at(5)
+				);
 				let unmask = if add_unmask {
 					format!(
-						"({ws}[{wi}]+(4294967296-({km}+{gc}*{kc})%4294967296))%4294967296",
-						ws = nws, wi = nwi, km = nkm, gc = ng, kc = nkc
+						"(({vhorn}+(4294967296-({km}+{gc}*{kc})%4294967296))%4294967296)",
+						vhorn = vhorn, km = nkm, gc = ng, kc = nkc
 					)
 				} else {
 					format!(
-						"({ws}[{wi}]-({km}+{gc}*{kc})%4294967296)%4294967296",
-						ws = nws, wi = nwi, km = nkm, gc = ng, kc = nkc
+						"(({vhorn}-({km}+{gc}*{kc})%4294967296)%4294967296)",
+						vhorn = vhorn, km = nkm, gc = ng, kc = nkc
 					)
 				};
 				let body = format!(
