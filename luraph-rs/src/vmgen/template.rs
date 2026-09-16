@@ -743,6 +743,96 @@ fn sh_bytes(bytes: &[u8], mut h1: u64, mut h2: u64, k1: u64, k2: u64) -> (u64, u
 	(h1, h2)
 }
 
+/// ㉟ (自研压缩 — 碎片增量链): 每片对「此前全部已解码源码的拼接字典」
+/// 做贪心 LZ 增量编码。HBOOT 引导本来就在 loadstring 之前握着所有解码态
+/// 源码——解码链即压缩链：操作流只有两种，字面段 (00 + 长度 + 字节) 与
+/// 字典引用 (01 + 1 基偏移 + 长度)，全 2 字节小端，字典 ≤ ~50KB 恰好
+/// 65535 封顶。Rust 编码 / HBOOT 解码，逐字节镜像。实测语料碎片
+/// 49.8KB → 24.6KB（49%），且与解码顺序无关（增长字典吸收顺序差异）。
+fn lz_chain_encode(cur: &[u8], dict: &[u8]) -> Vec<u8> {
+	let min_match: usize = 8;
+	// 4-gram 索引（字典上）
+	let mut idx: std::collections::HashMap<[u8; 4], Vec<usize>> =
+		std::collections::HashMap::new();
+	if dict.len() >= 4 {
+		for i in 0..dict.len() - 3 {
+			let g: [u8; 4] = [dict[i], dict[i + 1], dict[i + 2], dict[i + 3]];
+			idx.entry(g).or_default().push(i);
+		}
+	}
+	let mut out: Vec<u8> = Vec::with_capacity(cur.len() / 2 + 16);
+	out.extend_from_slice(&(cur.len() as u16).to_le_bytes());
+	let mut lit: Vec<u8> = Vec::new();
+	fn flush_lit(out: &mut Vec<u8>, lit: &mut Vec<u8>) {
+		let mut rest = &lit[..];
+		while !rest.is_empty() {
+			let n = rest.len().min(65535);
+			out.push(0x00);
+			out.extend_from_slice(&(n as u16).to_le_bytes());
+			out.extend_from_slice(&rest[..n]);
+			rest = &rest[n..];
+		}
+		lit.clear();
+	}
+	let mut i: usize = 0;
+	while i < cur.len() {
+		let mut best_len: usize = 0;
+		let mut best_off: usize = 0;
+		if i + 4 <= cur.len() {
+			let g: [u8; 4] = [cur[i], cur[i + 1], cur[i + 2], cur[i + 3]];
+			if let Some(cands) = idx.get(&g) {
+				for &pos in cands.iter().rev().take(64) {
+					let mut l = 0;
+					while i + l < cur.len()
+						&& pos + l < dict.len()
+						&& cur[i + l] == dict[pos + l]
+					{
+						l += 1;
+					}
+					if l > best_len {
+						best_len = l;
+						best_off = pos + 1; // 1 基
+					}
+				}
+			}
+		}
+		if best_len >= min_match && best_off <= 65535 && best_len <= 65535 {
+			flush_lit(&mut out, &mut lit);
+			out.push(0x01);
+			out.extend_from_slice(&(best_off as u16).to_le_bytes());
+			out.extend_from_slice(&(best_len as u16).to_le_bytes());
+			i += best_len;
+		} else {
+			lit.push(cur[i]);
+			i += 1;
+		}
+	}
+	flush_lit(&mut out, &mut lit);
+	out
+}
+
+/// ㉟: 解码镜像（与 HBOOT 重建器逐字节一致）——构建期往返自检用。
+#[cfg(debug_assertions)]
+fn lz_chain_decode_check(ser: &[u8], dict: &[u8]) -> Vec<u8> {
+	let ulen = ser[0] as usize + (ser[1] as usize) * 256;
+	let mut out: Vec<u8> = Vec::new();
+	let mut pi: usize = 2; // 0 基，跳过 ulen 前缀
+	while pi < ser.len() {
+		if ser[pi] == 0 {
+			let n = ser[pi + 1] as usize + (ser[pi + 2] as usize) * 256;
+			out.extend_from_slice(&ser[pi + 3..pi + 3 + n]);
+			pi += 3 + n;
+		} else {
+			let off = ser[pi + 1] as usize + (ser[pi + 2] as usize) * 256;
+			let n = ser[pi + 3] as usize + (ser[pi + 4] as usize) * 256;
+			out.extend_from_slice(&dict[off - 1..off - 1 + n]);
+			pi += 5;
+		}
+	}
+	out.truncate(ulen);
+	out
+}
+
 /// ㉚: 碎片自由填充尾注（>= 8B，实际 14–22B 随机）——回填搜索空间
 /// + 每构建长度熵。尾注释对 loadstring 无副作用，且进哈希链。
 fn frag_pad(src: &mut Vec<u8>, rng: &mut Rng) {
@@ -2256,6 +2346,8 @@ pub fn generate(
 		manifest_key("CHAIN_K1", sh_k1);
 		manifest_key("CHAIN_K2", sh_k2);
 		manifest_key("CHAIN_MUL", sh_mul);
+		manifest_key("CHAIN_IV1", sh_iv1);
+		manifest_key("CHAIN_IV2", sh_iv2);
 		// P4 (防御代码隐藏): the loader/integrity names never appear
 		// in the output — each is runtime-built from shuffled char
 		// codes (user style), then the nativeness check runs exactly
@@ -2279,7 +2371,7 @@ pub fn generate(
 		//     ~52bit 二预映像难度）——期望哈希不落任何明文常量。
 		//   SH 助手 = 双车道非线性步（Rust 镜像 sh_step，逐位一致）。
 		let hboot_src = format!(
-			"return function(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB) local HW = {{}} local BSS local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep} + ((h1 + h2 * 257) % 268435456) * {hmul}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) for i = 1, flen do h1, h2 = SH(h1, h2, BYTE(s, i)) end if w == 200 then BSS = s else HW[w] = LS(s)() end end return HW, BSS, h1, h2 end",
+			"return function(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB) local HW = {{}} local BSS local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local DICT = HB local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep} + ((h1 + h2 * 257) % 268435456) * {hmul}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) local DC = {{}} local pi = 3 while pi <= flen do if BYTE(s, pi) == 0 then local ln = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 DC[#DC + 1] = SUB(s, pi + 3, pi + 2 + ln) pi = pi + 3 + ln else local off = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 local ln = BYTE(s, pi + 3) + BYTE(s, pi + 4) * 256 DC[#DC + 1] = SUB(DICT, off, off + ln - 1) pi = pi + 5 end end s = SUB(table.concat(DC), 1, BYTE(s, 1) + BYTE(s, 2) * 256) DICT = DICT .. s for i = 1, #s do h1, h2 = SH(h1, h2, BYTE(s, i)) end if w == 200 then BSS = s else HW[w] = LS(s)() end end return HW, BSS, h1, h2 end",
 			hseed = hseed_e, hstep = hstep_e, hm = hm_e, hc = hc_e,
 			k1 = sh_k1_e, k2 = sh_k2_e, m1 = SH_M1, m2 = SH_M2,
 			iv1 = sh_iv1_e, iv2 = sh_iv2_e, hmul = sh_mul_e,
@@ -2297,12 +2389,30 @@ pub fn generate(
 		rng.shuffle(&mut order);
 		let mut hq_lines = String::from("local HQ = {}\n");
 		let mut hqi_vals: Vec<i64> = Vec::new();
+		// ㉟: 增量链字典 = HBOOT 自身源码开头（解码侧以 HB 同样初始化），
+		// 其后每片解码态源码依次并入——与 HBOOT 的重建严格同序。
+		let mut lz_dict: Vec<u8> = hb_bytes.clone();
 		for (_pos, &fi) in order.iter().enumerate() {
 			let (_wire, src) = &frags[fi];
 			let rv = (ch1 + ch2 * 257) % 268_435_456;
 			let mut state = ((hseed as u64 + *_wire as u64 * hstep as u64 + rv * sh_mul)
 				% 268_435_456) as u64;
-			let mut xb: Vec<u8> = src
+			// ㉟: 加密对象 = 增量链压缩流（HBOOT 先重建源码再走原链）；
+			// ㉚ 链哈希照旧走在**重建后**的解码态源码上（见下方链推进）。
+			let payload = lz_chain_encode(src, &lz_dict);
+			#[cfg(debug_assertions)]
+			{
+				let back = lz_chain_decode_check(&payload, &lz_dict);
+				assert!(
+					back == *src,
+					"lz roundtrip fail: wire {} len {} vs {}",
+					_wire,
+					back.len(),
+					src.len()
+				);
+			}
+			lz_dict.extend_from_slice(src);
+			let mut xb: Vec<u8> = payload
 				.iter()
 				.map(|&b| {
 					state = (hm as u64 * state + hc as u64) % 268_435_456;
@@ -2366,6 +2476,9 @@ pub fn generate(
 		// 双约束同时非零 ⇒ 解密结构完好、内容全错（攻击方约束之 4）。
 		// 期望哈希不以明文常量落盘——回填重算无目标可打（约束之 1）。
 		// 系数 < 2^25 → H*C 乘积 < 2^51，Lua 侧精确。
+		if std::env::var("LURAPH_LZ_DBG").is_ok() {
+			eprintln!("LZEXP {},{}", ch1, ch2);
+		}
 		let sh1 = ch1 as i64;
 		let sh2 = ch2 as i64;
 		let sh_cb1 = rng.int(1_048_576, 33_554_431) | 1;
