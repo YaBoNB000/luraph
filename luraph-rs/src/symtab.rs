@@ -247,12 +247,19 @@ impl<'a> Resolver<'a> {
 			}
 			Stmt::While { cond, body } => {
 				self.resolve_expr(cond);
+				// the body IS a scope block in Lua/Luau: locals declared
+				// inside die at `end` (and are re-declared each iteration)
+				self.new_scope();
 				self.resolve_block(body);
+				self.pop_scope();
 			}
 			Stmt::Repeat { body, cond } => {
-				// cond sees body locals (repeat-until semantics)
+				// cond sees body locals (repeat-until semantics); the body
+				// itself is still a scope block for everything OUTSIDE it
+				self.new_scope();
 				self.resolve_block(body);
 				self.resolve_expr(cond);
+				self.pop_scope();
 			}
 			Stmt::ForNum {
 				var,
@@ -284,7 +291,17 @@ impl<'a> Resolver<'a> {
 				self.resolve_block(body);
 				self.pop_scope();
 			}
-			Stmt::Do(b) => self.resolve_block(b),
+			Stmt::Do(b) => {
+				// `do ... end` is a scope block: locals inside must NOT
+				// leak past `end`. Skipping this scope let a block-local
+				// bind references AFTER the block (mangle then renamed the
+				// dangling reference into a free identifier the scaffold
+				// could capture with a random handler param — the v15
+				// seed=1 "attempt to call a table value" root cause).
+				self.new_scope();
+				self.resolve_block(b);
+				self.pop_scope();
+			}
 			Stmt::Break | Stmt::Continue => {}
 			Stmt::Return(es) => {
 				for e in es.iter_mut() {

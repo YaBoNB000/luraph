@@ -2790,6 +2790,7 @@ pub fn generate(
   local SALT
   local SH1, SH2
   local MPF
+  local CLK
   do
     {}local LS = GFE(0)[{v_ls}]
     local TSTR = GFE(0)[{v_ts}]
@@ -2798,6 +2799,13 @@ pub fn generate(
     local OS_ = GFE(0)[{v_os}]
     local CLK = OS_ and OS_[{v_clock}]
     local pb = 0
+-- NOTE (scope): CLK above SHADOWS the outer `local CLK` on purpose.
+-- The RUN call below sits OUTSIDE this do-block: it must read the outer
+-- (nil) binding. A dangling reference into this block's local was the
+-- seed=1 "attempt to call a table value" bug (mangled free identifier
+-- captured by a scaffold filler param). Outer declaration keeps the
+-- binding explicit; the timing watchdog stays off until the outer CLK
+-- is deliberately wired to OS_[{v_clock}].
     do
       local ok, sr = PCAL(function() return INF(LS, {v_s}) end)
       if ok and TYP(sr) == {strlit} then

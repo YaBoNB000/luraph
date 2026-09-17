@@ -140,6 +140,25 @@
 
 ## 4. 更新日志
 
+- **2026-09-17（增量㊱：引导层悬挂标识符修复——收口 v15 稀有崩溃）**
+  收口 ㉟ 遗留专项：~0.3% 种子×语料确定性「attempt to call a table
+  value」（basics seed=1 / real_algo seed=38）。根因三层：① `symtab.rs`
+  块作用域缺失（`Stmt::Do(b) => resolve_block(b)`，While/Repeat 体同）
+  → do 块内局部泄漏到块外；② 模板 `local CLK` 声明在引导 do 块内而
+  `RTFRAG(..., CLK, ...)` 在块外 → 悬挂引用，被 mangle 一致改名后运行时
+  实为未知全局（通常 nil，侥幸无害；RT 计时守卫因此被静默禁用）；
+  ③ v15 独有的 P3 scaffold 把解释器源码嵌进 `function(b,C,ra..re)`，
+  5 个填充参数名随机抽取，撞上改名后的悬挂名 → CLK 实参捕获 CPS 寄存器
+  table 值 → dE 首行 `lS and lS()` 崩。修复三层：A. template.rs do 块外
+  显式 `local CLK`；B. symtab.rs 给 Do/While/Repeat 体开作用域（根治，
+  兼治用户程序作用域泄漏误编译隐患）；C. v15.rs `Names::reserve` 使
+  scaffold 名字永不与解释器自由标识符相撞（整类封死）。排查方法：
+  零侵入两板斧（setfenv+_G 副本+补 debug.info 过反钩闸；可见层文本补丁
+  在 RT 工厂调用点打印 35 参类型，碎片不动哈希链完好）。验证：两大复现 ✓
+  + basics 300 种子 0 失败 + 全语料×16 种子 576/576 + multiseed 首次全绿
+  + 166/166 + 360/360 + 轮廓 32/32 + 安全 5/5 + 钥匙 52/52 + 字节级确定。
+  后续候选：计时守卫启用（一行改动）待评估计时抖动误报后由用户拍板。
+
 - **2026-09-17（增量㉟：自研压缩——碎片增量链）**
   用户点题「做一个我们自己的压缩方法」。机制完全自研：HBOOT 解码链天然就
   是压缩链——它在 loadstring 前握着每片解码态源码，故每片对「此前全部已

@@ -348,6 +348,9 @@ struct Names {
 	/// exhaustion fallback counter (fresh namespace the pool never
 	/// generates — large corpora drain the shuffled pool)
 	fallback: usize,
+	/// names the pool must never hand out (interpreter free
+	/// identifiers — see `reserve`)
+	reserved: std::collections::HashSet<String>,
 }
 
 impl Names {
@@ -400,14 +403,32 @@ impl Names {
 		});
 		let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 		pool.retain(|n| seen.insert(n.clone()));
-		Names { pool, fallback: 0 }
+		Names { pool, fallback: 0, reserved: std::collections::HashSet::new() }
+	}
+	/// Permanently remove `names` from the pool. Used to keep scaffold
+	/// handler param/local names from EVER colliding with the embedded
+	/// interpreter's free identifiers: the whole interpreter source is
+	/// spliced inside `function(b,C,ra,rb,rc,rd,re) ... end`, so any
+	/// free identifier matching a handler param silently binds to the
+	/// CPS register value instead of its global (the seed=1 "attempt to
+	/// call a table value" capture path).
+	fn reserve(&mut self, names: &[String]) {
+		for n in names {
+			self.reserved.insert(n.clone());
+		}
+		self.pool.retain(|n| !self.reserved.contains(n));
 	}
 	fn take(&mut self) -> String {
 		match self.pool.pop() {
 			Some(n) => n,
 			None => {
 				self.fallback += 1;
-				format!("vN{}", self.fallback)
+				let mut cand = format!("vN{}", self.fallback);
+				while self.reserved.contains(&cand) {
+					self.fallback += 1;
+					cand = format!("vN{}", self.fallback);
+				}
+				cand
 			}
 		}
 	}
@@ -425,7 +446,14 @@ impl Names {
 				Some(n) => stashed.push(n),
 				None => {
 					self.fallback += 1;
-					break format!("vN{}", self.fallback);
+					let mut cand = format!("vN{}", self.fallback);
+					while self.reserved.contains(&cand)
+						|| forbidden.contains(&cand.as_str())
+					{
+						self.fallback += 1;
+						cand = format!("vN{}", self.fallback);
+					}
+					break cand;
 				}
 			}
 		};
@@ -624,9 +652,15 @@ pub fn scaffold(
 	// rest is handed to the program). Off = the historical shape, so
 	// unbound output stays byte-identical.
 	bind_passthrough: bool,
+	// 增量㊱ (引导层悬挂标识符修复): the interpreter's free identifiers
+	// (post-mangle globals). The scaffold embeds the interpreter source
+	// inside handler closures, so a scaffold name colliding with a free
+	// identifier would capture the handler param instead of the global.
+	interp_globals: &[String],
 ) -> (Vec<TableField>, String) {
 	let carrier_tokens: &[String] = &carrier.tokens;
 	let mut nm = Names::new(rng);
+	nm.reserve(interp_globals);
 	// P5: per-build state-register names (see draw_state_names)
 	let state = draw_state_names(&mut nm);
 	let sv = state[0].clone();

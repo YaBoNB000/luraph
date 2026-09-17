@@ -6,3 +6,4 @@ tools/
 luraph-rs/target/
 # ...but keep the luau CLI main sources used by the rebuild
 !luraph-rs/tools/
+__pycache__/

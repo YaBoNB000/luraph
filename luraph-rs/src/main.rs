@@ -632,6 +632,7 @@ fn main() -> ExitCode {
 					&kfrag,
 					&st_slots,
 					opts.bind_key.is_some(),
+					&ttable.globals,
 				);
 				let mut exclude: Vec<i64> = vec![r1, r2, ks, kg, d1, d2, sb_slot, sc_slot];
 				exclude.extend_from_slice(&bw_slots);
