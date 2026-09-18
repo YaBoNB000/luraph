@@ -2797,15 +2797,18 @@ pub fn generate(
     local DBG = GFE(0)[{v_dbg}]
     local INF = DBG and DBG[{v_inf}]
     local OS_ = GFE(0)[{v_os}]
-    local CLK = OS_ and OS_[{v_clock}]
+    CLK = OS_ and OS_[{v_clock}]
     local pb = 0
--- NOTE (scope): CLK above SHADOWS the outer `local CLK` on purpose.
--- The RUN call below sits OUTSIDE this do-block: it must read the outer
--- (nil) binding. A dangling reference into this block's local was the
--- seed=1 "attempt to call a table value" bug (mangled free identifier
--- captured by a scaffold filler param). Outer declaration keeps the
--- binding explicit; the timing watchdog stays off until the outer CLK
--- is deliberately wired to OS_[{v_clock}].
+-- NOTE (㊳ 计时守卫复通): the assignment above feeds the OUTER `local CLK`
+-- (no shadowing local) — the RUN call outside this do-block hands it to the
+-- RT fragment as its timing source. History: ㉙ introduced the watchdog,
+-- ㊱ found the old shadowing declaration dangled a mangled reference past
+-- `end` (the seed=1 "attempt to call a table value" capture path) and parked
+-- the guard on an explicit nil binding; symtab block scoping is fixed since,
+-- so the wiring is restored deliberately. Guard semantics (RT fragment):
+-- every 128 dispatch steps sample os.clock; first 4 samples set a MIN
+-- baseline; two CONSECUTIVE windows slower than 100x baseline poison SLT
+-- (+7777777) => block keys desync => silent corruption, no visible oracle.
     do
       local ok, sr = PCAL(function() return INF(LS, {v_s}) end)
       if ok and TYP(sr) == {strlit} then

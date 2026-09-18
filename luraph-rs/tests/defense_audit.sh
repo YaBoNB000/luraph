@@ -16,8 +16,9 @@
 #   D9  反挂钩闸(loadstring) — loadstring 换成 Lua 闭包 => 必须被杀
 #   D10 反指纹闸(debug.info) — debug.info 说谎 => 必须被杀
 #   D11 蜜罐哨兵            — Mc 层陷阱结构级验证 (外部不可触发)
-#   D12 计时守卫            — 显式关闭: RUN 的 CLK 槽引用外层 nil 局部,
-#                             RT 碎片内守卫代码结构仍在 (可随时复通)
+#   D12 计时守卫 (㊳ 复通)  — 接线 (外层局部 + os.clock 赋值) + 触发路径
+#                             (抽出守卫用合成 tracer 时钟驱动 => 必投毒) +
+#                             干净时钟零误报 + 长运行用例误报抽查
 #   D13 LZ 往返自检         — debug 构建 assert (编码即验)
 #
 # 用法: bash tests/defense_audit.sh   (release 二进制需已构建)
@@ -200,10 +201,12 @@ else
 	bad "未找到蜜罐结构"
 fi
 
-echo "== D12 计时守卫 (设计: 显式关闭, 接线完好) =="
+echo "== D12 计时守卫 (㊳ 复通: 接线 + 触发路径 + 误报抽查) =="
+mkdir -p "$W/frags"
+LURAPH_FRAG_SAN="$W/frags" "$TOOL" --preset v15 --dialect luau --seed 777 "$SRC" "$W/d12b.lua" >/dev/null 2>&1
 python3 - "$W/d1a.lua" "$W" <<'PYEOF'
 import re, sys
-art = sys.argv[1]
+art = sys.argv[1]; W = sys.argv[2]
 s = open(art).read()
 def blank(src):
     out = list(src); i = 0; n = len(src)
@@ -244,24 +247,80 @@ while j < len(code):
         args.append(cur.strip()); cur=""; j+=1; continue
     cur+=c; j+=1
 a27 = args[26]
-pat = re.compile(r'local\s+[^=;]*\b'+re.escape(a27)+r'\b')
-decls = [d.start() for d in pat.finditer(code[:mm.start()+10])]
-# 外层显式声明存在 => RUN 读到 nil (守卫关闭); 守卫结构本体另验
-print("CLKARG", a27, "decls", len(decls))
-sys.exit(0 if len(decls) >= 1 else 1)
+# 接线: 外层局部 + do 块内从 os 表取 clock 的赋值 (非 nil 悬挂)
+asg = re.search(r'\b'+re.escape(a27)+r'=(\w+) and (\w+)\[', code[:mm.start()+10])
+decl = re.search(r'local\s+[^=;]*\b'+re.escape(a27)+r'\b', code[:mm.start()+10])
+if not (asg and decl):
+    print("NOWIRE"); sys.exit(1)
+# 触发路径: 从 RT 碎片抽出守卫前导 + 守卫块本体, 合成 tracer 时钟驱动
+rt = open(W + "/frags/san_208.src").read()
+pm = re.search(
+    r'local (\w+) = 0 local (\w+) = (\w+) and \3\(\) or 0 '
+    r'local (\w+) = 0 local (\w+) = nil local (\w+) = 0 while true do', rt)
+if not pm:
+    print("NOPRE"); sys.exit(1)
+GE, ID, CLK, NF, PE, CNT = pm.groups()
+gi = rt.find('% 128 == 0')
+# 回溯到该 if 的起点
+ist = rt.rfind('if ', 0, gi)
+br = blank(rt)  # 位置保真: 字符串内容被空格化, 代码标识符不动
+depth = 0; cut = None
+for m2 in re.finditer(r'\b(then|do|end|until)\b', br):
+    if m2.start() < ist:
+        continue
+    w = m2.group(1)
+    if w in ('then', 'do'):
+        depth += 1
+    else:
+        depth -= 1
+        if depth == 0:
+            cut = m2.end()
+            break
+if cut is None:
+    print("NOGUARD"); sys.exit(1)
+guard = br[ist:cut]
+p1 = re.search(r'(\w+) = \1 \+ 7777777 (\w+) = \2 \+ 7777777', guard)
+if not p1:
+    print("NOPOISON"); sys.exit(1)
+A, B = p1.groups()
+seq_tracer = "0, 0.001, 0.002, 0.003, 0.004, 10.004, 20.004, 20.005, 20.006"
+seq_clean  = "0, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008"
+harness = '''
+local seq = {{ {seq} }}
+local ix = 0
+local {CLK} = function() ix = ix + 1 return seq[ix] end
+local {GE} = 0
+local {ID} = {CLK} and {CLK}() or 0
+local {NF} = 0
+local {PE} = nil
+local {CNT} = 0
+local {A}, {B} = 0, 0
+for iter = 1, 128 * 8 do
+  {GE} = {GE} + 1
+  {guard}
+end
+print({A}, {B})
+'''
+for name, seq in (("tracer", seq_tracer), ("clean", seq_clean)):
+    lua = harness.format(seq=seq, CLK=CLK, GE=GE, ID=ID, NF=NF, PE=PE,
+                         CNT=CNT, A=A, B=B, guard=guard)
+    open(f"{W}/wd_{name}.lua", "w").write(lua)
+print("WIRED", a27)
 PYEOF
 rc12=$?
-if [ "$rc12" == "0" ]; then
-	# 再验 RT 碎片内守卫结构仍在
-	mkdir -p "$W/frags"
-	LURAPH_FRAG_SAN="$W/frags" "$TOOL" --preset v15 --dialect luau --seed 777 "$SRC" "$W/d12b.lua" >/dev/null 2>&1
-	if grep -q "% 128 == 0" "$W/frags/san_208.src"; then
-		ok "CLK 槽接外层 nil 局部 (守卫关闭) + RT 内 %128 守卫结构完好 (可复通)"
-	else
-		bad "RT 碎片内未找到 %128 计时守卫结构"
-	fi
+if [ "$rc12" != "0" ]; then
+	bad "计时守卫接线/抽取失败 (rc=$rc12)"
 else
-	bad "RUN 的 CLK 槽未接外层显式局部"
+	t1="$(timeout 15 "$LUAU" "$W/wd_tracer.lua" 2>&1)"
+	t2="$(timeout 15 "$LUAU" "$W/wd_clean.lua" 2>&1)"
+	[ "$t1" == "7777777	7777777" ] && ok "触发路径: 模拟 tracer(10000x 两连窗) => SLT/SLTC 各投毒 +7777777" || bad "触发路径失效: 得到 [$t1]"
+	[ "$t2" == "0	0" ] && ok "干净时钟: 8 窗口 0 投毒 (阈值不误伤)" || bad "干净时钟误报: [$t2]"
+	# 误报抽查: 长运行用例真实执行必须输出等价
+	"$TOOL" --preset v15 --dialect luau --seed 999 \
+		"$ROOT/tests/cases/stress_control.lua" "$W/d12c.lua" >/dev/null 2>&1
+	exp12="$(timeout 90 "$LUAU" "$ROOT/tests/cases/stress_control.lua" 2>&1)"
+	got12="$(timeout 90 "$LUAU" "$W/d12c.lua" 2>&1)"
+	[ "$got12" == "$exp12" ] && ok "误报抽查: stress 用例守卫开启下运行等价" || bad "守卫开启导致运行分歧 (疑似误报投毒)"
 fi
 
 echo "== D13 LZ 往返自检 (debug 构建) =="
