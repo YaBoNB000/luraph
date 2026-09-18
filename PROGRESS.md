@@ -1,9 +1,20 @@
 # 项目进度（PROGRESS）
 
-> 最后更新：2026-09-17（**增量㊱ 引导层悬挂标识符修复**：收口 ㉟ 遗留的
-> v15 稀有崩溃（~0.3% 种子×语料，确定性「attempt to call a table value」，
-> basics seed=1 / real_algo seed=38）。根因三层：symtab 块作用域缺失
-> （Do/While/Repeat 体未开作用域）→ 模板 CLK 悬挂引用被 mangle 改名 →
+> 最后更新：2026-09-18（**增量㊲ 全项防御审计**：新增
+> `tests/defense_audit.sh`——13 个防御点逐一正/负向实测：D1 干净运行
+> 等价（基线）、D2 钥匙去字面化（3 种子×52 钥匙 0 泄漏）、D3 结构指纹
+> 32/32、D4 安全指纹 S1–S5 5/5（含 attack 脚本组）、D5/D6 密文完整性+
+> 字节码防篡改（30 个长串字符互换真篡改点 → 0 次正确输出，源哈希链/
+> 校验和投毒生效）、D7 激活门 10/10、D8 环境绑定 6/6、D9 反挂钩闸
+> （loadstring 换 Lua 闭包 → 被杀）、D10 反指纹闸（debug.info 说谎 →
+> 被杀）、D11 蜜罐哨兵结构验证、D12 计时守卫确认显式关闭且可复通
+> （RUN CLK 槽接外层 nil 局部 + RT 内 %128 守卫结构完好）、D13 LZ 往返
+> 自检（debug 构建生成期 assert）。结果 **15 PASS / 0 FAIL，
+> ALL DEFENSES ACTIVE**。附修：审计空互换盲点（强制两点字符不同）。
+> 验证：审计全绿 + 166/166 + 360/360 + multiseed 0 失败。前序：㊱ 引导层
+> 悬挂标识符修复（收口 ㉟ 遗留的 v15 稀有崩溃「attempt to call a table
+> value」，basics seed=1 / real_algo seed=38；根因三层：symtab 块作用域
+> 缺失（Do/While/Repeat 体未开作用域）→ 模板 CLK 悬挂引用被 mangle 改名 →
 > v15 scaffold 随机填充参数名与之碰撞、捕获 CPS 寄存器 table 值。三层
 > 修复：模板外层显式 CLK 声明 + symtab 作用域根治 + scaffold 名字池排除
 > 解释器自由标识符（整类封死）。验证：两大复现 ✓ + basics 300 种子 0 失败

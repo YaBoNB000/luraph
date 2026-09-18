@@ -233,3 +233,10 @@ tests/gen_examples.sh
 `tests/run_presets.sh`（405 项）。性能：`docs/performance.md`。
 v15 档（路线 A 结构同族）为独立发射管线，示例见上节，验收以
 `tests/v15_fingerprint.py` 对照 `samples/luraph15.txt`。
+
+## 全项防御审计（增量㊲）
+
+`tests/defense_audit.sh`：13 个防御点逐一正/负向实测（干净运行等价、
+钥匙去字面化、结构/安全指纹、密文完整性与字节码防篡改的 30 点真篡改、
+激活门、环境绑定、反挂钩闸、反指纹闸、蜜罐结构、计时守卫可复通性、
+LZ 往返自检）。改防御相关发射面后应跑一次：`bash tests/defense_audit.sh`。
