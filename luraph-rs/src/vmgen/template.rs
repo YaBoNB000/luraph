@@ -2415,7 +2415,7 @@ pub fn generate(
 			String::new()
 		};
 		let hboot_src = format!(
-			"return function(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB, EV, PD) {guard}local HW = {{}} local BSS local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local DICT = HB local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep} + ((h1 + h2 * 257) % 268435456) * {hmul}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) local DC = {{}} local pi = 3 while pi <= flen do if BYTE(s, pi) == 0 then local ln = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 DC[#DC + 1] = SUB(s, pi + 3, pi + 2 + ln) pi = pi + 3 + ln else local off = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 local ln = BYTE(s, pi + 3) + BYTE(s, pi + 4) * 256 DC[#DC + 1] = SUB(DICT, off, off + ln - 1) pi = pi + 5 end end s = SUB(table.concat(DC), 1, BYTE(s, 1) + BYTE(s, 2) * 256) DICT = DICT .. s for i = 1, #s do h1, h2 = SH(h1, h2, BYTE(s, i)) end if w == 200 then BSS = s else HW[w] = (LS(s) or PD)() end end return HW, BSS, h1, h2{hpret} end",
+			"return function(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB, EV, PD, FN_, NOPA_, TK_, DC1, R16, CKM_, CKC_, BKM_, BKC_, BSEED_, BSTEP_, TYP_, TSTR_, PS_, PT_, KM_, KC_, PB_) {guard}local HW = {{}} local BSS local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local DICT = HB local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep} + ((h1 + h2 * 257) % 268435456) * {hmul}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) local DC = {{}} local pi = 3 while pi <= flen do if BYTE(s, pi) == 0 then local ln = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 DC[#DC + 1] = SUB(s, pi + 3, pi + 2 + ln) pi = pi + 3 + ln else local off = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 local ln = BYTE(s, pi + 3) + BYTE(s, pi + 4) * 256 DC[#DC + 1] = SUB(DICT, off, off + ln - 1) pi = pi + 5 end end s = SUB(table.concat(DC), 1, BYTE(s, 1) + BYTE(s, 2) * 256) DICT = DICT .. s for i = 1, #s do h1, h2 = SH(h1, h2, BYTE(s, i)) end if w == 200 then BSS = s else HW[w] = (LS(s) or PD)() end end local _bq = LS(BSS) if TYP_(_bq) ~= \"function\" then _bq = PD end local _lv0 = _bq() local _lv1 = _lv0(BYTE, CHAR, FLR, SUB, AL, TK_, DC1, R16, CKM_, CKC_, BKM_, BKC_, BSEED_, BSTEP_, TYP_, TSTR_) local _b1, _b2 = _lv1(FN_, NOPA_, PS_, PT_, KM_, KC_, PB_) return HW, _b1, _b2, h1, h2{hpret} end",
 			guard = guard_embed,
 			hpret = hpret,
 			hseed = hseed_e, hstep = hstep_e, hm = hm_e, hc = hc_e,
@@ -2424,6 +2424,9 @@ pub fn generate(
 		);
 		// ㉘-A: HBOOT 元碎片同样净化（名字/注释不泄漏）；㉚: 自由填充
 		// 尾注，随后其字节作为链头进哈希。
+		if std::env::var("LURAPH_HBOOT_DBG").is_ok() {
+			eprintln!("HBOOT_POST_SAN: {}", hboot_src);
+		}
 		let mut hb_bytes =
 			sanitize_frag(&hboot_src, rng, &mut frag_map, &frag_reserved, &mut frag_used)
 				.into_bytes();
@@ -2808,6 +2811,9 @@ pub fn generate(
 			.collect();
 		// ㊶: 蜜罐表接收/贮存（守卫在 HBOOT 掩码层；贮存行形似 VM 状态）
 		let hp_recv = if guard { String::from(", HPH") } else { String::new() };
+		// ㊹: HBOOT 现在返回 6 值 (含 MPF/SALT), PCAL 包装需对应接收位。
+		let hp_r6 = if guard { String::from(", _r6") } else { String::new() };
+		let hp_r6d = hp_r6.clone();
 		let hp_stash = if guard {
 			format!("HW2[{}] = HPH", 256 + rng.int(1, 200))
 		} else {
@@ -2866,21 +2872,16 @@ pub fn generate(
         while _evk ~= nil do EV[_evk] = _evv _evk, _evv = next(_evs, _evk) end
       end
     end
-    local _hbf = LS(HB) if TYP(_hbf) ~= "function" then _hbf = PD end HW, BSS, SH1, SH2{hp_recv} = _hbf()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB, EV, PD)
-    HQ = nil; hqi = nil
-    {hp_stash}
-    {ct_fill}{cx_fill}RTFRAG = HW[208]
     do
       local avt = {{}}
       local ats = TSTR(avt)
       for i = 1, #ats do AV = (AV * 31 + BYTE(ats, i)) % 268435456 end
     end
--- NOTE (㊵ R018 — 攻击方报告 P0 的可行切片): 块钥匙基 RPK1..5 全部混入
--- 每运行必变的 AV (新表地址折叠)。消费两侧 (BSS 运行期编码 / RT 运行期
--- 解码) 都从 boot 拿同一运行期值, 对称性天然成立; 而构建期掩码流
--- (hb/hqi/HQ/MPM 的掩码钥匙) 依对称定理不可混入每运行值 (解密侧必须
--- 精确复算), 那条线的极限 = ㉛ 零和探针 (已在 g 里)。效果: 运行期阶段
--- 全部钥匙每运行不同——静态重放 BSS/RT 阶段的中间态一次性。
+-- NOTE (㊹ R018 报告 P0-2 收口 — 可见层零解码源): AV 与 RPK 前移, BSS 的
+-- loadstring+调用整体搬进 HBOOT——解码态源码 (BSS 全文) 永不落地可见层。
+-- 攻击者无法再在「解码后、loadstring 前」对明文 BSS 字符串做 gsub 手术
+-- (R018 报告的实证攻击路径); 要钩 BSS 必须先破 HBOOT 掩码。链哈希照常
+-- 覆盖 BSS 源码 (碎片链成员), 篡改 ⇒ 钥匙流污染。
     RPK1 = ({pseed} + AV) % 268435456
     RPK2 = ({pstep} + AV) % 268435456
     RPK3 = ({pkm} + AV) % 268435456
@@ -2892,13 +2893,19 @@ pub fn generate(
     RPK9 = {shcc1}
     RPK10 = {shcc2}
     RPK11 = {shccc}
+    local _hok, _r1, _r2, _r3, _r4, _r5{hp_r6d} = PCAL(function() local _hbf = LS(HB) if TYP(_hbf) ~= "function" then _hbf = PD end return _hbf()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB, EV, PD, FN, NOPA, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TSTR, RPK1, RPK2, RPK3, RPK4, RPK5) end)
+    if not _hok then PD() end
+    HW, MPF, SALT, SH1, SH2{hp_recv} = _r1, _r2, _r3, _r4, _r5{hp_r6}
+    HQ = nil; hqi = nil
+    {hp_stash}
+    {ct_fill}{cx_fill}RTFRAG = HW[208]
     for w, f in pairs(HW) do if w < 256 then HW2[(w + AV) % 256] = f end end
     HW = nil
-    local _bok, _b1, _b2 = PCAL(function() local _bf = LS(BSS) return _bf()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TSTR)(FN, NOPA, ({pseed} + AV) % 268435456, ({pstep} + AV) % 268435456, ({pkm} + AV) % 268435456, ({pkc} + AV) % 268435456, ({pblock} + AV) % 268435456) end) if not _bok then PD() end MPF, SALT = _b1, _b2
-    BSS = nil
   end"#,
 			hq_lines, mb_lines, boot, hqi_masked.join(", "), mb_gather, metavm,
 			hp_recv = hp_recv,
+			hp_r6 = hp_r6,
+			hp_r6d = hp_r6d,
 			hp_stash = hp_stash,
 			hqi_unmask = hqi_unmask,
 			env_a = env_gate_a,

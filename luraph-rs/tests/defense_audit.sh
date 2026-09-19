@@ -430,7 +430,25 @@ else
 	ok "朴素桩 => 静默毒药 (rc=$rc15, 无正确输出/无报错信号)"
 fi
 
+echo "== D16 可见层零解码源消费点 (㊹: R018 报告 P0-2 收口) =="
+# R018 报告实证攻击: 解码态 BSS 源以明文落地可见层, 攻击者在
+# 「解码后、loadstring 前」对明文做 gsub 手术注入探针。㊹ 把 BSS 的
+# loadstring+调用搬进 HBOOT 掩码层, 可见层不得再出现任何「LS(解码源
+# 变量)」消费形态。
+python3 - "$W/d1a.lua" <<'PYD16'
+import re, sys
+s = open(sys.argv[1]).read()
+n1 = len(re.findall(r'local \w+=(\w+)\((\w+)\);return \w+\(\)\(', s))
+n2 = len(re.findall(r'=(\w+)\((\w+)\)\(', s))
+if n1 or n2:
+    print(f"  可见层解码源消费点: 狭义 {n1}, 广义 {n2}")
+    sys.exit(1)
+sys.exit(0)
+PYD16
+[ "$?" == "0" ] && ok "可见层零解码源消费点 (gsub 手术攻击面已关闭)" || bad "可见层仍有解码源消费点"
+
 echo "=================================================="
 echo "防御审计: PASS $pass   FAIL $fail"
 [ "$fail" == "0" ] && echo "ALL DEFENSES ACTIVE" || exit 1
 #   D15 环境绑定语义强化 — 朴素桩场景必须静默毒药 (㊸)
+#   D16 可见层零解码源消费点 — 解码源不得落地可见层 (㊹, R018 P0-2)
