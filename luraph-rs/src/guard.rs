@@ -43,28 +43,26 @@ use crate::rng::Rng;
 /// The guard IIFE (verbatim user design; the trailing `print(255)`
 /// test harness is NOT included — only `local _guard = (...)`).
 const GUARD_PREAMBLE: &str = r###"local _guard = (function()
-	-- ㊶: EV = 可见引导以裸全局引用捕获的应用环境全局表（setfenv 影子
-	-- 环境里的值）。守卫位于 HBOOT 掩码层（标准环境加载），必须经 EV
-	-- 才能看到攻击者的影子环境替换——EV 缺省(旧管线)时退回裸全局。
-	-- EV 索引: 1=type 2=pcall 3=xpcall 4=error 5=rawget 6=rawset
-	-- 7=getmetatable 8=setmetatable 9=tostring 10=tonumber 11=string
-	-- 12=unpack 13=print 14=warn 15=newproxy 16=debug 17=getfenv 18=_G
-	local type = (EV and EV[1]) or type
-	local pcall = (EV and EV[2]) or pcall
-	local xpcall = (EV and EV[3]) or xpcall
-	local error = (EV and EV[4]) or error
-	local rawget = (EV and EV[5]) or rawget
-	local rawset = (EV and EV[6]) or rawset
-	local getmetatable = (EV and EV[7]) or getmetatable
-	local setmetatable = (EV and EV[8]) or setmetatable
-	local tostring = (EV and EV[9]) or tostring
-	local tonumber = (EV and EV[10]) or tonumber
-	local gmatch = (EV and EV[11] and EV[11]["gmatch"]) or (_G["string"] and _G["string"]["gmatch"])
-	local unpack = (EV and EV[12]) or _G["unpack"] or (_G["table"] and _G["table"]["unpack"])
-	local print = (EV and EV[13]) or print
-	local warn = (EV and EV[14]) or (_G and _G["warn"])
-	local newproxy = (EV and EV[15]) or newproxy
-	local debugInfo = (EV and EV[16] and EV[16]["info"]) or (_G["debug"] and _G["debug"]["info"])
+	-- ㊶: EV = 可见引导以 getfenv(1) 克隆的应用环境（setfenv 影子环境
+	-- 的值也一并入克隆）。守卫位于 HBOOT 掩码层（标准环境加载），必须
+	-- 经 EV 才能看到攻击者的影子环境替换——EV 缺省(旧管线)时退回裸全局。
+	-- 字符串索引（本段在掩码层内，名字不可见）。
+	local type = (EV and EV["type"]) or type
+	local pcall = (EV and EV["pcall"]) or pcall
+	local xpcall = (EV and EV["xpcall"]) or xpcall
+	local error = (EV and EV["error"]) or error
+	local rawget = (EV and EV["rawget"]) or rawget
+	local rawset = (EV and EV["rawset"]) or rawset
+	local getmetatable = (EV and EV["getmetatable"]) or getmetatable
+	local setmetatable = (EV and EV["setmetatable"]) or setmetatable
+	local tostring = (EV and EV["tostring"]) or tostring
+	local tonumber = (EV and EV["tonumber"]) or tonumber
+	local gmatch = (EV and EV["string"] and EV["string"]["gmatch"]) or (_G["string"] and _G["string"]["gmatch"])
+	local unpack = (EV and EV["unpack"]) or _G["unpack"] or (_G["table"] and _G["table"]["unpack"])
+	local print = (EV and EV["print"]) or print
+	local warn = (EV and EV["warn"]) or (_G and _G["warn"])
+	local newproxy = (EV and EV["newproxy"]) or newproxy
+	local debugInfo = (EV and EV["debug"] and EV["debug"]["info"]) or (_G["debug"] and _G["debug"]["info"])
 	local failed = false
 
 	local function abort()

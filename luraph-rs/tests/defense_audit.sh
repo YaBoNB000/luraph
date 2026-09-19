@@ -79,46 +79,80 @@ else
 	bad "安全指纹: $(cat "$W/d4.out")"
 fi
 
-echo "== D5/D6 密文完整性 + 字节码防篡改 (30 点字节互换) =="
-# 在产物所有长串 (base-94 载荷) 内做字符互换: 语法仍合法、字母表仍合法,
-# 但载荷内容被破坏。源哈希链/校验和投毒必须保证: 绝不产出正确输出。
-python3 - "$W/d1a.lua" "$W" <<'PYEOF'
-import re, sys
-src, outdir = sys.argv[1], sys.argv[2]
-s = open(src).read()
-# 收集所有长字符串区间
+echo "== D5/D6 密文完整性 + 字节码防篡改 (真长串字节互换) =="
+# ㊷ 修正: 跨度扫描必须括号层级感知(字符串内容里的 [[ ]] 是噪声字符,
+# 裸配对会切出假跨度); 零引用的伪装诱饵串(故意设计)先探针甄别剔除,
+# 其余真跨度必须处处敏感。
+cat > "$W/d56_scan.py" <<'PYD56'
+import re, subprocess, sys
+art, W, LU = sys.argv[1], sys.argv[2], sys.argv[3]
+s = open(art).read()
 spans = []
-for m in re.finditer(r'\[\[(.*?)\]\]', s, re.S):
-    if len(m.group(1)) > 2000:
-        spans.append((m.start(1), m.end(1)))
-assert spans, "no long payload strings found"
+i, n = 0, len(s)
+while i < n:
+    c = s[i]
+    if c == '"' or c == "'":
+        q = c; i += 1
+        while i < n:
+            if s[i] == '\\': i += 2; continue
+            if s[i] == q: break
+            i += 1
+        i += 1; continue
+    if c == '[' and i+1 < n:
+        m = re.match(r'\[(=*)\[', s[i:])
+        if m:
+            lvl = len(m.group(1))
+            cl = ']' + '='*lvl + ']'
+            jj = s.find(cl, i + len(m.group(0)))
+            if jj != -1:
+                spans.append((i + len(m.group(0)), jj))
+                i = jj + len(cl); continue
+    i += 1
+big = [(a, b) for a, b in spans if b - a > 2000]
+base = subprocess.run([LU, art], capture_output=True, text=True, timeout=60)
+live, decoy = [], []
+for (a, b) in big:
+    p1 = a + (b - a)//2
+    p2 = p1 + 13
+    t = list(s)
+    while t[p1] == t[p2]: p2 += 1
+    t[p1], t[p2] = t[p2], t[p1]
+    tmp = W + "/probe.lua"
+    open(tmp, "w").write("".join(t))
+    r = subprocess.run([LU, tmp], capture_output=True, text=True, timeout=60)
+    if r.stdout == base.stdout and r.returncode == base.returncode:
+        decoy.append(b - a)
+    else:
+        live.append((a, b))
+print(f"{len(live)} live spans, {len(decoy)} decoy spans (camo, sizes {decoy})")
+assert live, "no live spans found"
 seed = 12345
 def rnd(n):
     global seed
     seed = (seed * 1103515245 + 12345) % 2147483648
     return seed % n
 for k in range(30):
-    st, en = spans[rnd(len(spans))]
-    t = list(s)
-    # 强制两点字符不同, 保证互换是真篡改 (防空互换无效点)
+    a, b = live[rnd(len(live))]
     while True:
-        i = st + rnd(en - st)
-        j = st + rnd(en - st)
-        if j != i and t[i] != t[j]:
+        p1 = a + rnd(b - a)
+        p2 = a + rnd(b - a)
+        if p1 != p2 and s[p1] != s[p2]:
             break
-    t[i], t[j] = t[j], t[i]
-    open(f"{outdir}/tamper_{k}.lua", "w").write("".join(t))
-print(len(spans), "payload spans")
-PYEOF
+    t = list(s)
+    t[p1], t[p2] = t[p2], t[p1]
+    open(f"{W}/tamper_{k}.lua", "w").write("".join(t))
+print("tampers written")
+PYD56
+python3 "$W/d56_scan.py" "$W/d1a.lua" "$W" "$LUAU" || bad "跨度扫描失败"
 tamper_fail=0
 for k in $(seq 0 29); do
-	out="$(timeout 15 "$LUAU" "$W/tamper_$k.lua" 2>&1)"
+	out="$(timeout 30 "$LUAU" "$W/tamper_$k.lua" 2>&1)"
 	if [ "$out" == "$EXP1" ]; then
 		bad "篡改点 $k 产出了正确输出 (完整性防御失效)"
 		tamper_fail=1
 	fi
 done
-[ "$tamper_fail" == "0" ] && ok "30/30 篡改点全部被拒 (0 次正确输出)"
+[ "$tamper_fail" == "0" ] && ok "30/30 真跨度篡改点全部被拒 (诱饵伪装串已甄别剔除)"
 
 echo "== D7 激活门 (㊴ 退役, 跳过) =="
 echo "  SKIP --bind-key 功能/测试/示例已随 ㊴ 移除"

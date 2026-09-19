@@ -2613,13 +2613,12 @@ pub fn generate(
 		let v_clock = "hclk";
 		let v_s = "hsarg";
 			let v_ts = "hts";
-		let v_npx = "hnpx";
 		boot.push_str(&boot_names_block(
 			rng,
 			&[
 				(v_ts, "tostring"), (v_ls, "loadstring"), (v_dbg, "debug"),
 				(v_inf, "info"), (v_s, "s"), (v_os, "os"),
-				(v_clock, "clock"), (v_npx, "newproxy"),
+				(v_clock, "clock"),
 			],
 			&|v: i64, r: &mut Rng| obf_num(v as u64, r),
 		));
@@ -2813,7 +2812,14 @@ pub fn generate(
     end
     {env_gate}local hqi = {{{}}}
     {hqi_unmask}{}    {}
-    local HB = table.concat(MH)    local EV = {{type, pcall, xpcall, error, rawget, rawset, getmetatable, setmetatable, tostring, tonumber, string, unpack, print, warn, GFE(0)[{v_npx}], debug, getfenv, _G}}
+    local HB = table.concat(MH)    local EV = {{}}
+    do
+      local _evs = GFE(1)
+      if TYP(_evs) == "table" then
+        local _evk, _evv = next(_evs)
+        while _evk ~= nil do EV[_evk] = _evv _evk, _evv = next(_evs, _evk) end
+      end
+    end
     HW, BSS, SH1, SH2{hp_recv} = LS(HB)()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB, EV)
     HQ = nil; hqi = nil
     {hp_stash}
@@ -2851,7 +2857,7 @@ pub fn generate(
 			hqi_unmask = hqi_unmask,
 			env_gate = env_gate,
 			strlit = strlit,
-			v_ls = v_ls, v_ts = v_ts, v_dbg = v_dbg, v_inf = v_inf, v_npx = v_npx,
+			v_ls = v_ls, v_ts = v_ts, v_dbg = v_dbg, v_inf = v_inf,
 			v_os = v_os, v_clock = v_clock,
 			v_s = v_s,
 			nlok_delta = nlok_delta_e,
