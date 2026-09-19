@@ -55,9 +55,10 @@ else
 	fi
 fi
 
-# (d) ㊸ 环境绑定去中心化形态：绑定态 = 模块表槽捕获（Vector3.new 等，
-# 混入原语槽族）+ 引导三段槽位间接调用 + ef1 折叠进元钥匙流；
-# 未绑定态只保留无害的 ef1 声明，无折叠消费。
+# (d) ㊸/㊺ 环境绑定去中心化形态：绑定态 = 模块表槽捕获（Vector3.new 等，
+# 混入原语槽族）+ 引导三段槽位间接调用 + ef1 双消费（㊺: hqi 解掩种子
+# 前移消费 + 元钥匙流消费）；未绑定态只保留无害的 ef1 声明，无折叠消费。
+# （㊺ 正向等价/顺序守卫见 faithful_stub_test.sh。）
 rm -f /tmp/vm_tsrc.lua
 LURAPH_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --bind-env roblox --seed 42 "$SRC" "$BG_TMP/bound2.lua" >/dev/null 2>&1
 if grep -q "ef1%\|ef1 %" /tmp/vm_tsrc.lua 2>/dev/null && grep -q "Vector3\.new" "$BG_TMP/bound2.lua"; then

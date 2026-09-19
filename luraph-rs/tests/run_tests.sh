@@ -150,6 +150,13 @@ done
 source "$ROOT/tests/env_bind_test.sh"
 
 # ---------------------------------------------------------------
+# 增量㊺ — 绑定折叠前移 + ef1 读前写/镜像错位根治: 忠实仿真正向等价
+# （绑定态产物在忠实桩环境必须跑通且输出逐字一致）+ ef1 赋值早于消费
+# 的顺序回归守卫 + hqi 解掩种子前移消费存在性。
+# ---------------------------------------------------------------
+source "$ROOT/tests/faithful_stub_test.sh"
+
+# ---------------------------------------------------------------
 # 增量㉒ (选项B — B-2 碎片即用即毁): prototypes live ENCODED at rest;
 # boot destroys the flat decoded table, per-call DDEC materializes one
 # frame's bytecode into fresh tables. Verifies template shape (ENC/

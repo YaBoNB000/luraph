@@ -2548,6 +2548,135 @@ pub fn generate(
 		manifest_key("SH_CC1", sh_cc1 as u64);
 		manifest_key("SH_CC2", sh_cc2 as u64);
 		manifest_key("SH_CCC", sh_ccc as u64);
+		// 增量⑱ (选项B路线一 — 输入绑定): when bound, the seed gains a
+		// term `(ak - AK) * mix` where ak = fold31(first vararg) is
+		// computed at boot and AK = fold31(activation) is assembled
+		// from the key tables (no literal). Correct activation -> the
+		// term vanishes and HBOOT decodes; wrong/missing input shifts
+		// the meta keystream -> HBOOT decodes to garbage -> loadstring
+		// yields nil -> death before ANY bytecode surfaces. The whole
+		// decode pipeline (HBOOT -> HQ fragments -> parser) sits
+		// behind this one gate; the compile-time masking mirror is
+		// untouched (its seed is the constant meta_seed).
+		// ㉔-2 (R008 回合 — 环境值绑定): R008 实测攻击第 1 步 = 给
+		// `task.defer`/`Vector3.new`/`Vector2.new` 塞**哑桩**（任意返回
+		// 值），模块表构造过了就完事。㉑ 只绑「存在性」；本轮把目标运行时
+		// 的**值**揉进元钥匙流：boot 用每构建随机参数调 `Vector3.new`/
+		// `Vector2.new`，对返回对象的 `.X/.Y/.Z` 分量做每构建随机系数
+		// 线性折叠——哑桩（不读构造参数）折出垃圾值 → 元钥匙流污染 →
+		// HBOOT 解出垃圾 → 错钥静默死亡。桩必须**忠实实现构造语义**
+		// （正确回传分量）才能过关。分量算术全整数精确（float32 分量
+		// 存小整数无损，Lua 侧 double 运算精确），目标运行时/沙箱一致。
+		// 诚实边界：受控沙箱若完整仿真这些 API 仍能过（R004 定律）——
+		// 抬的是「任意桩」到「忠实仿真」的成本。
+		// ㉛ (R014 回合 — P0-1): 「(x - K) * mix」减法零化形被攻击方一眼
+		// 识破（正常态恒零 → 整项可忽略，反钩防线形同虚设）。改为分裂
+		// 乘积直参形：x = x_lo + x_hi·2^16，两项各自乘预混常量——哈希
+		// **直接**参与种子（攻击方建议 B 的形态），零化量折进总补偿常数
+		// （SEED_COMP，KT 装配）。数值边界：单积 < 2^16·2^28 = 2^44，
+		// 七项和 < 2^47，double 全程精确。
+		// ㊸ (环境绑定去中心化, 对照样本 15): 环境值折叠拆散成三段引导
+		// 算术（槽位间接调用，无裸 API 名，无成块闸门形态）。语义探针:
+		//   (1) 分量线性折叠（Vector3/Vector2 构造分量）
+		//   (2) typeof(v3) 的 31 进折叠——真运行时 = "Vector3"；简单桩
+		//       对象 = "table" ⇒ 折出异值 ⇒ 元钥匙流污染
+		//   (3) tostring(v3) 的 31 进折叠——真运行时 = "x, y, z" 确定
+		//       格式；无 __tostring 的桩 = 地址串（每次运行都不同）
+		// 失败形态 = 毒药（静默错钥），不抛错、不给信号。
+		// ㊺ (绑定折叠前移 + 读前写根治): 两件同根的事——
+		//  (1) P0 修复: ㊸ 把段 B/C 排到 metavm 种子消费点之后，ef1 以初值
+		//      0 被消费 ⇒ 环境值绑定实为死代码，且补偿常数按「ef1 折出
+		//      env_exp」设计 ⇒ 绑定态产物在**目标运行时**也解出垃圾、
+		//      PD 挂死（忠实桩实测复现）。段 B/C 前移到 hqi 解掩之前，
+		//      ef1 的两处消费（hqi 解掩种子 + metavm 元种子）都读得到终值。
+		//  (2) 前移（对标样本 15 的「折在引导期最早期、死得早」）: ef1 新增
+		//      揉进 hqi 段表解掩种子——引导期**第一个**解码步骤即环境绑定，
+		//      错误环境下段表先解出垃圾，死亡面更早、更无溯源点；元钥匙流
+		//      消费保留（双独立消费面）。分裂乘积直参形/补偿结构与元种子
+		//      同款（㉛ 精度边界: 单积 < 2^16·2^28，两项和 < 2^45，精确）。
+		let (env_gate_a, env_gate_b, env_gate_c, env_term, env_comp, env_exp) =
+			if let Some(es) = env_slots {
+				let ea: Vec<i64> = (0..5).map(|_| rng.int(1, 999)).collect();
+				// ea[0..3] = v3 分量, ea[3..5] = v2 分量；第二调用点分量 +1/+2/+3
+				let ec: Vec<i64> = (0..9).map(|_| rng.int(1, 999)).collect();
+				let fold31 = |t: &str| -> i64 {
+					let mut h: i64 = 0;
+					for b in t.bytes() {
+						h = (h * 31 + b as i64) % KEY_MOD;
+					}
+					h
+				};
+				let f_ty = fold31("Vector3Vector3"); // 两次 typeof 串接折叠
+				let f_ts = fold31(&format!("{}, {}, {}", ea[0], ea[1], ea[2]));
+				// ㊺ (镜像与门严格同形): gate_c 运行期形态 =
+				//   ((S*ec5 + EN3*ec6 + EN6*ec7) * ec8) % M,
+				//   S = Σ comp_i·ec[i] (i=0..4), EN3=f_ty, EN6=f_ts。
+				// 旧镜像分组 ((S + f_ty·ec5 + f_ts·ec6)·ec7) 与门错位
+				// （㊸ 重构引入、被 ef1 读前写掩盖）⇒ 忠实环境也折不出
+				// 期望值。此处逐位对齐；中间取模不改变终值（模算术）。
+				let esum = (ea[0] * ec[0]
+					+ ea[1] * ec[1]
+					+ ea[2] * ec[2]
+					+ ea[3] * ec[3]
+					+ ea[4] * ec[4])
+					% KEY_MOD;
+				let einner = (esum * ec[5] + f_ty * ec[6] + f_ts * ec[7]) % KEY_MOD;
+				let env_exp = (einner * ec[8]) % KEY_MOD;
+				let env_mix = rng.int(1_048_576, KEY_MOD - 1);
+				let env_mix_e = ke.key_expr(env_mix, None, rng);
+				let env_mix_hi = (env_mix * 65536) % KEY_MOD;
+				let env_mix_hi_e = ke.key_expr(env_mix_hi, None, rng);
+				manifest_key("ENV_EXP", env_exp as u64);
+				manifest_key("ENV_MIX", env_mix as u64);
+				manifest_key("ENV_MIX_HI", env_mix_hi as u64);
+				// 段 A（env_gate 原位）: 两次 Vector3.new 槽调用 + typeof 双折叠
+				let gate_a = format!(
+					"local EN1 = b[{s0}]({a0}, {a1}, {a2}) local EN7 = b[{s0}]({a0b}, {a1b}, {a2b}) local EN3 = 0 do local ENt = b[{s3}](EN1) for ENi = 1, #ENt do EN3 = (EN3 * 31 + BYTE(ENt, ENi)) % 268435456 end local ENt2 = b[{s3}](EN7) for ENi = 1, #ENt2 do EN3 = (EN3 * 31 + BYTE(ENt2, ENi)) % 268435456 end end\n    ",
+					s0 = es[0], s3 = es[3],
+					a0 = obf_num(ea[0] as u64, rng),
+					a1 = obf_num(ea[1] as u64, rng),
+					a2 = obf_num(ea[2] as u64, rng),
+					a0b = obf_num((ea[0] + 1) as u64, rng),
+					a1b = obf_num((ea[1] + 2) as u64, rng),
+					a2b = obf_num((ea[2] + 3) as u64, rng),
+				);
+				// 段 B（㊺: hqi 解掩前、段 A 之后）: Vector2.new + tostring(v3) 折叠
+				let gate_b = format!(
+					"local EN4 = b[{s1}]({a3}, {a4}) local EN6 = 0 do local ENs = TSTR(EN1) for ENi = 1, #ENs do EN6 = (EN6 * 31 + BYTE(ENs, ENi)) % 268435456 end end\n    ",
+					s1 = es[1],
+					a3 = obf_num(ea[3] as u64, rng),
+					a4 = obf_num(ea[4] as u64, rng),
+				);
+				// 段 C（㊺: hqi 解掩前）: 终合 ef1——必须先于 hqi 解掩与
+				// metavm 种子两处消费点完成赋值（㊸ 曾把 B/C 段排在消费点
+				// 之后，ef1 恒以初值 0 被消费，绑定实死且补偿失配 ⇒ 目标
+				// 运行时挂死；㊺ 读前写根治 + 折叠前移，见块头注释）
+				let gate_c = format!(
+					"ef1 = (((EN1.X * {c0} + EN1.Y * {c1} + EN1.Z * {c2} + EN4.X * {c3} + EN4.Y * {c4}) * {c5} + EN3 * {c6} + EN6 * {c7}) * {c8}) % 268435456\n    ",
+					c0 = obf_num(ec[0] as u64, rng),
+					c1 = obf_num(ec[1] as u64, rng),
+					c2 = obf_num(ec[2] as u64, rng),
+					c3 = obf_num(ec[3] as u64, rng),
+					c4 = obf_num(ec[4] as u64, rng),
+					c5 = obf_num(ec[5] as u64, rng),
+					c6 = obf_num(ec[6] as u64, rng),
+					c7 = obf_num(ec[7] as u64, rng),
+					c8 = obf_num(ec[8] as u64, rng),
+				);
+				(
+					gate_a,
+					gate_b,
+					gate_c,
+					format!(
+						" + (ef1 % 65536) * {} + FLR(ef1 / 65536) * {}",
+						env_mix_e, env_mix_hi_e
+					),
+					(env_exp * env_mix) % KEY_MOD,
+					env_exp,
+				)
+			} else {
+				(String::new(), String::new(), String::new(), String::new(), 0, 0)
+			};
 		// ㉛ (R014 回合 — P2-6): hqi 段表（wire/槽位/长度三元组——攻击方
 		// 原话「最贵的一份结构信息，白送」）改为加性 LCG 掩码落盘，引导
 		// 期即解。静态侦察拿不到段数/长度/槽位；攻击方固化的段表正则失效。
@@ -2560,7 +2689,32 @@ pub fn generate(
 		manifest_key("HQI_KM", hqi_km as u64);
 		manifest_key("HQI_KS", hqi_ks0 as u64);
 		manifest_key("HQI_KC", hqi_kc as u64);
-		let mut hks = hqi_ks0;
+		// ㊺ (绑定折叠前移): hqi 段表解掩种子 = 引导期第一个解码步骤。
+		// 绑定态把 ef1（环境值折叠）以分裂乘积直参形揉进种子：忠实环境
+		// ef1 == env_exp ⇒ 解掩种子还原 hqi_ks0（镜像同步）；环境失真 ⇒
+		// 段表先解出垃圾（比元钥匙流污染更早的死亡面）。未绑定态不引用
+		// ef1（种子保持纯常量形态，字节级零混入）。
+		let (hqi_seed_rt, hqi_ks0_eff) = if env_slots.is_some() {
+			let hqi_env_mix = rng.int(1_048_576, KEY_MOD - 1);
+			let hqi_env_mix_hi = (hqi_env_mix * 65536) % KEY_MOD;
+			let hqi_env_mix_e = ke.key_expr(hqi_env_mix, None, rng);
+			let hqi_env_mix_hi_e = ke.key_expr(hqi_env_mix_hi, None, rng);
+			manifest_key("HQI_ENV_MIX", hqi_env_mix as u64);
+			manifest_key("HQI_ENV_MIX_HI", hqi_env_mix_hi as u64);
+			(
+				format!(
+					"({} + (ef1 % 65536) * {} + FLR(ef1 / 65536) * {}) % 268435456",
+					hqi_ks0_e, hqi_env_mix_e, hqi_env_mix_hi_e
+				),
+				(hqi_ks0
+					+ (env_exp % 65536) * hqi_env_mix
+					+ (env_exp / 65536) * hqi_env_mix_hi)
+					% KEY_MOD,
+			)
+		} else {
+			(hqi_ks0_e.clone(), hqi_ks0)
+		};
+		let mut hks = hqi_ks0_eff;
 		let hqi_masked: Vec<String> = hqi_vals
 			.iter()
 			.map(|v| {
@@ -2570,7 +2724,7 @@ pub fn generate(
 			.collect();
 		let hqi_unmask = format!(
 			"do\n      local hqs, hqm, hqc = {}, {}, {}\n      for hqi_ = 1, #hqi do hqs = (hqm * hqs + hqc) % 268435456 hqi[hqi_] = hqi[hqi_] - hqs end\n    end\n    ",
-			hqi_ks0_e, hqi_km_e, hqi_kc_e
+			hqi_seed_rt, hqi_km_e, hqi_kc_e
 		);
 		// meta keystream: fresh random constants assembled through the
 		// same KT lookup machinery (no bare literals; a codec DISTINCT
@@ -2655,115 +2809,6 @@ pub fn generate(
 		// a mini-VM bytecode program (visible dispatcher only). The
 		// seed keeps the ⑯-1 probe-keyed form, fed as MM[1].
 		//
-		// 增量⑱ (选项B路线一 — 输入绑定): when bound, the seed gains a
-		// term `(ak - AK) * mix` where ak = fold31(first vararg) is
-		// computed at boot and AK = fold31(activation) is assembled
-		// from the key tables (no literal). Correct activation -> the
-		// term vanishes and HBOOT decodes; wrong/missing input shifts
-		// the meta keystream -> HBOOT decodes to garbage -> loadstring
-		// yields nil -> death before ANY bytecode surfaces. The whole
-		// decode pipeline (HBOOT -> HQ fragments -> parser) sits
-		// behind this one gate; the compile-time masking mirror is
-		// untouched (its seed is the constant meta_seed).
-		// ㉔-2 (R008 回合 — 环境值绑定): R008 实测攻击第 1 步 = 给
-		// `task.defer`/`Vector3.new`/`Vector2.new` 塞**哑桩**（任意返回
-		// 值），模块表构造过了就完事。㉑ 只绑「存在性」；本轮把目标运行时
-		// 的**值**揉进元钥匙流：boot 用每构建随机参数调 `Vector3.new`/
-		// `Vector2.new`，对返回对象的 `.X/.Y/.Z` 分量做每构建随机系数
-		// 线性折叠——哑桩（不读构造参数）折出垃圾值 → 元钥匙流污染 →
-		// HBOOT 解出垃圾 → 错钥静默死亡。桩必须**忠实实现构造语义**
-		// （正确回传分量）才能过关。分量算术全整数精确（float32 分量
-		// 存小整数无损，Lua 侧 double 运算精确），目标运行时/沙箱一致。
-		// 诚实边界：受控沙箱若完整仿真这些 API 仍能过（R004 定律）——
-		// 抬的是「任意桩」到「忠实仿真」的成本。
-		// ㉛ (R014 回合 — P0-1): 「(x - K) * mix」减法零化形被攻击方一眼
-		// 识破（正常态恒零 → 整项可忽略，反钩防线形同虚设）。改为分裂
-		// 乘积直参形：x = x_lo + x_hi·2^16，两项各自乘预混常量——哈希
-		// **直接**参与种子（攻击方建议 B 的形态），零化量折进总补偿常数
-		// （SEED_COMP，KT 装配）。数值边界：单积 < 2^16·2^28 = 2^44，
-		// 七项和 < 2^47，double 全程精确。
-		// ㊸ (环境绑定去中心化, 对照样本 15): 环境值折叠拆散成三段引导
-		// 算术（槽位间接调用，无裸 API 名，无成块闸门形态）。语义探针:
-		//   (1) 分量线性折叠（Vector3/Vector2 构造分量）
-		//   (2) typeof(v3) 的 31 进折叠——真运行时 = "Vector3"；简单桩
-		//       对象 = "table" ⇒ 折出异值 ⇒ 元钥匙流污染
-		//   (3) tostring(v3) 的 31 进折叠——真运行时 = "x, y, z" 确定
-		//       格式；无 __tostring 的桩 = 地址串（每次运行都不同）
-		// 失败形态 = 毒药（静默错钥），不抛错、不给信号。
-		let (env_gate_a, env_gate_b, env_gate_c, env_term, env_comp) =
-			if let Some(es) = env_slots {
-				let ea: Vec<i64> = (0..5).map(|_| rng.int(1, 999)).collect();
-				// ea[0..3] = v3 分量, ea[3..5] = v2 分量；第二调用点分量 +1/+2/+3
-				let ec: Vec<i64> = (0..9).map(|_| rng.int(1, 999)).collect();
-				let fold31 = |t: &str| -> i64 {
-					let mut h: i64 = 0;
-					for b in t.bytes() {
-						h = (h * 31 + b as i64) % KEY_MOD;
-					}
-					h
-				};
-				let f_ty = fold31("Vector3Vector3"); // 两次 typeof 串接折叠
-				let f_ts = fold31(&format!("{}, {}, {}", ea[0], ea[1], ea[2]));
-				let esum = (ea[0] * ec[0]
-					+ ea[1] * ec[1]
-					+ ea[2] * ec[2]
-					+ ea[3] * ec[3]
-					+ ea[4] * ec[4]
-					+ f_ty * ec[5]
-					+ f_ts * ec[6])
-					% KEY_MOD;
-				let env_exp = (esum * ec[7]) % KEY_MOD;
-				let env_mix = rng.int(1_048_576, KEY_MOD - 1);
-				let env_mix_e = ke.key_expr(env_mix, None, rng);
-				let env_mix_hi = (env_mix * 65536) % KEY_MOD;
-				let env_mix_hi_e = ke.key_expr(env_mix_hi, None, rng);
-				manifest_key("ENV_EXP", env_exp as u64);
-				manifest_key("ENV_MIX", env_mix as u64);
-				manifest_key("ENV_MIX_HI", env_mix_hi as u64);
-				// 段 A（env_gate 原位）: 两次 Vector3.new 槽调用 + typeof 双折叠
-				let gate_a = format!(
-					"local EN1 = b[{s0}]({a0}, {a1}, {a2}) local EN7 = b[{s0}]({a0b}, {a1b}, {a2b}) local EN3 = 0 do local ENt = b[{s3}](EN1) for ENi = 1, #ENt do EN3 = (EN3 * 31 + BYTE(ENt, ENi)) % 268435456 end local ENt2 = b[{s3}](EN7) for ENi = 1, #ENt2 do EN3 = (EN3 * 31 + BYTE(ENt2, ENi)) % 268435456 end end\n    ",
-					s0 = es[0], s3 = es[3],
-					a0 = obf_num(ea[0] as u64, rng),
-					a1 = obf_num(ea[1] as u64, rng),
-					a2 = obf_num(ea[2] as u64, rng),
-					a0b = obf_num((ea[0] + 1) as u64, rng),
-					a1b = obf_num((ea[1] + 2) as u64, rng),
-					a2b = obf_num((ea[2] + 3) as u64, rng),
-				);
-				// 段 B（hqi 解码后）: Vector2.new + tostring(v3) 折叠
-				let gate_b = format!(
-					"local EN4 = b[{s1}]({a3}, {a4}) local EN6 = 0 do local ENs = TSTR(EN1) for ENi = 1, #ENs do EN6 = (EN6 * 31 + BYTE(ENs, ENi)) % 268435456 end end\n    ",
-					s1 = es[1],
-					a3 = obf_num(ea[3] as u64, rng),
-					a4 = obf_num(ea[4] as u64, rng),
-				);
-				// 段 C（HB 拼装前）: 终合 ef1
-				let gate_c = format!(
-					"ef1 = (((EN1.X * {c0} + EN1.Y * {c1} + EN1.Z * {c2} + EN4.X * {c3} + EN4.Y * {c4}) * {c5} + EN3 * {c6} + EN6 * {c7}) * {c8}) % 268435456\n    ",
-					c0 = obf_num(ec[0] as u64, rng),
-					c1 = obf_num(ec[1] as u64, rng),
-					c2 = obf_num(ec[2] as u64, rng),
-					c3 = obf_num(ec[3] as u64, rng),
-					c4 = obf_num(ec[4] as u64, rng),
-					c5 = obf_num(ec[5] as u64, rng),
-					c6 = obf_num(ec[6] as u64, rng),
-					c7 = obf_num(ec[7] as u64, rng),
-					c8 = obf_num(ec[8] as u64, rng),
-				);
-				(
-					gate_a,
-					gate_b,
-					gate_c,
-					format!(
-						" + (ef1 % 65536) * {} + FLR(ef1 / 65536) * {}",
-						env_mix_e, env_mix_hi_e
-					),
-					(env_exp * env_mix) % KEY_MOD,
-				)
-			} else {
-				(String::new(), String::new(), String::new(), String::new(), 0)
-			};
 		// ㉛: pb 项分裂乘积的高半常量（pmx·2^16 mod M）
 		let probe_mix_hi = (probe_mix * 65536) % KEY_MOD;
 		let probe_mix_hi_e = ke.key_expr(probe_mix_hi, None, rng);
@@ -2793,6 +2838,15 @@ pub fn generate(
 			&meta_seed_full, &meta_m_e, &meta_c_e, hb_masked.len(), rng,
 			mpm_seed, mpm_m, mpm_c, &mpm_seed_e, &mpm_m_e, &mpm_c_e,
 		);
+		// LURAPH_BIND_DBG: 仅 Rust 侧镜像诊断（走 stderr，不改产物）。
+		// ㊺ 排查期用它对照「运行期折叠值 == 镜像期望值」。
+		if std::env::var("LURAPH_BIND_DBG").is_ok() {
+			eprintln!(
+				"MIRROR hqi_ks0_eff={} hqi_first_masked={} meta_seed={} comp={} env_exp={} c_fold={} hb_len={}",
+				hqi_ks0_eff, hqi_masked.first().map(|s| s.as_str()).unwrap_or("-"),
+				meta_seed, comp, env_exp, c_fold, hb_masked.len()
+			);
+		}
 		// 增量⑲: build-time-shuffled continuation wiring (which CT slot
 		// holds which encrypted re-entry fragment is per-build random).
 		let mut cont_wires: Vec<u16> = (301..305).collect();
@@ -2843,8 +2897,11 @@ pub fn generate(
     CLK = OS_ and OS_[{v_clock}]
     local pb = 0
     local ef1 = 0
--- NOTE (㊸: ef1 必须在此提前声明——metavm 种子表达式在本行之前发射,
--- 引用先于声明会被解析为全局、逃过 mangle、运行期得 nil。)
+-- NOTE (㊺: ef1 提前声明。两个消费点——hqi 解掩种子与 metavm 元种子
+-- ——都在段 C 赋值之后执行（㊸ 曾把段 B/C 排在消费点之后 ⇒ ef1 恒以
+-- 初值 0 被消费: 绑定实死 + 补偿失配 ⇒ 目标运行时挂死；㊺ 已重排。
+-- 绑定态: 段 A/B/C 先算出终值, hqi 解掩与元种子才消费; 未绑定态:
+-- ef1 恒 0 且无任何消费点引用它。)
 -- NOTE (㊳ 计时守卫复通): the assignment above feeds the OUTER `local CLK`
 -- (no shadowing local) — the RUN call outside this do-block hands it to the
 -- RT fragment as its timing source. History: ㉙ introduced the watchdog,
@@ -2863,8 +2920,8 @@ pub fn generate(
       pb = (pb + (ok and 0 or {nlok_delta})) % 268435456
     end
     {env_a}local hqi = {{{}}}
-    {hqi_unmask}{}    {}
-    {env_b}    {env_c}local HB = table.concat(MH)    local EV = {{}}
+    {env_b}{env_c}{hqi_unmask}{}    {}
+    local HB = table.concat(MH)    local EV = {{}}
     do
       local _evs = GFE(1)
       if TYP(_evs) == "table" then
