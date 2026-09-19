@@ -2738,25 +2738,31 @@ pub fn generate(
     HW, BSS, SH1, SH2 = LS(HB)()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB)
     HQ = nil; hqi = nil
     {ct_fill}{cx_fill}RTFRAG = HW[208]
-    RPK1 = {pseed}
-    RPK2 = {pstep}
-    RPK3 = {pkm}
-    RPK4 = {pkc}
-    RPK5 = {pblock}
+    do
+      local avt = {{}}
+      local ats = TSTR(avt)
+      for i = 1, #ats do AV = (AV * 31 + BYTE(ats, i)) % 268435456 end
+    end
+-- NOTE (㊵ R018 — 攻击方报告 P0 的可行切片): 块钥匙基 RPK1..5 全部混入
+-- 每运行必变的 AV (新表地址折叠)。消费两侧 (BSS 运行期编码 / RT 运行期
+-- 解码) 都从 boot 拿同一运行期值, 对称性天然成立; 而构建期掩码流
+-- (hb/hqi/HQ/MPM 的掩码钥匙) 依对称定理不可混入每运行值 (解密侧必须
+-- 精确复算), 那条线的极限 = ㉛ 零和探针 (已在 g 里)。效果: 运行期阶段
+-- 全部钥匙每运行不同——静态重放 BSS/RT 阶段的中间态一次性。
+    RPK1 = ({pseed} + AV) % 268435456
+    RPK2 = ({pstep} + AV) % 268435456
+    RPK3 = ({pkm} + AV) % 268435456
+    RPK4 = ({pkc} + AV) % 268435456
+    RPK5 = ({pblock} + AV) % 268435456
     RPK6 = {shcb1}
     RPK7 = {shcb2}
     RPK8 = {shcbc}
     RPK9 = {shcc1}
     RPK10 = {shcc2}
     RPK11 = {shccc}
-    do
-      local avt = {{}}
-      local ats = TSTR(avt)
-      for i = 1, #ats do AV = (AV * 31 + BYTE(ats, i)) % 268435456 end
-    end
     for w, f in pairs(HW) do if w < 256 then HW2[(w + AV) % 256] = f end end
     HW = nil
-    MPF, SALT = LS(BSS)()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TSTR)(FN, NOPA, {pseed}, {pstep}, {pkm}, {pkc}, {pblock})
+    MPF, SALT = LS(BSS)()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TSTR)(FN, NOPA, ({pseed} + AV) % 268435456, ({pstep} + AV) % 268435456, ({pkm} + AV) % 268435456, ({pkc} + AV) % 268435456, ({pblock} + AV) % 268435456)
     BSS = nil
   end"#,
 			hq_lines, mb_lines, boot, hqi_masked.join(", "), mb_gather, metavm,
