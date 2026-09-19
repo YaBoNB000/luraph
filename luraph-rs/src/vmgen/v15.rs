@@ -647,11 +647,6 @@ pub fn scaffold(
 	// 增量⑬: two numeric slots holding the key-assembly lookup tables
 	// (st1/st2) used by the kg generator and the carrier fold handlers.
 	st_slots: &[i64],
-	// 增量⑱ (输入绑定): forward the user-facing varargs through the
-	// entry closure into the VM (first vararg = activation key, the
-	// rest is handed to the program). Off = the historical shape, so
-	// unbound output stays byte-identical.
-	bind_passthrough: bool,
 	// 增量㊱ (引导层悬挂标识符修复): the interpreter's free identifiers
 	// (post-mangle globals). The scaffold embeds the interpreter source
 	// inside handler closures, so a scaffold name colliding with a free
@@ -1399,14 +1394,8 @@ pub fn scaffold(
 		// then aliases itself over to the entry closure (runtime
 		// named-field write, F26).
 		let wrap_n: i64 = rng.int(4, 40);
-		// 增量⑱ (输入绑定): when bound, the entry closure appends the
-		// user-facing varargs after the carrier params, so the VM's own
-		// `...` carries (activation, data...) into the boot gate.
-		let vm_args = if bind_passthrough {
-			format!("{},...", cargs.join(","))
-		} else {
-			cargs.join(",")
-		};
+		// ㊴ (激活门退役): 入口闭包只转发载体参数（历史未绑定形态）。
+		let vm_args = cargs.join(",");
 		let src = format!(
 			"function(b,C,{ra},{rb},{rc},{rd},{re}) \
 			 local E=function(...) return C[{vmslot}]({vm_args}) end; \

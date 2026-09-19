@@ -164,23 +164,6 @@ fn obf_num(n: u64, rng: &mut Rng) -> String {
 
 use super::manifest_key;
 
-/// 增量⑳ (选项B·激活值多因子化): nonlinear activation hash shared by
-/// the compile-time AK fold (Rust) and the runtime gate (Lua/bit32).
-/// Must stay byte-for-byte identical to the Lua mirror in the boot gate:
-///   h ^= b; h = lrotate(h, rot); h ^= (h*mul + b) & 0xFFFFFFFF
-/// The xor/rotate/multiply mix is nonlinear (fold31 was linear and
-/// algebraically foldable), and two independent (seed,rot,mul) factors
-/// are mixed so a collision must satisfy both at once.
-fn activation_hash(key: &[u8], seed: u32, rot: u32, mul: u32) -> u32 {
-	let mut h: u32 = seed;
-	for &b in key {
-		h ^= b as u32;
-		h = h.rotate_left(rot);
-		h ^= h.wrapping_mul(mul).wrapping_add(b as u32);
-	}
-	h
-}
-
 /// 增量⑩ (防静态, 报告突破口 #5/#2) + 增量⑬ (对抗 R002 符号求值):
 /// key material is never emitted as a literal AND no key has a closed
 /// arithmetic form. R002 folded every `(A*B+C)%2^28` fragment recipe
@@ -1037,14 +1020,7 @@ pub fn generate(
 	// into the boot keystream — a mock stub that ignores constructor
 	// args contaminates the key. v15 only.
 	bind_env: Option<&str>,
-	// 增量⑱ (选项B路线一 — 输入绑定/激活门): activation string known
-	// at obfuscation time. v15 only (asserted below).
-	bind_key: Option<&str>,
 ) -> String {
-	assert!(
-		bind_key.is_none() || v15,
-		"--bind-key rides the v15 boot chain (legacy VM has no gate)"
-	);
 	let mut oc_items = Vec::new();
 	for (i, name) in OP_NAMES.iter().enumerate() {
 		oc_items.push(format!("{name} = {}", map.to_wire[i]));
@@ -2614,16 +2590,6 @@ pub fn generate(
 		// decode pipeline (HBOOT -> HQ fragments -> parser) sits
 		// behind this one gate; the compile-time masking mirror is
 		// untouched (its seed is the constant meta_seed).
-		let mut ak_fold: i64 = 0;
-		let mut ak2_fold: i64 = 0;
-		if let Some(key) = bind_key {
-			// 增量⑳: two independent nonlinear factors (mirror in the gate)
-			ak_fold = (activation_hash(key.as_bytes(), 0x811c_9dc5, 7, 31)
-				% 268_435_456) as i64;
-			ak2_fold = (activation_hash(key.as_bytes(), 0x0100_0193, 13, 37)
-				% 268_435_456) as i64;
-			assert!(ak_fold != 0, "activation fold collapsed to 0 (== no-input fold)");
-		}
 		// ㉔-2 (R008 回合 — 环境值绑定): R008 实测攻击第 1 步 = 给
 		// `task.defer`/`Vector3.new`/`Vector2.new` 塞**哑桩**（任意返回
 		// 值），模块表构造过了就完事。㉑ 只绑「存在性」；本轮把目标运行时
@@ -2687,67 +2653,17 @@ pub fn generate(
 		let probe_mix_hi = (probe_mix * 65536) % KEY_MOD;
 		let probe_mix_hi_e = ke.key_expr(probe_mix_hi, None, rng);
 		manifest_key("PROBE_MIX_HI", probe_mix_hi as u64);
-		let (ak_gate, meta_seed_full) = if bind_key.is_some() {
-			let bind_mix = rng.int(1_048_576, KEY_MOD - 1);
-			let bind_mix_e = ke.key_expr(bind_mix, Some(("#hqi", n_hqi)), rng);
-			let bind_mix2 = rng.int(1_048_576, KEY_MOD - 1);
-			let bind_mix2_e = ke.key_expr(bind_mix2, Some(("#hqi", n_hqi)), rng);
-			let bind_mix_hi = (bind_mix * 65536) % KEY_MOD;
-			let bind_mix_hi_e = ke.key_expr(bind_mix_hi, Some(("#hqi", n_hqi)), rng);
-			let bind_mix2_hi = (bind_mix2 * 65536) % KEY_MOD;
-			let bind_mix2_hi_e = ke.key_expr(bind_mix2_hi, Some(("#hqi", n_hqi)), rng);
-			manifest_key("BIND_AK", ak_fold as u64);
-			manifest_key("BIND_AK2", ak2_fold as u64);
-			manifest_key("BIND_MIX", bind_mix as u64);
-			manifest_key("BIND_MIX2", bind_mix2 as u64);
-			manifest_key("BIND_MIX_HI", bind_mix_hi as u64);
-			manifest_key("BIND_MIX2_HI", bind_mix2_hi as u64);
-			// ㉛: 总补偿常数 = meta_seed − Σ(目标值·混元)（mod 2^28）。
-			// 干净环境各探针折出目标值 ⇒ 种子恰还原 meta_seed；任何
-			// 探针被钩/环境失真 ⇒ 对应直参项偏移 ⇒ 元钥匙流污染。
-			let comp = (meta_seed - c_fold * probe_mix - env_comp
-				- (ak_fold * bind_mix) % KEY_MOD
-				- (ak2_fold * bind_mix2) % KEY_MOD)
-				.rem_euclid(KEY_MOD);
-			let comp_e = ke.key_expr(comp, None, rng);
-			manifest_key("SEED_COMP", comp as u64);
-			let dbg = if std::env::var("LURAPH_BIND_DBG").is_ok() {
-				"print('DBGAK', TYP(akv), TSTR(akv), ak1, ak2)\n    "
-			} else {
-				""
-			};
-			// 增量⑳: nonlinear two-factor fold (bit32). Seeds are emitted
-			// through obf_num (no recognizable FNV constant in output);
-			// the gate lives in the visible boot but its TARGET (AK1/AK2)
-			// stays assembled in the key tables.
-			let seed1_e = obf_num(0x811c_9dc5, rng);
-			let seed2_e = obf_num(0x0100_0193, rng);
-			let gate = format!(
-				"local akv = ...\n    local ak1 = {seed1}\n    local ak2 = {seed2}\n    if TYP(akv) == {strlit} then\n      for aki = 1, #akv do\n        local b = BYTE(akv, aki)\n        ak1 = bit32.bxor(ak1, b)\n        ak1 = bit32.lrotate(ak1, 7)\n        ak1 = bit32.bxor(ak1, bit32.band(ak1 * 31 + b, 4294967295))\n        ak2 = bit32.bxor(ak2, b)\n        ak2 = bit32.lrotate(ak2, 13)\n        ak2 = bit32.bxor(ak2, bit32.band(ak2 * 37 + b, 4294967295))\n      end\n      ak1 = ak1 % 268435456\n      ak2 = ak2 % 268435456\n    end\n    {dbg}    ",
-				seed1 = seed1_e,
-				seed2 = seed2_e,
-				strlit = strlit,
-				dbg = dbg,
-			);
-			let seed = format!(
-				"({} + (pb % 65536) * {} + FLR(pb / 65536) * {}{} + (ak1 % 65536) * {} + FLR(ak1 / 65536) * {} + (ak2 % 65536) * {} + FLR(ak2 / 65536) * {}) % 268435456",
-				comp_e, probe_mix_e, probe_mix_hi_e, env_term,
-				bind_mix_e, bind_mix_hi_e, bind_mix2_e, bind_mix2_hi_e
-			);
-			(gate, seed)
-		} else {
-			// ㉛: 无绑定形态——补偿 = meta_seed − c_fold·pmx − env 补偿
-			let comp = (meta_seed - c_fold * probe_mix - env_comp).rem_euclid(KEY_MOD);
-			let comp_e = ke.key_expr(comp, None, rng);
-			manifest_key("SEED_COMP", comp as u64);
-			(
-				String::new(),
-				format!(
-					"({} + (pb % 65536) * {} + FLR(pb / 65536) * {}{}) % 268435456",
-					comp_e, probe_mix_e, probe_mix_hi_e, env_term
-				),
-			)
-		};
+		// ㊴ (激活门退役): --bind-key 输入绑定整体移除——仅存未绑定形态。
+		// ㉛: 补偿 = meta_seed − c_fold·pmx − env 补偿；干净环境各探针折出
+		// 目标值 ⇒ 种子恰还原 meta_seed；任何探针被钩/环境失真 ⇒ 对应直参
+		// 项偏移 ⇒ 元钥匙流污染（环境探针防线不受激活门退役影响）。
+		let comp = (meta_seed - c_fold * probe_mix - env_comp).rem_euclid(KEY_MOD);
+		let comp_e = ke.key_expr(comp, None, rng);
+		manifest_key("SEED_COMP", comp as u64);
+		let meta_seed_full = format!(
+			"({} + (pb % 65536) * {} + FLR(pb / 65536) * {}{}) % 268435456",
+			comp_e, probe_mix_e, probe_mix_hi_e, env_term
+		);
 		// ㉛: MP 程序字掩码钥匙（每构建随机，KT 装配）
 		let mpm_seed = rng.int(1_048_576, KEY_MOD - 1);
 		let mpm_m = rng.int(1_048_577, 33_000_001) | 1;
@@ -2816,7 +2732,7 @@ pub fn generate(
       end
       pb = (pb + (ok and 0 or {nlok_delta})) % 268435456
     end
-    {env_gate}{ak_gate}local hqi = {{{}}}
+    {env_gate}local hqi = {{{}}}
     {hqi_unmask}{}    {}
     local HB = table.concat(MH)
     HW, BSS, SH1, SH2 = LS(HB)()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB)
@@ -2845,7 +2761,6 @@ pub fn generate(
   end"#,
 			hq_lines, mb_lines, boot, hqi_masked.join(", "), mb_gather, metavm,
 			hqi_unmask = hqi_unmask,
-			ak_gate = ak_gate,
 			env_gate = env_gate,
 			strlit = strlit,
 			v_ls = v_ls, v_ts = v_ts, v_dbg = v_dbg, v_inf = v_inf,
@@ -2932,28 +2847,18 @@ pub fn generate(
 	// very top of the VM body (before the first key use in oc_boot).
 	let kf_block = ke.block(rng);
 	// 增量⑱ (输入绑定): bound output gives the VM a vararg tail — the
-	// entry closure forwards (activation, data...) after the carriers;
-	// the boot gate folds the first vararg, the program receives the
-	// rest (see entry_tail below). Unbound output keeps the exact
-	// historical signature.
-	let vm_params = if bind_key.is_some() {
-		format!("{}, ...", params)
-	} else {
-		params.clone()
-	};
+	// ㊴ (激活门退役): 入口签名 = 载体参数 + 程序自身变长参（历史
+	// 未绑定形态，字节级保持）。
+	let vm_params = params.clone();
 	// ㉒: v15 entry runs the encoded ROOT prototype (MPF) — PF itself
 	// was destroyed at boot. Legacy keeps the historical PF[#FN] form.
 	let entry_pf = if v15 { "MPF" } else { "PF[#FN]" };
 	// ㉗: v15 运行入口 = 运行时碎片装配出的不透明函数值 RUN
 	let entry_run = if v15 { "RUN" } else { "run" };
-	let entry_tail = if bind_key.is_some() {
-		format!(
-			"local _bt = {{ ... }}\n  local vargs = {{}}\n  for _bi = 2, #_bt do\n    vargs[_bi - 1] = _bt[_bi]\n  end\n  local V2 = {{}}\n  return {}({}, V2, {{}}, vargs, #vargs)",
-			entry_run, entry_pf
-		)
-	} else {
-		format!("local vargs = {{}}\n  local V2 = {{}}\n  return {}({}, V2, {{}}, vargs, 0)", entry_run, entry_pf)
-	};
+	let entry_tail = format!(
+		"local vargs = {{}}\n  local V2 = {{}}\n  return {}({}, V2, {{}}, vargs, 0)",
+		entry_run, entry_pf
+	);
 	// 增量⑲: v15 run() = chain entry (E.pc lives in the E constructor;
 	// the body is ONE chain epilogue tail-calling the first handler).
 	// Legacy keeps the pc local + the fetch/dispatch while loop.

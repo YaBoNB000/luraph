@@ -39,9 +39,7 @@ CARGO_NET_OFFLINE=true cargo build --release
 ./target/release/luraph-rs --preset vm     --seed 42 in.lua out.vm.lua
 ./target/release/luraph-rs --preset max    --seed 42 in.lua out.vm.lua
 
-# [已弃用] 增量⑱ 输入绑定/激活门：需变长参递送激活值、产物无法直接运行，
-# 与「混淆后直接可运行」的产品需求冲突，仅加载器授权场景保留
-# ./target/release/luraph-rs --bind-key "KEY" in.lua out.lua
+# 增量⑱ 输入绑定/激活门 (--bind-key) 已于 ㊴ 整体退役移除
 ```
 
 | 预设 | 打开的层 | 典型体积 | 适用 |
@@ -71,13 +69,13 @@ Roblox 执行器即可直接运行，输出与源码逐字节一致。防护来�
 防御，见 `docs/redteam-luraph15-recon.md`），但本产品把解释器/解析器/分派
 全部入密，结构强度更高。
 
-### [已弃用] 增量⑱：输入绑定 / 激活门（`--bind-key`）
+### [㊴ 退役] 增量⑱：输入绑定 / 激活门（`--bind-key`）
 
 曾把引导链第一层门控到「变长参递送的激活值」上（错/缺钥匙即引导层崩溃）。
-**因要求运行时传参、产物无法直接运行，与产品核心需求冲突，已弃用**——
-代码保留（`--bind-key` 仍可用，仅供加载器授权这一特定场景），但**默认即
-直接可运行形态，不要再依赖激活门做防护**。详见
-`docs/plan-resemblance-and-security.md`。
+因要求运行时传参、产物无法直接运行，与产品核心需求冲突，**㊴ 起整体退役：
+功能代码、`tests/bind_gate_test.sh`、绑定态示例均已移除**（移除经字节级
+验证对未绑定产物零影响）。现役防线 = 结构层（⑲⑳㉚-㉟）+ 环境绑定
+（㉑）+ 计时守卫（㉙/㊳）。详见 `docs/plan-resemblance-and-security.md`。
 
 ### 增量㉑：环境绑定（`--bind-env roblox`，仅 v15）
 

@@ -11,7 +11,7 @@
 #   D4  安全指纹 S1-S5      — security_fingerprint.py + attack 脚本组
 #   D5  密文完整性(源哈希链) — 长串内字节互换 => 绝不产出正确输出
 #   D6  字节码防篡改(校验和投毒) — 同 D5 多点统计覆盖
-#   D7  激活门 --bind-key   — 正确钥匙通行 / 错缺钥匙拒绝 / 无字面泄漏
+#   D7  激活门 --bind-key   — ㊴ 退役 (功能/测试/示例均已移除)
 #   D8  环境绑定 --bind-env — 通用沙箱加载失败 + 语法仍可编译
 #   D9  反挂钩闸(loadstring) — loadstring 换成 Lua 闭包 => 必须被杀
 #   D10 反指纹闸(debug.info) — debug.info 说谎 => 必须被杀
@@ -120,12 +120,8 @@ for k in $(seq 0 29); do
 done
 [ "$tamper_fail" == "0" ] && ok "30/30 篡改点全部被拒 (0 次正确输出)"
 
-echo "== D7 激活门 --bind-key =="
-if bash "$ROOT/tests/bind_gate_test.sh" >"$W/d7.out" 2>&1; then
-	ok "$(grep 'BIND GATE PASS' "$W/d7.out")"
-else
-	bad "激活门: $(tail -3 "$W/d7.out" | tr '\n' ' ')"
-fi
+echo "== D7 激活门 (㊴ 退役, 跳过) =="
+echo "  SKIP --bind-key 功能/测试/示例已随 ㊴ 移除"
 
 echo "== D8 环境绑定 --bind-env =="
 if bash "$ROOT/tests/env_bind_test.sh" >"$W/d8.out" 2>&1; then

@@ -54,11 +54,6 @@ struct Options {
 	/// How many junk blocks to inject at each function head (max preset
 	/// raises this; VM templates stay at 2 to keep the 200-local budget).
 	junk_n: usize,
-	/// 增量⑱ (选项B路线一 — 输入绑定/激活门): activation string known
-	/// at obfuscation time. The v15 boot keystream is tied to the
-	/// runtime fold of the FIRST vararg; only a run that supplies the
-	/// matching activation decodes the bootstrap. v15-only.
-	bind_key: Option<String>,
 	/// 增量㉑ (选项B·环境绑定): bind the output to the target runtime
 	/// (currently "roblox"). Embeds target-runtime API refs into the
 	/// primitive slots so module-table construction fails outside the
@@ -209,10 +204,6 @@ Options:
   --no-strings           disable L2 string encryption (default: enabled)
   --no-flatten           disable L3 loop desugar + CFG flattening (default: enabled)
   --no-junk              disable L3 junk code injection (default: enabled)
-  --bind-key <activation>  [已弃用/实验] 激活门（⑱⑳）：需以第一个变长参
-                         递送激活值，产物无法直接运行。与「混淆后直接可运行」
-                         的产品需求冲突，已弃用——默认（不带本项）产物零参数
-                         直接可运行，防护靠 ⑲⑳ 结构层。仅在加载器授权场景保留。
   --bind-env <roblox>    增量㉑ 环境绑定（仅 v15）：把目标运行时 API
                          (Vector3/Vector2/task) 嵌进原语槽，产物只在目标运行
                          时可加载，通用分析沙箱加载期即失败。绑定态产物不进
@@ -243,12 +234,11 @@ fn main() -> ExitCode {
 		do_vm: false,
 		do_v15: false,
 		do_strings: true,
-		do_flatten: true,
-		do_junk: true,
-		junk_n: 2,
-		bind_key: None,
-		bind_env: None,
-	};
+	do_flatten: true,
+	do_junk: true,
+	junk_n: 2,
+	bind_env: None,
+};
 	let mut i = 0;
 	let mut positional: Vec<String> = Vec::new();
 	let mut preset_given = false;
@@ -326,14 +316,6 @@ fn main() -> ExitCode {
 			"--no-strings" => opts.do_strings = false,
 			"--no-flatten" => opts.do_flatten = false,
 			"--no-junk" => opts.do_junk = false,
-			"--bind-key" => {
-				i += 1;
-				if i >= args.len() {
-					eprintln!("error: --bind-key requires an activation string");
-					return ExitCode::FAILURE;
-				}
-				opts.bind_key = Some(args[i].clone());
-			}
 			"--bind-env" => {
 				i += 1;
 				if i >= args.len() {
@@ -388,24 +370,6 @@ fn main() -> ExitCode {
 			 run. Use `--preset vm` for the dual-target output."
 		);
 		return ExitCode::FAILURE;
-	}
-	// 增量⑱ (输入绑定): the activation gate rides the v15 boot chain
-	// (HBOOT meta keystream + entry vararg passthrough), so it is a
-	// v15-only feature. An empty activation folds to 0 == the no-input
-	// fold, which would accept unauthenticated runs — reject it.
-	if let Some(k) = &opts.bind_key {
-		if !(opts.do_vm && opts.do_v15) {
-			eprintln!(
-				"error: --bind-key requires --preset v15\n  \
-				 activation binding is wired through the v15 boot \
-				 chain (module table + FC entry)."
-			);
-			return ExitCode::FAILURE;
-		}
-		if k.trim().is_empty() {
-			eprintln!("error: --bind-key activation string must be non-empty");
-			return ExitCode::FAILURE;
-		}
 	}
 	// 增量㉑ (环境绑定): v15-only (the mechanism embeds target-runtime
 	// API refs into the v15 module table). Only "roblox" is a known
@@ -479,7 +443,6 @@ fn main() -> ExitCode {
 				program.consts_mask_safe,
 				&program.block_starts,
 				opts.bind_env.as_deref(),
-				opts.bind_key.as_deref(),
 			);
 			if std::env::var("LURAPH_VM_TSRC").is_ok() {
 				std::fs::write("/tmp/vm_tsrc.lua", &tsrc).unwrap();
@@ -629,11 +592,10 @@ fn main() -> ExitCode {
 					opts.do_guard,
 					&bw_slots,
 					(sb_slot, sc_slot),
-					&kfrag,
-					&st_slots,
-					opts.bind_key.is_some(),
-					&ttable.globals,
-				);
+				&kfrag,
+				&st_slots,
+				&ttable.globals,
+			);
 				let mut exclude: Vec<i64> = vec![r1, r2, ks, kg, d1, d2, sb_slot, sc_slot];
 				exclude.extend_from_slice(&bw_slots);
 				exclude.extend_from_slice(&kfrag);
