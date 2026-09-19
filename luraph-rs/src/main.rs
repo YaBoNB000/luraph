@@ -443,6 +443,7 @@ fn main() -> ExitCode {
 				program.consts_mask_safe,
 				&program.block_starts,
 				opts.bind_env.as_deref(),
+				opts.do_guard,
 			);
 			if std::env::var("LURAPH_VM_TSRC").is_ok() {
 				std::fs::write("/tmp/vm_tsrc.lua", &tsrc).unwrap();
@@ -589,7 +590,6 @@ fn main() -> ExitCode {
 					d1,
 					d2,
 					&program.carrier,
-					opts.do_guard,
 					&bw_slots,
 					(sb_slot, sc_slot),
 				&kfrag,

@@ -32,8 +32,9 @@ pub const ANTI_CORE: &str = r###"	local function stage_core()
 /// Stage 2 — environment sanity (getfenv/_G, negative-key roundtrip,
 /// pcall(error) must raise).
 pub const ANTI_ENV: &str = r###"	local function stage_env()
-		if type(getfenv) == "function" then
-			local ok, value = pcall(getfenv)
+		local gfe = (EV and EV[17]) or getfenv
+		if type(gfe) == "function" then
+			local ok, value = pcall(gfe)
 
 			if ok then
 				env = value
@@ -41,7 +42,7 @@ pub const ANTI_ENV: &str = r###"	local function stage_env()
 		end
 
 		if env == nil then
-			env = _G
+			env = (EV and EV[18]) or _G
 		end
 
 		if type(env) ~= "table" or type(print) ~= "function" or (warn ~= nil and type(warn) ~= "function") then
@@ -115,7 +116,7 @@ pub const ANTI_DEBUG: &str = r###"	local function stage_debug()
 				return ok and type(src) == "string" and src == "[C]"
 			end
 
-			local envTable = _G
+			local envTable = (EV and EV[18]) or _G
 
 			if type(envTable) == "table" then
 				local loaderLS = rawget(envTable, "loadstring")

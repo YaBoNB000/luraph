@@ -637,7 +637,6 @@ pub fn scaffold(
 	decoy1: i64,
 	decoy2: i64,
 	carrier: &crate::vmgen::isa::Carrier,
-	guard: bool,
 	bw_slots: &[i64],
 	prim_extra: (i64, i64),
 	// 增量⑩: key-fragment slots. kfrag[0] = second ks-seed fragment;
@@ -1498,44 +1497,9 @@ pub fn scaffold(
 			// The two are compared at v2 (mismatch -> silent trap), so
 			// any tamper of HB / LCG key / decode breaks the fold.
 		}
-		// Environment re-check MID-staging (suggestion 2): loader/debug
-		// integrity, silent trap on hook detection. All names are
-		// runtime-built from shuffled char codes and looked up through
-		// the global env table — nothing identifying appears in text.
-		let g0 = nm.take_avoid(V1H_FORBID);
-		let d_t = nm.take_avoid(V1H_FORBID);
-		let d_i = nm.take_avoid(V1H_FORBID);
-		let dt_n = nm.take_avoid(V1H_FORBID);
-		let it_n = nm.take_avoid(V1H_FORBID);
-		let ls_n = nm.take_avoid(V1H_FORBID);
-		let l_n = nm.take_avoid(V1H_FORBID);
-		let ct_n = nm.take_avoid(V1H_FORBID);
-		let fn_n = nm.take_avoid(V1H_FORBID);
-		let s_n = nm.take_avoid(V1H_FORBID);
-		let er_n = nm.take_avoid(V1H_FORBID);
-		let er_v = nm.take_avoid(V1H_FORBID);
-		coded_name(&mut body, &dt_n, "debug", prim_extra.1, rng);
-		coded_name(&mut body, &it_n, "info", prim_extra.1, rng);
-		coded_name(&mut body, &ls_n, "loadstring", prim_extra.1, rng);
-		coded_name(&mut body, &l_n, "load", prim_extra.1, rng);
-		coded_name(&mut body, &ct_n, "[C]", prim_extra.1, rng);
-		coded_name(&mut body, &fn_n, "function", prim_extra.1, rng);
-		coded_name(&mut body, &s_n, "s", prim_extra.1, rng);
-		coded_name(&mut body, &er_n, "error", prim_extra.1, rng);
-		body.push_str(&format!(
-			"local {g0}=getfenv(0);local {d_t}={g0}[{dt_n}];local {d_i}={d_t} and {d_t}[{it_n}];local {er_v}={g0}[{er_n}]; \
-			 if type({d_i})=={fn_n} then \
-			 local eo,e0=pcall({d_i},{er_v},{s_n}); \
-			 if not eo or e0~={ct_n} then while true do end end; \
-			 local ls0={g0}[{ls_n}]; \
-			 if type(ls0)=={fn_n} then local o1,s1=pcall({d_i},ls0,{s_n}); if not o1 or s1~={ct_n} then while true do end end end; \
-			 local l0={g0}[{l_n}]; \
-			 if type(l0)=={fn_n} then local o2,s2=pcall({d_i},l0,{s_n}); if not o2 or s2~={ct_n} then while true do end end end; \
-			 end;",
-			g0 = g0, d_t = d_t, d_i = d_i, dt_n = dt_n, it_n = it_n,
-			ls_n = ls_n, l_n = l_n, ct_n = ct_n, fn_n = fn_n, s_n = s_n,
-			er_n = er_n, er_v = er_v,
-		));
+		// ㊶ (保护代码隐藏): 原 staging 中段 debug.info 复检门 + 拼串码表
+		// 整体移除——同等检查由 HBOOT 掩码层守卫承担（对解码时机而言足够早：
+		// staging 阶段只有字节搬运，无密钥材料落地）。
 		let src = format!(
 			"function(b,C,{ra},{rb},{rc},{rd},{re}) {body} C[{verifyslot}]=s; \
 			 return {ret},C,{rb},{ra},{rc},{re},{rd} end",
@@ -1557,9 +1521,11 @@ pub fn scaffold(
 	{
 		let (st, _ret) = step(&mut state_i); // ret == sdone, used below
 		let v2n: Vec<String> = (0..5).map(|_| nm.take_avoid(&["b", "C"])).collect();
+		// ㊶: 校验失配不再死循环（grep oracle）——投毒 sumslot 后照常放行：
+		// kg 折叠消费被污染的校验和 => 载体钥匙流错位 => 下游静默全错。
 		let src = format!(
-			"function(b,C,{n0},{n1},{n2},{n3},{n4}) if C[{verifyslot}]==C[{sumslot}] then \
-			 return {sdone},C,{n1},{n2},{n3},{n4},{n0} else while true do end end end",
+			"function(b,C,{n0},{n1},{n2},{n3},{n4}) if C[{verifyslot}]~=C[{sumslot}] then C[{sumslot}]=C[{sumslot}]+7919 end; \
+			 return {sdone},C,{n1},{n2},{n3},{n4},{n0} end",
 			verifyslot = verifyslot,
 			sumslot = sumslot,
 			sdone = sdone,
@@ -1628,23 +1594,16 @@ pub fn scaffold(
 	// -> sub-dispatcher -> control-code return. The sub-dispatcher is
 	// routed through a tuple slot (F31: `b[J[4]](...)` indirection; the
 	// `[4]=` literal also feeds F30).
-	// Anti-debug guard (2026-08-29): the CHAR-encoded environment-
-	// integrity guard runs at the head of the entry machine, before the
-	// boot loop -- zero visible string literals, fingerprints intact.
-	let guard_src = if guard {
-		format!("{} ", crate::guard::v15_guard_source(rng))
-	} else {
-		String::new()
-	};
+	// ㊶ (保护代码隐藏): 守卫不再注入可见入口机——整体搬进 HBOOT
+	// 掩码层（见 template.rs hboot_src 注入点），可见层零保护痕迹。
 	{
 		let src = format!(
-			"function(b,...) {guard}local u,z,Z,o,w,K,G,q,M,F,H,E=b:{init}(); \
+			"function(b,...) local u,z,Z,o,w,K,G,q,M,F,H,E=b:{init}(); \
 			 local {lhs6},C=z,Z,o,w,K,G,{{}}; C[{ss}]=0; C[{ax}]=0; \
 		 do local u=1; local w=u+1-1; local o=w-u; if o~=0 then C[{ss}]=o end end; \
 			 local J={{[4]='{xl}',[7]='{xl}'}}; \
 			 while u do local h2,B=b[J[4]](b,C,{sv},{rhs5}); \
 			if h2==2 then return B end end end",
-			guard = guard_src,
 			init = init,
 			ss = sumslot,
 			ax = auxslot,

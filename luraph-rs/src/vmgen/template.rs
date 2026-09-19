@@ -643,22 +643,61 @@ fn emit_metavm(
 /// scope — char codes stored SHUFFLED in a table plus an order list,
 /// concatenated through CHAR. Returns Lua declarations; the built
 /// value ends up in `var`.
-fn coded_name_tpl(rng: &mut Rng, var: &str, name: &str) -> String {
-	let codes: Vec<u8> = name.bytes().collect();
-	let mut pos: Vec<usize> = (0..codes.len()).collect();
-	rng.shuffle(&mut pos);
-	let mut out = format!("local {var}t = {{}}\n");
-	for (i, &c) in codes.iter().enumerate() {
-		out.push_str(&format!("    {var}t[{}] = {c}\n", pos[i] + 1));
+/// ㊶ (保护代码隐藏): 引导层环境名的隐藏构造。旧形态 = 打乱序的
+/// ASCII 码表 + 拼串循环（纸老虎：任何分析者一眼解码）。新形态与
+/// base-94 机制同族：掩码字节数组 + LCG 折叠派生（值为不透明派生
+/// 值，非 ASCII），名字 = CHAR(派生表[索引]...) 多参一次成形。
+/// 分析者要还原名字必须先重建折叠链——与解 base-94 同成本，无捷径。
+fn boot_names_block(rng: &mut Rng, names: &[(&str, &str)], obf_num: &dyn Fn(i64, &mut Rng) -> String) -> String {
+	let mut pool: Vec<u8> = Vec::new();
+	for (_v, name) in names {
+		for &b in name.as_bytes() {
+			if !pool.contains(&b) {
+				pool.push(b);
+			}
+		}
 	}
-	let mut inv = vec![0usize; codes.len()];
-	for (i, &p) in pos.iter().enumerate() {
-		inv[i] = p + 1;
+	let nbd_seed = rng.int(1_048_576, 268_435_455);
+	let nbd_m = (rng.int(1_048_577, 33_000_001) | 1) as i64;
+	let nbd_c = rng.int(1_048_576, 268_435_455);
+	let mut st = nbd_seed as u64;
+	let mut arr: Vec<u8> = Vec::new();
+	for &b in &pool {
+		st = (nbd_m as u64 * st + nbd_c as u64) % 268_435_456;
+		let f = ((st % 256)
+			+ ((st / 256) % 256)
+			+ ((st / 65536) % 256)
+			+ (st / 16_777_216))
+			% 256;
+		arr.push(((b as u64 + f) % 256) as u8);
 	}
+	let ta = "NBa";
+	let mut out = format!(
+		"local {} = {{{}}}\n",
+		ta,
+		arr.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ")
+	);
 	out.push_str(&format!(
-		"    local {var}o = {{{}}}\n    local {var} = \"\"\n    for {var}i = 1, #{var}o do\n      {var} = {var} .. CHAR({var}t[{var}o[{var}i]])\n    end\n",
-		inv.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ")
+		"local NBs = {}\nfor NBi = 1, {} do\n  NBs = ({} * NBs + {}) % 268435456\n  {}[NBi] = ({}[NBi] - (((NBs % 256) + (FLR(NBs / 256) % 256) + (FLR(NBs / 65536) % 256) + FLR(NBs / 16777216)) % 256)) % 256\nend\n",
+		obf_num(nbd_seed, rng),
+		pool.len(),
+		obf_num(nbd_m, rng),
+		obf_num(nbd_c, rng),
+		ta, ta
 	));
+	for (v, name) in names {
+		let idx: Vec<String> = name
+			.bytes()
+			.map(|b| {
+				format!(
+					"{}[{}]",
+					ta,
+					pool.iter().position(|&x| x == b).unwrap() + 1
+				)
+			})
+			.collect();
+		out.push_str(&format!("local {} = CHAR({})\n", v, idx.join(", ")));
+	}
 	out
 }
 
@@ -1020,6 +1059,8 @@ pub fn generate(
 	// into the boot keystream — a mock stub that ignores constructor
 	// args contaminates the key. v15 only.
 	bind_env: Option<&str>,
+	// ㊶ (保护代码隐藏): 守卫整体进 HBOOT 掩码层（可见层零保护痕迹）。
+	guard: bool,
 ) -> String {
 	let mut oc_items = Vec::new();
 	for (i, name) in OP_NAMES.iter().enumerate() {
@@ -2260,6 +2301,16 @@ pub fn generate(
 		] {
 			frag_reserved.insert(g.to_string());
 		}
+		// ㊶: 元方法名 + _ENV 必须在碎片净化保留集——守卫搬进 HBOOT 后
+		// 随净化改名会把 __tostring 之类改成语义无关名（蜜罐失效）。
+		for g in [
+			"__index", "__newindex", "__tostring", "__concat", "__call",
+			"__iter", "__metatable", "__eq", "__lt", "__le", "__add",
+			"__sub", "__mul", "__div", "__mod", "__pow", "__unm",
+			"__len", "__mode", "__close", "_ENV",
+		] {
+			frag_reserved.insert(g.to_string());
+		}
 		let mut frag_map: std::collections::HashMap<String, String> =
 			std::collections::HashMap::new();
 		let mut frag_used: std::collections::HashSet<String> =
@@ -2346,8 +2397,25 @@ pub fn generate(
 		//     里做**双独立归零约束**（指令块一条、常量池一条，合计
 		//     ~52bit 二预映像难度）——期望哈希不落任何明文常量。
 		//   SH 助手 = 双车道非线性步（Rust 镜像 sh_step，逐位一致）。
+		// ㊶ (保护代码隐藏, 对照样本形态): 守卫整体进 HBOOT 掩码层——
+		// 环境完整性检查/挂钩检测/蜜罐全部在掩码字节里（文件零痕迹），
+		// 时机 = HBOOT 开头、碎片解码之前，防线不后移。蜜罐表经第 5
+		// 返回值递出、引导存进 HW2 高位槽（运行期持久、形似 VM 状态）。
+		let (guard_embed, guard_holder) = if guard {
+			let (g, holder) = crate::guard::hboot_guard_source(rng);
+			(g + " ", holder)
+		} else {
+			(String::new(), String::new())
+		};
+		let hpret = if guard {
+			format!(", {}", guard_holder)
+		} else {
+			String::new()
+		};
 		let hboot_src = format!(
-			"return function(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB) local HW = {{}} local BSS local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local DICT = HB local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep} + ((h1 + h2 * 257) % 268435456) * {hmul}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) local DC = {{}} local pi = 3 while pi <= flen do if BYTE(s, pi) == 0 then local ln = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 DC[#DC + 1] = SUB(s, pi + 3, pi + 2 + ln) pi = pi + 3 + ln else local off = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 local ln = BYTE(s, pi + 3) + BYTE(s, pi + 4) * 256 DC[#DC + 1] = SUB(DICT, off, off + ln - 1) pi = pi + 5 end end s = SUB(table.concat(DC), 1, BYTE(s, 1) + BYTE(s, 2) * 256) DICT = DICT .. s for i = 1, #s do h1, h2 = SH(h1, h2, BYTE(s, i)) end if w == 200 then BSS = s else HW[w] = LS(s)() end end return HW, BSS, h1, h2 end",
+			"return function(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB, EV) {guard}local HW = {{}} local BSS local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local DICT = HB local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep} + ((h1 + h2 * 257) % 268435456) * {hmul}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) local DC = {{}} local pi = 3 while pi <= flen do if BYTE(s, pi) == 0 then local ln = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 DC[#DC + 1] = SUB(s, pi + 3, pi + 2 + ln) pi = pi + 3 + ln else local off = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 local ln = BYTE(s, pi + 3) + BYTE(s, pi + 4) * 256 DC[#DC + 1] = SUB(DICT, off, off + ln - 1) pi = pi + 5 end end s = SUB(table.concat(DC), 1, BYTE(s, 1) + BYTE(s, 2) * 256) DICT = DICT .. s for i = 1, #s do h1, h2 = SH(h1, h2, BYTE(s, i)) end if w == 200 then BSS = s else HW[w] = LS(s)() end end return HW, BSS, h1, h2{hpret} end",
+			guard = guard_embed,
+			hpret = hpret,
 			hseed = hseed_e, hstep = hstep_e, hm = hm_e, hc = hc_e,
 			k1 = sh_k1_e, k2 = sh_k2_e, m1 = SH_M1, m2 = SH_M2,
 			iv1 = sh_iv1_e, iv2 = sh_iv2_e, hmul = sh_mul_e,
@@ -2521,7 +2589,7 @@ pub fn generate(
 		// camouflage; no giant literal array).
 		let mut mb_lines = String::new();
 		let mut mb_names: Vec<String> = Vec::new();
-		for (ci, chunk) in hb_masked.chunks(90).enumerate() {
+		for (ci, chunk) in hb_masked.chunks(170).enumerate() {
 			let nm = format!("MB{}", ci + 1);
 			mb_names.push(nm.clone());
 			mb_lines.push_str(&format!(
@@ -2545,13 +2613,16 @@ pub fn generate(
 		let v_clock = "hclk";
 		let v_s = "hsarg";
 			let v_ts = "hts";
-		boot.push_str(&coded_name_tpl(rng, v_ts, "tostring"));
-		boot.push_str(&coded_name_tpl(rng, v_ls, "loadstring"));
-		boot.push_str(&coded_name_tpl(rng, v_dbg, "debug"));
-		boot.push_str(&coded_name_tpl(rng, v_inf, "info"));
-		boot.push_str(&coded_name_tpl(rng, v_s, "s"));
-		boot.push_str(&coded_name_tpl(rng, v_os, "os"));
-		boot.push_str(&coded_name_tpl(rng, v_clock, "clock"));
+		let v_npx = "hnpx";
+		boot.push_str(&boot_names_block(
+			rng,
+			&[
+				(v_ts, "tostring"), (v_ls, "loadstring"), (v_dbg, "debug"),
+				(v_inf, "info"), (v_s, "s"), (v_os, "os"),
+				(v_clock, "clock"), (v_npx, "newproxy"),
+			],
+			&|v: i64, r: &mut Rng| obf_num(v as u64, r),
+		));
 			// 增量⑯-1 (探针钥匙化): base-31 fold of the clean-environment
 		// loadstring source ("[C]"). In a clean run pb == C_FOLD and the
 		// extra term vanishes; a hooked loader shifts pb, silently
@@ -2694,6 +2765,13 @@ pub fn generate(
 			.iter()
 			.map(|&i| format!("CX{} = HW[{}]\n    ", i + 1, 305 + i))
 			.collect();
+		// ㊶: 蜜罐表接收/贮存（守卫在 HBOOT 掩码层；贮存行形似 VM 状态）
+		let hp_recv = if guard { String::from(", HPH") } else { String::new() };
+		let hp_stash = if guard {
+			format!("HW2[{}] = HPH", 256 + rng.int(1, 200))
+		} else {
+			String::new()
+		};
 		let build = format!(
 			r#"{}  {}local HW = {{}}
   local BSS
@@ -2705,6 +2783,7 @@ pub fn generate(
   local RPK1, RPK2, RPK3, RPK4, RPK5, RPK6, RPK7, RPK8, RPK9, RPK10, RPK11
   local SALT
   local SH1, SH2
+  local HPH
   local MPF
   local CLK
   do
@@ -2734,9 +2813,10 @@ pub fn generate(
     end
     {env_gate}local hqi = {{{}}}
     {hqi_unmask}{}    {}
-    local HB = table.concat(MH)
-    HW, BSS, SH1, SH2 = LS(HB)()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB)
+    local HB = table.concat(MH)    local EV = {{type, pcall, xpcall, error, rawget, rawset, getmetatable, setmetatable, tostring, tonumber, string, unpack, print, warn, GFE(0)[{v_npx}], debug, getfenv, _G}}
+    HW, BSS, SH1, SH2{hp_recv} = LS(HB)()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB, EV)
     HQ = nil; hqi = nil
+    {hp_stash}
     {ct_fill}{cx_fill}RTFRAG = HW[208]
     do
       local avt = {{}}
@@ -2766,10 +2846,12 @@ pub fn generate(
     BSS = nil
   end"#,
 			hq_lines, mb_lines, boot, hqi_masked.join(", "), mb_gather, metavm,
+			hp_recv = hp_recv,
+			hp_stash = hp_stash,
 			hqi_unmask = hqi_unmask,
 			env_gate = env_gate,
 			strlit = strlit,
-			v_ls = v_ls, v_ts = v_ts, v_dbg = v_dbg, v_inf = v_inf,
+			v_ls = v_ls, v_ts = v_ts, v_dbg = v_dbg, v_inf = v_inf, v_npx = v_npx,
 			v_os = v_os, v_clock = v_clock,
 			v_s = v_s,
 			nlok_delta = nlok_delta_e,

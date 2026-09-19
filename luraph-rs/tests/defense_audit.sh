@@ -180,21 +180,17 @@ else
 	ok "指纹伪造被杀 (rc=$rc10, 无正确输出)"
 fi
 
-echo "== D11 蜜罐哨兵 (结构级) =="
-# Mc 层把 __tostring/__concat/__call 全指向杀死函数的哨兵表由引导码运行时
-# 构造并藏入状态机; 外部无法直接触发, 只做存在性验证: 产物须含 Mc 检查块
-# 的三个哨兵字符串构造 (GS16/17/18 乱序字符表)。
-if grep -q "debug" "$W/d1a.lua" 2>/dev/null || python3 - "$W/d1a.lua" <<'PYEOF'
-import sys
-s = open(sys.argv[1]).read()
-# 蜜罐特征: newproxy(true) + __tostring 陷阱装配同时出现
-ok = ("newproxy" in s) and ("__tostring" in s) and ("__metatable" in s)
-sys.exit(0 if ok else 1)
-PYEOF
-then
-	ok "哨兵陷阱结构存在 (newproxy + __tostring/__metatable 陷阱)"
+echo "== D11 蜜罐哨兵 (㊶: 移入掩码层, 验可见层零痕迹 + 守卫生效) =="
+# 蜜罐由守卫在 HBOOT 掩码层内安装——可见层必须 0 痕迹；守卫活性由
+# D9/D10 (挂钩/指纹伪造必杀) 背书。
+hp_vis=0
+for pat in "newproxy" "__tostring" "__metatable" "__concat"; do
+	if grep -q "$pat" "$W/d1a.lua"; then hp_vis=1; echo "  可见层发现 $pat"; fi
+done
+if [ "$hp_vis" == "0" ]; then
+	ok "蜜罐/陷阱可见层零痕迹 (掩码层内安装, D9/D10 背书守卫生效)"
 else
-	bad "未找到蜜罐结构"
+	bad "蜜罐结构仍暴露在可见层"
 fi
 
 echo "== D12 计时守卫 (㊳ 复通: 接线 + 触发路径 + 误报抽查) =="
@@ -337,6 +333,27 @@ if [ -x "$DBGOBJ" ]; then
 else
 	bad "debug 二进制不可用"
 fi
+
+echo "== D14 保护代码隐藏普查 (㊶: 对照样本 15 的隐藏形态) =="
+python3 - "$W/d1a.lua" <<'PYEOF2'
+import re, sys
+s = open(sys.argv[1]).read()
+pats = {
+    "死循环闸 while true do end": r"while true do end",
+    "蜜罐钩子词": r"newproxy|__tostring|__metatable|__concat",
+    "repeat-until kill": r"repeat \w+=\w+\+1",
+    "schar 码表(3+)": r"char\((?:\d+,){3,}",
+    "拼串纸老虎(乱序码表+拼串循环)": r"=\s*\w+\s*\.\.\s*\w+\(\w+\[\w+\[",
+}
+bad = 0
+for name, p in pats.items():
+    n = len(re.findall(p, s))
+    if n:
+        print(f"  暴露: {name} x{n}")
+        bad = 1
+sys.exit(bad)
+PYEOF2
+[ "$?" == "0" ] && ok "可见层保护痕迹清零 (死循环/蜜罐词/码表/拼串表全 0)" || bad "可见层仍有保护痕迹"
 
 echo "=================================================="
 echo "防御审计: PASS $pass   FAIL $fail"
