@@ -415,6 +415,21 @@ fn main() -> ExitCode {
 		let mut block = parser::parse(&src, luau).map_err(|e| e.to_string())?;
 		let mut table = symtab::resolve(&mut block);
 		let mut rng = rng::Rng::new(seed);
+		// ㊸ (环境绑定去中心化): env 捕获槽预抽于高位数段 (5000-6000)——
+		// 与模块表槽域 (1..top) 天然无碰撞，且必须在 generate 之前定型
+		// （boot 文本要引用槽号；模块表稍后按同一批号发射捕获）。
+		let env_slots: Option<[i64; 4]> = if opts.do_v15 && opts.bind_env.is_some() {
+			let mut es: Vec<i64> = Vec::new();
+			while es.len() < 4 {
+				let n = rng.int(5000, 6000);
+				if !es.contains(&n) {
+					es.push(n);
+				}
+			}
+			Some([es[0], es[1], es[2], es[3]])
+		} else {
+			None
+		};
 		// L6: compile the program to private bytecode; the executable
 		// program becomes the (to-be-obfuscated) interpreter template +
 		// the bytecode passed as string literals to its entry call
@@ -443,6 +458,7 @@ fn main() -> ExitCode {
 				program.consts_mask_safe,
 				&program.block_starts,
 				opts.bind_env.as_deref(),
+				env_slots.as_ref(),
 				opts.do_guard,
 			);
 			if std::env::var("LURAPH_VM_TSRC").is_ok() {
@@ -600,11 +616,12 @@ fn main() -> ExitCode {
 				exclude.extend_from_slice(&bw_slots);
 				exclude.extend_from_slice(&kfrag);
 				exclude.extend_from_slice(&st_slots);
-				let mut fields = vmgen::v15::module_fields(
+				let (mut fields, _env_slots_back) = vmgen::v15::module_fields(
 					&mut rng,
 					&exclude,
 					slot_pool.len() as i64,
 					opts.bind_env.as_deref(),
+					env_slots.as_ref(),
 				);
 				fields.extend(scaffold_fields);
 				rng.shuffle(&mut fields);

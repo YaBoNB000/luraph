@@ -187,7 +187,9 @@ pub fn module_fields(
 	// 制）：绑定态产物只在 Roblox 能加载，通用分析沙箱在加载期即死，
 	// 任何解码都还没开始。
 	bind_env: Option<&str>,
-) -> Vec<TableField> {
+	// ㊸: 预抽的 env 捕获槽号 [v3, v2, tdefer, typeof]
+	env_slots_in: Option<&[i64; 4]>,
+) -> (Vec<TableField>, Option<[i64; 4]>) {
 	let top = std::cmp::max(126, slot_max);
 	let mut slots: Vec<i64> = (1..=top)
 		.filter(|n| !exclude.contains(n))
@@ -216,14 +218,27 @@ pub fn module_fields(
 	}
 	// 增量㉑ (环境绑定): 目标运行时 API 引用——只在目标运行时存在，
 	// 非目标环境构造即失败。点式原语形态混入原语槽家族（不经 mangle）。
+	// ㊸: 增补 typeof 槽（语义折叠用）；槽序固定 [v3, v2, tdefer, typeof]，
+	// 索引回传 boot 供槽位间接调用（用法不再以裸名出现在引导文本）。
+	// ㊸: 槽号由 main 预抽（高位数段），与模块表槽域无碰撞。
+	let mut env_slots_out: Option<[i64; 4]> = None;
 	if bind_env == Some("roblox") {
-		for path in ["Vector3.new", "Vector2.new", "task.defer"] {
-			if let Some(n) = it.next() {
+		if let Some(es_in) = env_slots_in {
+			for (path, n) in ["Vector3.new", "Vector2.new", "task.defer", "typeof"]
+				.iter()
+				.zip(es_in.iter())
+			{
+				let value = if path.contains('.') {
+					dot_value(path)
+				} else {
+					Expr::Ident { name: path.to_string(), sym: None }
+				};
 				fields.push(TableField::Key {
-					key: Expr::Num { value: n as f64, isfloat: false },
-					value: dot_value(path),
+					key: Expr::Num { value: *n as f64, isfloat: false },
+					value,
 				});
 			}
+			env_slots_out = Some(*es_in);
 		}
 	}
 	// 2 LCG factory slots (2-state and 3-state machines)
@@ -319,7 +334,7 @@ pub fn module_fields(
 	}
 
 	rng.shuffle(&mut fields);
-	fields
+	(fields, env_slots_out)
 }
 
 /// Binary-safe Lua string literal (`\ddd` for anything outside

@@ -55,19 +55,20 @@ else
 	fi
 fi
 
-# (d) ㉔-2 环境值绑定形态：绑定态模板含目标运行时值折叠（ef1），
-# 未绑定产物不含
+# (d) ㊸ 环境绑定去中心化形态：绑定态 = 模块表槽捕获（Vector3.new 等，
+# 混入原语槽族）+ 引导三段槽位间接调用 + ef1 折叠进元钥匙流；
+# 未绑定态只保留无害的 ef1 声明，无折叠消费。
 rm -f /tmp/vm_tsrc.lua
 LURAPH_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --bind-env roblox --seed 42 "$SRC" "$BG_TMP/bound2.lua" >/dev/null 2>&1
-if grep -q "ef1" /tmp/vm_tsrc.lua 2>/dev/null && grep -q "Vector3.new" /tmp/vm_tsrc.lua; then
+if grep -q "ef1%\|ef1 %" /tmp/vm_tsrc.lua 2>/dev/null && grep -q "Vector3\.new" "$BG_TMP/bound2.lua"; then
 	pass=$((pass+1))
 else
-	gf "envval" "绑定态模板缺少环境值折叠（ef1/Vector3.new 消费）"
+	gf "envval" "绑定态缺少环境值折叠消费（ef1 钥匙流项 / 槽捕获）"
 fi
 rm -f /tmp/vm_tsrc.lua
 LURAPH_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --seed 42 "$SRC" "$BG_TMP/unbound2.lua" >/dev/null 2>&1
-if grep -q "ef1" /tmp/vm_tsrc.lua 2>/dev/null; then
-	gf "envval-leak" "未绑定产物混入环境值折叠"
+if grep -q "ef1%\|ef1 %" /tmp/vm_tsrc.lua 2>/dev/null; then
+	gf "envval-leak" "未绑定产物混入环境值折叠消费"
 else
 	pass=$((pass+1))
 fi

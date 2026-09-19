@@ -119,8 +119,12 @@ for (a, b) in big:
     t[p1], t[p2] = t[p2], t[p1]
     tmp = W + "/probe.lua"
     open(tmp, "w").write("".join(t))
-    r = subprocess.run([LU, tmp], capture_output=True, text=True, timeout=60)
-    if r.stdout == base.stdout and r.returncode == base.returncode:
+    try:
+        r = subprocess.run([LU, tmp], capture_output=True, text=True, timeout=40)
+        same = (r.stdout == base.stdout and r.returncode == base.returncode)
+    except subprocess.TimeoutExpired:
+        same = False  # ㊸: 投毒静默循环 = 拒绝（篡改点敏感）
+    if same:
         decoy.append(b - a)
     else:
         live.append((a, b))
@@ -389,6 +393,44 @@ sys.exit(bad)
 PYEOF2
 [ "$?" == "0" ] && ok "可见层保护痕迹清零 (死循环/蜜罐词/码表/拼串表全 0)" || bad "可见层仍有保护痕迹"
 
+echo "== D15 环境绑定语义强化 (㊸: 桩场景 ⇒ 静默毒药) =="
+# 朴素桩（形状对、语义错：typeof=table、无 tostring 格式）⇒ 折叠异值 ⇒
+# 元钥匙流污染 ⇒ HBOOT 垃圾 ⇒ 静默循环——无报错、无信号（样本式毒药
+# 语义）。若桩能跑通 = 语义探针失效。
+"$TOOL" --preset v15 --dialect luau --bind-env roblox --seed 42 "$SRC" "$W/d15_bound.lua" >/dev/null 2>&1 || bad "绑定态构建失败"
+python3 - "$W/d15_bound.lua" "$W" <<'PYD15'
+import sys
+src = open(sys.argv[1]).read()
+W = sys.argv[2]
+def wrap(s, name):
+    for lvl in range(1, 5):
+        cl = ']' + '='*lvl + ']'
+        if cl not in s:
+            op = '[' + '='*lvl + '['
+            return f'local {name} = {op}\n{s}\n{cl}'
+    raise RuntimeError("no level")
+runner = wrap(src, 'BND') + """
+local env = {}
+for k, v in pairs(_G) do env[k] = v end
+env._G = env
+env.Vector3 = { new = function(x, y, z) return { X = x, Y = y, Z = z } end }
+env.Vector2 = { new = function(x, y) return { X = x, Y = y } end }
+env.task = { defer = function() end }
+local f = assert(loadstring(BND, "bound"))
+setfenv(f, env)
+local ok, err = pcall(f)
+print("STUB-RUN:", ok, tostring(err):sub(1, 100))
+"""
+open(W + "/d15_stub.lua", "w").write(runner)
+PYD15
+out15="$(timeout 15 "$LUAU" "$W/d15_stub.lua" 2>&1)"; rc15=$?
+if [ "$out15" == "$EXP1" ]; then
+	bad "朴素桩跑通了 (语义探针失效)"
+else
+	ok "朴素桩 => 静默毒药 (rc=$rc15, 无正确输出/无报错信号)"
+fi
+
 echo "=================================================="
 echo "防御审计: PASS $pass   FAIL $fail"
 [ "$fail" == "0" ] && echo "ALL DEFENSES ACTIVE" || exit 1
+#   D15 环境绑定语义强化 — 朴素桩场景必须静默毒药 (㊸)

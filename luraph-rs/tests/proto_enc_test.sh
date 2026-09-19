@@ -87,7 +87,8 @@ if LURAPH_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --seed 42 \
 	# ㉓：解码态原型不再落地可见层——BSS 直接返回编码态树根。
 	# ㉗：运行时（newE/makefn/run+蹦床+DDEC）整体入密为碎片 208，可见
 	# 层只剩 RTFRAG 提取 + 不透明函数值装配（RUN）。
-	for pat in "MPF, SALT = LS(BSS)()(" ")(FN, NOPA," "RTFRAG = HW\[208\]" \
+	# ㊸: BSS 调用改为 PCAL 包装 + 失败投毒（PD），形态检查相应拆分。
+	for pat in "LS(BSS)" "MPF, SALT = " ")(FN, NOPA," "RTFRAG = HW\[208\]" \
 		"local RUN = RTFRAG(" "return RUN(MPF"; do
 		if ! grep -q "$pat" "$ts"; then ok=0; gf "enc" "模板缺少形态: $pat"; fi
 	done

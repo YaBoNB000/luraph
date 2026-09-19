@@ -1059,6 +1059,8 @@ pub fn generate(
 	// into the boot keystream — a mock stub that ignores constructor
 	// args contaminates the key. v15 only.
 	bind_env: Option<&str>,
+	// ㊸ (环境绑定去中心化): env 捕获槽 [v3, v2, tdefer, typeof]（高位数段）。
+	env_slots: Option<&[i64; 4]>,
 	// ㊶ (保护代码隐藏): 守卫整体进 HBOOT 掩码层（可见层零保护痕迹）。
 	guard: bool,
 ) -> String {
@@ -2413,7 +2415,7 @@ pub fn generate(
 			String::new()
 		};
 		let hboot_src = format!(
-			"return function(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB, EV) {guard}local HW = {{}} local BSS local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local DICT = HB local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep} + ((h1 + h2 * 257) % 268435456) * {hmul}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) local DC = {{}} local pi = 3 while pi <= flen do if BYTE(s, pi) == 0 then local ln = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 DC[#DC + 1] = SUB(s, pi + 3, pi + 2 + ln) pi = pi + 3 + ln else local off = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 local ln = BYTE(s, pi + 3) + BYTE(s, pi + 4) * 256 DC[#DC + 1] = SUB(DICT, off, off + ln - 1) pi = pi + 5 end end s = SUB(table.concat(DC), 1, BYTE(s, 1) + BYTE(s, 2) * 256) DICT = DICT .. s for i = 1, #s do h1, h2 = SH(h1, h2, BYTE(s, i)) end if w == 200 then BSS = s else HW[w] = LS(s)() end end return HW, BSS, h1, h2{hpret} end",
+			"return function(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB, EV, PD) {guard}local HW = {{}} local BSS local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local DICT = HB local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep} + ((h1 + h2 * 257) % 268435456) * {hmul}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) local DC = {{}} local pi = 3 while pi <= flen do if BYTE(s, pi) == 0 then local ln = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 DC[#DC + 1] = SUB(s, pi + 3, pi + 2 + ln) pi = pi + 3 + ln else local off = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 local ln = BYTE(s, pi + 3) + BYTE(s, pi + 4) * 256 DC[#DC + 1] = SUB(DICT, off, off + ln - 1) pi = pi + 5 end end s = SUB(table.concat(DC), 1, BYTE(s, 1) + BYTE(s, 2) * 256) DICT = DICT .. s for i = 1, #s do h1, h2 = SH(h1, h2, BYTE(s, i)) end if w == 200 then BSS = s else HW[w] = (LS(s) or PD)() end end return HW, BSS, h1, h2{hpret} end",
 			guard = guard_embed,
 			hpret = hpret,
 			hseed = hseed_e, hstep = hstep_e, hm = hm_e, hc = hc_e,
@@ -2677,48 +2679,88 @@ pub fn generate(
 		// **直接**参与种子（攻击方建议 B 的形态），零化量折进总补偿常数
 		// （SEED_COMP，KT 装配）。数值边界：单积 < 2^16·2^28 = 2^44，
 		// 七项和 < 2^47，double 全程精确。
-		let (env_gate, env_term, env_comp) = if bind_env.is_some() {
-			let ea: Vec<i64> = (0..5).map(|_| rng.int(1, 999)).collect();
-			let ec: Vec<i64> = (0..6).map(|_| rng.int(1, 999)).collect();
-			let esum = (ea[0] * ec[0]
-				+ ea[1] * ec[1]
-				+ ea[2] * ec[2]
-				+ ea[3] * ec[3]
-				+ ea[4] * ec[4])
-				% KEY_MOD;
-			let env_exp = (esum * ec[5]) % KEY_MOD;
-			let env_mix = rng.int(1_048_576, KEY_MOD - 1);
-			let env_mix_e = ke.key_expr(env_mix, None, rng);
-			let env_mix_hi = (env_mix * 65536) % KEY_MOD;
-			let env_mix_hi_e = ke.key_expr(env_mix_hi, None, rng);
-			manifest_key("ENV_EXP", env_exp as u64);
-			manifest_key("ENV_MIX", env_mix as u64);
-			manifest_key("ENV_MIX_HI", env_mix_hi as u64);
-			let gate = format!(
-				"local ef1 = 0\n    do\n      local v3 = Vector3.new({}, {}, {})\n      local v2 = Vector2.new({}, {})\n      ef1 = ((v3.X * {} + v3.Y * {} + v3.Z * {} + v2.X * {} + v2.Y * {}) * {}) % 268435456\n    end\n    ",
-				obf_num(ea[0] as u64, rng),
-				obf_num(ea[1] as u64, rng),
-				obf_num(ea[2] as u64, rng),
-				obf_num(ea[3] as u64, rng),
-				obf_num(ea[4] as u64, rng),
-				obf_num(ec[0] as u64, rng),
-				obf_num(ec[1] as u64, rng),
-				obf_num(ec[2] as u64, rng),
-				obf_num(ec[3] as u64, rng),
-				obf_num(ec[4] as u64, rng),
-				obf_num(ec[5] as u64, rng),
-			);
-			(
-				gate,
-				format!(
-					" + (ef1 % 65536) * {} + FLR(ef1 / 65536) * {}",
-					env_mix_e, env_mix_hi_e
-				),
-				(env_exp * env_mix) % KEY_MOD,
-			)
-		} else {
-			(String::new(), String::new(), 0)
-		};
+		// ㊸ (环境绑定去中心化, 对照样本 15): 环境值折叠拆散成三段引导
+		// 算术（槽位间接调用，无裸 API 名，无成块闸门形态）。语义探针:
+		//   (1) 分量线性折叠（Vector3/Vector2 构造分量）
+		//   (2) typeof(v3) 的 31 进折叠——真运行时 = "Vector3"；简单桩
+		//       对象 = "table" ⇒ 折出异值 ⇒ 元钥匙流污染
+		//   (3) tostring(v3) 的 31 进折叠——真运行时 = "x, y, z" 确定
+		//       格式；无 __tostring 的桩 = 地址串（每次运行都不同）
+		// 失败形态 = 毒药（静默错钥），不抛错、不给信号。
+		let (env_gate_a, env_gate_b, env_gate_c, env_term, env_comp) =
+			if let Some(es) = env_slots {
+				let ea: Vec<i64> = (0..5).map(|_| rng.int(1, 999)).collect();
+				// ea[0..3] = v3 分量, ea[3..5] = v2 分量；第二调用点分量 +1/+2/+3
+				let ec: Vec<i64> = (0..9).map(|_| rng.int(1, 999)).collect();
+				let fold31 = |t: &str| -> i64 {
+					let mut h: i64 = 0;
+					for b in t.bytes() {
+						h = (h * 31 + b as i64) % KEY_MOD;
+					}
+					h
+				};
+				let f_ty = fold31("Vector3Vector3"); // 两次 typeof 串接折叠
+				let f_ts = fold31(&format!("{}, {}, {}", ea[0], ea[1], ea[2]));
+				let esum = (ea[0] * ec[0]
+					+ ea[1] * ec[1]
+					+ ea[2] * ec[2]
+					+ ea[3] * ec[3]
+					+ ea[4] * ec[4]
+					+ f_ty * ec[5]
+					+ f_ts * ec[6])
+					% KEY_MOD;
+				let env_exp = (esum * ec[7]) % KEY_MOD;
+				let env_mix = rng.int(1_048_576, KEY_MOD - 1);
+				let env_mix_e = ke.key_expr(env_mix, None, rng);
+				let env_mix_hi = (env_mix * 65536) % KEY_MOD;
+				let env_mix_hi_e = ke.key_expr(env_mix_hi, None, rng);
+				manifest_key("ENV_EXP", env_exp as u64);
+				manifest_key("ENV_MIX", env_mix as u64);
+				manifest_key("ENV_MIX_HI", env_mix_hi as u64);
+				// 段 A（env_gate 原位）: 两次 Vector3.new 槽调用 + typeof 双折叠
+				let gate_a = format!(
+					"local EN1 = b[{s0}]({a0}, {a1}, {a2}) local EN7 = b[{s0}]({a0b}, {a1b}, {a2b}) local EN3 = 0 do local ENt = b[{s3}](EN1) for ENi = 1, #ENt do EN3 = (EN3 * 31 + BYTE(ENt, ENi)) % 268435456 end local ENt2 = b[{s3}](EN7) for ENi = 1, #ENt2 do EN3 = (EN3 * 31 + BYTE(ENt2, ENi)) % 268435456 end end\n    ",
+					s0 = es[0], s3 = es[3],
+					a0 = obf_num(ea[0] as u64, rng),
+					a1 = obf_num(ea[1] as u64, rng),
+					a2 = obf_num(ea[2] as u64, rng),
+					a0b = obf_num((ea[0] + 1) as u64, rng),
+					a1b = obf_num((ea[1] + 2) as u64, rng),
+					a2b = obf_num((ea[2] + 3) as u64, rng),
+				);
+				// 段 B（hqi 解码后）: Vector2.new + tostring(v3) 折叠
+				let gate_b = format!(
+					"local EN4 = b[{s1}]({a3}, {a4}) local EN6 = 0 do local ENs = TSTR(EN1) for ENi = 1, #ENs do EN6 = (EN6 * 31 + BYTE(ENs, ENi)) % 268435456 end end\n    ",
+					s1 = es[1],
+					a3 = obf_num(ea[3] as u64, rng),
+					a4 = obf_num(ea[4] as u64, rng),
+				);
+				// 段 C（HB 拼装前）: 终合 ef1
+				let gate_c = format!(
+					"ef1 = (((EN1.X * {c0} + EN1.Y * {c1} + EN1.Z * {c2} + EN4.X * {c3} + EN4.Y * {c4}) * {c5} + EN3 * {c6} + EN6 * {c7}) * {c8}) % 268435456\n    ",
+					c0 = obf_num(ec[0] as u64, rng),
+					c1 = obf_num(ec[1] as u64, rng),
+					c2 = obf_num(ec[2] as u64, rng),
+					c3 = obf_num(ec[3] as u64, rng),
+					c4 = obf_num(ec[4] as u64, rng),
+					c5 = obf_num(ec[5] as u64, rng),
+					c6 = obf_num(ec[6] as u64, rng),
+					c7 = obf_num(ec[7] as u64, rng),
+					c8 = obf_num(ec[8] as u64, rng),
+				);
+				(
+					gate_a,
+					gate_b,
+					gate_c,
+					format!(
+						" + (ef1 % 65536) * {} + FLR(ef1 / 65536) * {}",
+						env_mix_e, env_mix_hi_e
+					),
+					(env_exp * env_mix) % KEY_MOD,
+				)
+			} else {
+				(String::new(), String::new(), String::new(), String::new(), 0)
+			};
 		// ㉛: pb 项分裂乘积的高半常量（pmx·2^16 mod M）
 		let probe_mix_hi = (probe_mix * 65536) % KEY_MOD;
 		let probe_mix_hi_e = ke.key_expr(probe_mix_hi, None, rng);
@@ -2783,6 +2825,7 @@ pub fn generate(
   local SALT
   local SH1, SH2
   local HPH
+  local PD = function() local z0, z1 = 0, 1 while z0 < 4294967296 do z0 = (z0 * 1103515245 + 12345) % 268435456 z1 = (z1 * 80659 + 95050511) % 268435456 if z0 == z1 and z0 == 123456789 then break end end end
   local MPF
   local CLK
   do
@@ -2793,6 +2836,9 @@ pub fn generate(
     local OS_ = GFE(0)[{v_os}]
     CLK = OS_ and OS_[{v_clock}]
     local pb = 0
+    local ef1 = 0
+-- NOTE (㊸: ef1 必须在此提前声明——metavm 种子表达式在本行之前发射,
+-- 引用先于声明会被解析为全局、逃过 mangle、运行期得 nil。)
 -- NOTE (㊳ 计时守卫复通): the assignment above feeds the OUTER `local CLK`
 -- (no shadowing local) — the RUN call outside this do-block hands it to the
 -- RT fragment as its timing source. History: ㉙ introduced the watchdog,
@@ -2810,9 +2856,9 @@ pub fn generate(
       end
       pb = (pb + (ok and 0 or {nlok_delta})) % 268435456
     end
-    {env_gate}local hqi = {{{}}}
+    {env_a}local hqi = {{{}}}
     {hqi_unmask}{}    {}
-    local HB = table.concat(MH)    local EV = {{}}
+    {env_b}    {env_c}local HB = table.concat(MH)    local EV = {{}}
     do
       local _evs = GFE(1)
       if TYP(_evs) == "table" then
@@ -2820,7 +2866,7 @@ pub fn generate(
         while _evk ~= nil do EV[_evk] = _evv _evk, _evv = next(_evs, _evk) end
       end
     end
-    HW, BSS, SH1, SH2{hp_recv} = LS(HB)()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB, EV)
+    local _hbf = LS(HB) if TYP(_hbf) ~= "function" then _hbf = PD end HW, BSS, SH1, SH2{hp_recv} = _hbf()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB, EV, PD)
     HQ = nil; hqi = nil
     {hp_stash}
     {ct_fill}{cx_fill}RTFRAG = HW[208]
@@ -2848,14 +2894,16 @@ pub fn generate(
     RPK11 = {shccc}
     for w, f in pairs(HW) do if w < 256 then HW2[(w + AV) % 256] = f end end
     HW = nil
-    MPF, SALT = LS(BSS)()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TSTR)(FN, NOPA, ({pseed} + AV) % 268435456, ({pstep} + AV) % 268435456, ({pkm} + AV) % 268435456, ({pkc} + AV) % 268435456, ({pblock} + AV) % 268435456)
+    local _bok, _b1, _b2 = PCAL(function() local _bf = LS(BSS) return _bf()(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TSTR)(FN, NOPA, ({pseed} + AV) % 268435456, ({pstep} + AV) % 268435456, ({pkm} + AV) % 268435456, ({pkc} + AV) % 268435456, ({pblock} + AV) % 268435456) end) if not _bok then PD() end MPF, SALT = _b1, _b2
     BSS = nil
   end"#,
 			hq_lines, mb_lines, boot, hqi_masked.join(", "), mb_gather, metavm,
 			hp_recv = hp_recv,
 			hp_stash = hp_stash,
 			hqi_unmask = hqi_unmask,
-			env_gate = env_gate,
+			env_a = env_gate_a,
+			env_b = env_gate_b,
+			env_c = env_gate_c,
 			strlit = strlit,
 			v_ls = v_ls, v_ts = v_ts, v_dbg = v_dbg, v_inf = v_inf,
 			v_os = v_os, v_clock = v_clock,
