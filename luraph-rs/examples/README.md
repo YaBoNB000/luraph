@@ -7,16 +7,17 @@
 `bind_gate.bound.v15.luau.lua` = `--bind-key` 绑定态示例（激活值为演示
 值，真实部署不进仓库；产物本身不含激活值痕迹）。
 
-**对照方法**：`tests/cases/X.lua` 是原始代码，`X.5.1.lua` 是混淆结果——
-两者在对应解释器上运行输出完全一致（`tests/run_tests.sh` 矩阵验证，
-29 个语料：非 VM 102 项 + VM 102 项 = **204 项全绿**，另有多种子回归
-0 失败；minify 默认开，示例文件为单行紧凑形态）。
+**对照方法**：`tests/cases/X.lua` 是原始代码，`X.v15.luau.lua` 是混淆
+结果——两者在 Luau 解释器上运行输出完全一致（`tests/run_tests.sh` /
+`tests/run_presets.sh` / `tests/multiseed.sh` 矩阵验证全绿；minify 默认
+开，示例文件为单行紧凑形态）。生成命令：`bash tests/gen_examples.sh`
+（固定 `--seed 42 --preset v15`，同构建字节级确定）。
 
-**VM 示例（M4/L6）**：`basics.vm.5.1.lua` / `functions.vm.5.1.lua` /
-`game_loop.vm.5.1.lua` 是 `--vm` 输出（私有字节码 + 生成的混淆解释器，
-单文件 ~100KB——取代表性子集，全量 VM 覆盖在测试矩阵里）。VM 输出为
-Lua-on-Lua 解释执行，比非 VM 输出慢（语料级用例实测 29~393ms，
-矩阵超时 120s 余量充足）。
+**增量㊳（2026-09-18，计时守卫复通）**：本目录示例已由 ㊳ 构建重新生成
+——RT 每 128 分派步采样 `os.clock`，两连窗慢于基线 100 倍 ⇒ 钥匙流投毒
+静默损坏（反调试/反 trace；触发路径与误报面验证见
+`tests/defense_audit.sh` D12）。旧 `*.5.1.lua` / `*.vm.5.1.lua` 遗留产物
+（㉖ 前形态，曾被误提交）已从本目录清除。
 
 **㊱ 引导层悬挂标识符修复（2026-09-17，无参数）**：收口 ㉟ 遗留的稀有
 崩溃（~0.3% 种子×语料，「attempt to call a table value」）。根因 =
