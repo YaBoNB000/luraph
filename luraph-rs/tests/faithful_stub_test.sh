@@ -15,6 +15,8 @@
 #       metavm 元种子）之前——直接回归「读前写」这一整类错误。
 #   (c) 前移消费存在性: hqi 解掩种子必须真引用 ef1（绑定折叠已前移到
 #       引导期第一个解码步骤）。
+#   (d) ㊻ pb 双消费存在性: hqi 解掩种子还必须引用 pb（原生性探针与
+#       环境值折叠共同绑定第一个解码步骤）。
 #
 # 关键仿真约束（Luau CLI 限制，也即真实攻击者需达到的仿真深度）:
 #   * getfenv(0) 恒返回真 _G（setfenv 影子不可见、_G 冻结、协程环境不
@@ -69,6 +71,12 @@ else
 			pass=$((pass+1))
 		else
 			gf "forward" "hqi 解掩种子未引用 ef1（绑定折叠未前移）"
+		fi
+		# ---- (d) pb 双消费存在性（㊻）: hqi 解掩种子也引用 pb ----
+		if grep -q 'hqs, hqm, hqc = .*pb' /tmp/vm_tsrc.lua; then
+			pass=$((pass+1))
+		else
+			gf "pb-dual" "hqi 解掩种子未引用 pb（pb 双消费未前移）"
 		fi
 	else
 		gf "tsrc" "TSRC 转储缺失（无法做顺序守卫）"

@@ -2677,9 +2677,20 @@ pub fn generate(
 			} else {
 				(String::new(), String::new(), String::new(), String::new(), 0, 0)
 			};
-		// ㉛ (R014 回合 — P2-6): hqi 段表（wire/槽位/长度三元组——攻击方
-		// 原话「最贵的一份结构信息，白送」）改为加性 LCG 掩码落盘，引导
-		// 期即解。静态侦察拿不到段数/长度/槽位；攻击方固化的段表正则失效。
+		// 增量⑯-1 (探针钥匙化): base-31 fold of the clean-environment
+		// loadstring source ("[C]"). In a clean run pb == C_FOLD and the
+		// extra term vanishes; a hooked loader shifts pb, silently
+		// corrupting the meta keystream (HBOOT decodes to garbage ->
+		// death by wrong key, independent of the explicit nlok trap).
+		// ㊻: 前移定义（纯常量、零 RNG 消耗）——hqi 解掩种子的 pb 双消费
+		// 在本块之前装配。
+		let c_fold: i64 = {
+			let mut h: i64 = 0;
+			for &b in b"[C]".iter() {
+				h = (h * 31 + b as i64) % KEY_MOD;
+			}
+			h
+		};
 		let hqi_km = rng.int(1_048_577, 33_000_001) | 1;
 		let hqi_ks0 = rng.int(1_048_576, KEY_MOD - 1);
 		let hqi_kc = rng.int(1_048_576, KEY_MOD - 1);
@@ -2692,8 +2703,19 @@ pub fn generate(
 		// ㊺ (绑定折叠前移): hqi 段表解掩种子 = 引导期第一个解码步骤。
 		// 绑定态把 ef1（环境值折叠）以分裂乘积直参形揉进种子：忠实环境
 		// ef1 == env_exp ⇒ 解掩种子还原 hqi_ks0（镜像同步）；环境失真 ⇒
-		// 段表先解出垃圾（比元钥匙流污染更早的死亡面）。未绑定态不引用
-		// ef1（种子保持纯常量形态，字节级零混入）。
+		// 段表先解出垃圾（比元钥匙流污染更早的死亡面）。
+		// ㊻ (R018 报告 P1 收窄形态 — pb 双消费前移): pb（loadstring 原生性
+		// 探针折叠）新增揉进同一种子——引导期第一个解码步骤同时绑定原生性
+		// 探针：挂钩换源 ⇒ 段表阶段即死（比元钥匙流污染更早一步）。
+		// pb 为模式无关因子（绑定/未绑定都消费）；ef1 仍仅绑定态。
+		// 镜像假设 = 干净环境折叠值（pb → c_fold），与元种子消费同款，
+		// 无新增环境假设。精度边界: 四项积各 < 2^44，和 < 2^46，精确。
+		let hqi_pb_mix = rng.int(1_048_576, KEY_MOD - 1);
+		let hqi_pb_mix_hi = (hqi_pb_mix * 65536) % KEY_MOD;
+		let hqi_pb_mix_e = ke.key_expr(hqi_pb_mix, None, rng);
+		let hqi_pb_mix_hi_e = ke.key_expr(hqi_pb_mix_hi, None, rng);
+		manifest_key("HQI_PB_MIX", hqi_pb_mix as u64);
+		manifest_key("HQI_PB_MIX_HI", hqi_pb_mix_hi as u64);
 		let (hqi_seed_rt, hqi_ks0_eff) = if env_slots.is_some() {
 			let hqi_env_mix = rng.int(1_048_576, KEY_MOD - 1);
 			let hqi_env_mix_hi = (hqi_env_mix * 65536) % KEY_MOD;
@@ -2703,16 +2725,28 @@ pub fn generate(
 			manifest_key("HQI_ENV_MIX_HI", hqi_env_mix_hi as u64);
 			(
 				format!(
-					"({} + (ef1 % 65536) * {} + FLR(ef1 / 65536) * {}) % 268435456",
-					hqi_ks0_e, hqi_env_mix_e, hqi_env_mix_hi_e
+					"({} + (ef1 % 65536) * {} + FLR(ef1 / 65536) * {} + (pb % 65536) * {} + FLR(pb / 65536) * {}) % 268435456",
+					hqi_ks0_e, hqi_env_mix_e, hqi_env_mix_hi_e,
+					hqi_pb_mix_e, hqi_pb_mix_hi_e
 				),
 				(hqi_ks0
 					+ (env_exp % 65536) * hqi_env_mix
-					+ (env_exp / 65536) * hqi_env_mix_hi)
+					+ (env_exp / 65536) * hqi_env_mix_hi
+					+ (c_fold % 65536) * hqi_pb_mix
+					+ (c_fold / 65536) * hqi_pb_mix_hi)
 					% KEY_MOD,
 			)
 		} else {
-			(hqi_ks0_e.clone(), hqi_ks0)
+			(
+				format!(
+					"({} + (pb % 65536) * {} + FLR(pb / 65536) * {}) % 268435456",
+					hqi_ks0_e, hqi_pb_mix_e, hqi_pb_mix_hi_e
+				),
+				(hqi_ks0
+					+ (c_fold % 65536) * hqi_pb_mix
+					+ (c_fold / 65536) * hqi_pb_mix_hi)
+					% KEY_MOD,
+			)
 		};
 		let mut hks = hqi_ks0_eff;
 		let hqi_masked: Vec<String> = hqi_vals
@@ -2781,18 +2815,6 @@ pub fn generate(
 			],
 			&|v: i64, r: &mut Rng| obf_num(v as u64, r),
 		));
-			// 增量⑯-1 (探针钥匙化): base-31 fold of the clean-environment
-		// loadstring source ("[C]"). In a clean run pb == C_FOLD and the
-		// extra term vanishes; a hooked loader shifts pb, silently
-		// corrupting the meta keystream (HBOOT decodes to garbage ->
-		// death by wrong key, independent of the explicit nlok trap).
-		let c_fold: i64 = {
-			let mut h: i64 = 0;
-			for &b in b"[C]".iter() {
-				h = (h * 31 + b as i64) % KEY_MOD;
-			}
-			h
-		};
 		let probe_mix = rng.int(1_048_576, KEY_MOD - 1);
 		let probe_mix_e = ke.key_expr(probe_mix, None, rng);
 		// ㉔-1 (R008 回合 — 守卫结果钥匙化): R008 实测攻击第 2 步 = 把
@@ -2873,6 +2895,34 @@ pub fn generate(
 		} else {
 			String::new()
 		};
+		// ㊻ (R018 报告 P0-1: hI 去 tostring 化): AV 取值源从单一
+		// `tostring({})`（结构唯一的锚点——重建解码器的攻击者一眼可认）
+		// 改为异构三源 + 每构建变形：① 新表地址串（TSTR）② 新闭包地址
+		// 串（TSTR）③ os.clock 数值折字节（FLR/除模，不经 TSTR）。折叠
+		// 顺序每构建打乱、进制基数与钟乘数每构建重抽——识别器每构建重训。
+		// 全部源 = 运行期必变值（每运行不同），双侧消费同取 AV 局部
+		// （单次计算）。诚实边界：地址源仍经 TSTR（去 tostring 化 = 去
+		// 唯一锚点，非去 API）；一切运行期值对动态执行可观测（R004）。
+		let mut av_order: Vec<usize> = vec![0, 1, 2];
+		rng.shuffle(&mut av_order);
+		let mut av_fold = String::new();
+		for &src in &av_order {
+			match src {
+				0 => av_fold.push_str(&format!(
+					"local avt = {{}} local avs = TSTR(avt) for avi = 1, #avs do AV = (AV * {} + BYTE(avs, avi)) % 268435456 end ",
+					obf_num(rng.int(17, 47) as u64, rng)
+				)),
+				1 => av_fold.push_str(&format!(
+					"local avf = function() end local afs = TSTR(avf) for avi = 1, #afs do AV = (AV * {} + BYTE(afs, avi)) % 268435456 end ",
+					obf_num(rng.int(17, 47) as u64, rng)
+				)),
+				_ => av_fold.push_str(&format!(
+					"local avc = CLK and CLK() or 0 local avn = FLR(avc * {}) for avj = 1, 5 do AV = (AV * {} + avn % 256) % 268435456 avn = FLR(avn / 256) end ",
+					obf_num((rng.int(100_001, 9_999_999) | 1) as u64, rng),
+					obf_num(rng.int(17, 47) as u64, rng)
+				)),
+			}
+		}
 		let build = format!(
 			r#"{}  {}local HW = {{}}
   local BSS
@@ -2930,9 +2980,7 @@ pub fn generate(
       end
     end
     do
-      local avt = {{}}
-      local ats = TSTR(avt)
-      for i = 1, #ats do AV = (AV * 31 + BYTE(ats, i)) % 268435456 end
+      {av_fold}
     end
 -- NOTE (㊹ R018 报告 P0-2 收口 — 可见层零解码源): AV 与 RPK 前移, BSS 的
 -- loadstring+调用整体搬进 HBOOT——解码态源码 (BSS 全文) 永不落地可见层。
@@ -2964,6 +3012,7 @@ pub fn generate(
 			hp_r6 = hp_r6,
 			hp_r6d = hp_r6d,
 			hp_stash = hp_stash,
+			av_fold = av_fold,
 			hqi_unmask = hqi_unmask,
 			env_a = env_gate_a,
 			env_b = env_gate_b,
